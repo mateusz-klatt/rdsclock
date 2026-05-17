@@ -96,9 +96,9 @@ def test_recon_offline_simulates_gps_synced_stations(tmp_path):
 
     assert result.utc is not None
     # 3 agreeing stations -> HIGH trust
-    assert result.trust_level == TrustLevel.HIGH, (
-        f"expected HIGH, got {result.trust_level} (notes={result.notes})"
-    )
+    assert (
+        result.trust_level == TrustLevel.HIGH
+    ), f"expected HIGH, got {result.trust_level} (notes={result.notes})"
     assert result.n_sources == 3
     assert not result.outlier_freqs_mhz
     # All 3 stations contributed to the consensus

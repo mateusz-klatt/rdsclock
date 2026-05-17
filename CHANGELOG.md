@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-05-17
+
+### Fixed
+
+- Corrected the RDS symbol path to use biphase / Manchester coding
+  instead of NRZ. `synth.py` previously emitted NRZ while the decoder
+  consumed the same shape, which made synthetic round-trips pass while
+  masking the real broadcast failure entirely.
+
+### Changed
+
+- Added pre-Costas AGC and biphase matched filtering with automatic
+  symbol-offset selection in the decoder.
+- Synthetic RDS generation now requires an even number of samples per
+  bit so each biphase chip has equal duration.
+
+### Added
+
+- Added a real-IQ regression fixture for PR Trójka 98.8 MHz in Warsaw
+  and an integration test that verifies decoded groups and the Polskie
+  Radio PI prefix.
+
 ## [0.1.2] — 2026-05-17
 
 ### Added

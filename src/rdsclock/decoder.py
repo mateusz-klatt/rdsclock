@@ -36,8 +36,8 @@ def decode_iq(
     fs: float = dsp.DEFAULT_INPUT_FS,
     carrier_hz: float | None = None,
     symbol_lpf_hz: float = dsp.SYMBOL_LPF_HZ,
-    costas_alpha: float = 0.1,
-    costas_beta: float = 0.002,
+    costas_alpha: float = 0.3,
+    costas_beta: float = 0.005,
     auto_carrier: bool = True,
     progress: Callable[[str], None] | None = None,
 ) -> DecodeResult:
@@ -79,30 +79,56 @@ def decode_iq(
     emit(f"symbol_lpf (cutoff {symbol_lpf_hz} Hz)")
     rds_filtered = dsp.symbol_lpf(rds_bb, dsp.DEFAULT_RDS_FS, cutoff=symbol_lpf_hz)
 
+    emit("agc")
+    rds_agc = dsp.agc(rds_filtered)
+
     emit("costas_loop_bpsk")
-    rds_sync = dsp.costas_loop_bpsk(rds_filtered, alpha=costas_alpha, beta=costas_beta)
+    rds_sync = dsp.costas_loop_bpsk(rds_agc, alpha=costas_alpha, beta=costas_beta)
 
     sps = int(round(dsp.DEFAULT_RDS_FS / dsp.RDS_SYMBOL_RATE))
-    # Try two clock-recovery methods and keep whichever yields more groups.
-    emit(f"clock recovery: best_offset + mueller_muller (sps {sps})")
-    bo_symbols, bo_sym_off = dsp.best_symbol_offset(rds_sync, sps=sps)
-    bo_bits = dsp.bits_from_symbols_diff(bo_symbols)
-    bo_groups, bo_variant = _best_variant_groups(bo_bits)
+    emit(f"biphase matched filter + offset search (sps {sps})")
+    matched = dsp.biphase_matched_filter(rds_sync, sps_bit=sps)
+    best_groups: list[bytearray] | None = None
+    best_bits: np.ndarray | None = None
+    variant_used = "biphase/none"
+    sym_offset = 0
+    for offset in range(sps):
+        sampled = matched[offset::sps]
+        if len(sampled) < 100:
+            continue
+        bits_candidate = dsp.bits_from_symbols_diff(sampled)
+        groups_candidate, variant_candidate = _best_variant_groups(bits_candidate)
+        if best_groups is None or len(groups_candidate) > len(best_groups):
+            best_groups = groups_candidate
+            best_bits = bits_candidate
+            variant_used = f"biphase/off{offset}/{variant_candidate}"
+            sym_offset = offset
 
-    mm_symbols = dsp.clock_recovery_mm(rds_sync, sps=sps)
-    mm_bits = dsp.bits_from_symbols_diff(mm_symbols)
-    mm_groups, mm_variant = _best_variant_groups(mm_bits)
+    if best_groups is None or best_bits is None:
+        # Very short streams may not have enough biphase samples for the
+        # offset sweep. Preserve the legacy paths for those callers.
+        emit(f"clock recovery fallback: best_offset + mueller_muller (sps {sps})")
+        bo_symbols, bo_sym_off = dsp.best_symbol_offset(rds_sync, sps=sps)
+        bo_bits = dsp.bits_from_symbols_diff(bo_symbols)
+        bo_groups, bo_variant = _best_variant_groups(bo_bits)
 
-    if len(mm_groups) > len(bo_groups):
-        groups = mm_groups
-        variant_used = f"mm/{mm_variant}"
-        bits = mm_bits
-        sym_offset = -1  # MM has no fixed offset, only its mu state
+        mm_symbols = dsp.clock_recovery_mm(rds_sync, sps=sps)
+        mm_bits = dsp.bits_from_symbols_diff(mm_symbols)
+        mm_groups, mm_variant = _best_variant_groups(mm_bits)
+
+        if len(mm_groups) > len(bo_groups):
+            groups = mm_groups
+            variant_used = f"mm/{mm_variant}"
+            bits = mm_bits
+            sym_offset = -1  # MM has no fixed offset, only its mu state
+        else:
+            groups = bo_groups
+            variant_used = f"bo/{bo_variant}"
+            bits = bo_bits
+            sym_offset = bo_sym_off
     else:
-        groups = bo_groups
-        variant_used = f"bo/{bo_variant}"
-        bits = bo_bits
-        sym_offset = bo_sym_off
+        groups = best_groups
+        bits = best_bits
 
     info = parse_groups(groups)
     emit(f"groups={len(groups)} variant={variant_used} freq_off={freq_off:+.1f} Hz")

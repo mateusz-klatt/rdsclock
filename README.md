@@ -229,9 +229,9 @@ the local antenna picks up.
 
 ## Status
 
-- **0.1.2** — current release. Pre-1.0; the CLI and on-disk
+- **0.1.3** — current release. Pre-1.0; the CLI and on-disk
   formats may change.
-- 226 tests across synthetic, integration and live-capture suites;
+- 236 tests across synthetic, integration and live-capture suites;
   line coverage **100 %** (tracked by SonarCloud).
 
 ## Legal Note

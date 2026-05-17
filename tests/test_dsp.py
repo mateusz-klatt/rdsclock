@@ -79,6 +79,21 @@ class TestCostas:
         assert np.max(np.abs(np.imag(out[20:]))) < 1.0
 
 
+class TestBiphaseRecovery:
+    def test_agc_normalizes_mean_magnitude(self):
+        samples = np.array([2 + 0j, 0 + 2j, -2 + 0j], dtype=np.complex64)
+        out = dsp.agc(samples)
+        assert out.dtype == np.complex64
+        assert np.mean(np.abs(out)) == np.float32(1.0)
+
+    def test_matched_filter_aligns_biphase_bits(self):
+        shaped = np.array([1, 1, -1, -1, -1, -1, 1, 1], dtype=np.float32)
+        matched = dsp.biphase_matched_filter(shaped.astype(np.complex64), sps_bit=4)
+        sampled = matched[0::4]
+        np.testing.assert_array_equal(sampled, [-4, 4])
+        np.testing.assert_array_equal(dsp.bits_from_symbols_diff(sampled), [1])
+
+
 class TestSymbolOffset:
     def test_picks_strongest_phase(self):
         # 16 samples per symbol, actual symbols at offset 7
@@ -95,6 +110,12 @@ class TestSymbolOffset:
         oversampled = oversampled + noise.astype(np.complex64)
         out, offset = dsp.best_symbol_offset(oversampled, sps)
         assert offset == 7
+
+
+class TestClockRecovery:
+    def test_mm_updates_after_three_recovered_symbols(self):
+        recovered = dsp.clock_recovery_mm(np.ones(80, dtype=np.complex64), sps=1.0)
+        assert len(recovered) >= 3
 
 
 class TestBitsFromSymbols:
