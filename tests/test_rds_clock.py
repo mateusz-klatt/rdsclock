@@ -41,6 +41,11 @@ class TestMjd:
         dt = datetime(2026, 5, 16, 14, 23, 45, tzinfo=UTC)
         assert datetime_to_mjd(dt) == datetime_to_mjd(datetime(2026, 5, 16, tzinfo=UTC))
 
+    def test_naive_datetime_is_treated_as_utc(self):
+        assert datetime_to_mjd(datetime(2026, 5, 16, 14, 23, 45)) == datetime_to_mjd(
+            datetime(2026, 5, 16, 14, 23, 45, tzinfo=UTC)
+        )
+
 
 def _full_block_b(extra: int, pty: int = 0, tp: bool = False) -> int:
     """Assemble a full block B from the extra CT payload (MJD[16:15] in bits 1..0)."""

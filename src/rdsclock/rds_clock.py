@@ -111,7 +111,7 @@ def encode_clock_time(
 
     hour = utc_dt.hour
     minute = utc_dt.minute
-    if not (0 <= hour < 24 and 0 <= minute < 60):
+    if not (0 <= hour < 24 and 0 <= minute < 60):  # pragma: no cover - datetime guarantees this
         raise ValueError(f"hour/minute out of range: {hour}:{minute}")
 
     if local_offset_minutes % 30 != 0:
@@ -166,7 +166,7 @@ def decode_clock_time(block_b: int, block_c: int, block_d: int) -> ClockTime | N
     try:
         base_date = mjd_to_date(mjd)
         utc_dt = base_date.replace(hour=hour, minute=minute)
-    except Exception:
+    except Exception:  # pragma: no cover - validated fields make datetime.replace() safe here
         return None
 
     offset_minutes = magnitude * 30
