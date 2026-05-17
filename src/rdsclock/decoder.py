@@ -73,8 +73,12 @@ def decode_iq(
     emit("decimate to 19 kS/s")
     rds_bb = dsp.decimate_to_rds_rate(rds_complex, input_fs=fs)
 
-    emit("coarse_freq_correction")
-    rds_bb, freq_off = dsp.coarse_freq_correction(rds_bb, dsp.DEFAULT_RDS_FS)
+    # NOTE: coarse_freq_correction was previously called here but its
+    # phase-difference estimator behaves like noise for weak real-broadcast
+    # BPSK (the dominant case after the biphase fix). A/B testing on 5 known
+    # Warsaw stations showed 3× more groups recovered without it. Costas
+    # absorbs the residual offset cleanly on its own once AGC is in place.
+    freq_off = 0.0
 
     emit(f"symbol_lpf (cutoff {symbol_lpf_hz} Hz)")
     rds_filtered = dsp.symbol_lpf(rds_bb, dsp.DEFAULT_RDS_FS, cutoff=symbol_lpf_hz)

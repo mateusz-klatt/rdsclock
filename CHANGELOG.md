@@ -7,27 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.3] — 2026-05-17
+## [0.2.0] — 2026-05-17
+
+This is the first release that **actually decodes real FM broadcasts**.
+Releases 0.1.0 – 0.1.2 worked only on the package's own synthetic IQ,
+because the synth and decoder both spoke NRZ to each other while real
+RDS uses biphase / Manchester coding. The bug was discovered during a
+multi-station live test in Warsaw against five known transmitters
+(Polskie Radio Trójka 98.8 Raszyn, RMF FM 91.0 Raszyn, Polskie Radio
+Jedynka 102.4 Raszyn, Radio Plus 96.5 PKIN, Polskie Radio RDC 101.0
+PKIN) — all returning 0 groups before this release. After the fix all
+five decode cleanly with correct Polish PI codes (0x32xx for public
+broadcast, 0x3F44 for RMF FM).
+
+The version bump from 0.1.x to 0.2.0 reflects observable API changes
+in `rdsclock.synth` and `rdsclock.dsp` (see *Breaking* below).
 
 ### Fixed
 
-- Corrected the RDS symbol path to use biphase / Manchester coding
-  instead of NRZ. `synth.py` previously emitted NRZ while the decoder
-  consumed the same shape, which made synthetic round-trips pass while
-  masking the real broadcast failure entirely.
+- **Decoder now works on real FM broadcasts.** `synth.py` previously
+  emitted NRZ while the decoder consumed the same shape — synthetic
+  round-trips passed but real broadcasts always returned zero groups.
+  Synth now emits proper biphase chips and the decoder runs a biphase
+  matched filter with automatic symbol-offset selection.
+- Removed `coarse_freq_correction` from the decoder pipeline. Its
+  phase-difference estimator behaves like noise for weak real RDS,
+  which Costas can absorb cleanly on its own once AGC is in place
+  (3× more groups recovered in the Warsaw A/B test).
 
-### Changed
+### Changed (breaking)
 
-- Added pre-Costas AGC and biphase matched filtering with automatic
-  symbol-offset selection in the decoder.
-- Synthetic RDS generation now requires an even number of samples per
-  bit so each biphase chip has equal duration.
+- `rdsclock.synth.biphase_symbols(bits, samples_per_bit)` now emits
+  two chips per bit (length = `2 * len(bits) * (samples_per_bit // 2)`).
+  Previously it emitted one NRZ sample per bit. Callers depending on
+  the old output length must adjust.
+- `rdsclock.synth.rds_baseband` requires `fs / symbol_rate` to be an
+  even integer so each biphase chip has equal duration.
+- `rdsclock.dsp.bits_from_symbols_diff` now expects the biphase
+  matched-filter output sampled once per bit. Its hard-decision logic
+  is unchanged; its input semantics are.
+- Default `costas_loop_bpsk(alpha, beta)` raised from `(0.1, 0.002)`
+  to `(0.3, 0.005)` for faster lock on weak real-broadcast BPSK.
 
 ### Added
 
-- Added a real-IQ regression fixture for PR Trójka 98.8 MHz in Warsaw
-  and an integration test that verifies decoded groups and the Polskie
-  Radio PI prefix.
+- `rdsclock.dsp.agc()` — mean-magnitude normaliser, applied before
+  the Costas loop in `decode_iq`.
+- `rdsclock.dsp.biphase_matched_filter()` — matched filter for the
+  biphase pulse shape (`[+1]*sps_half + [-1]*sps_half`).
+- Real-IQ regression test (`tests/test_real_iq_regression.py`)
+  backed by an actual broadcast capture from Polskie Radio Trójka
+  98.8 in Warsaw (6 s, 250 kS/s u8 IQ, ~3 MB in
+  `tests/fixtures/`). The decoder must recover at least 10 groups
+  and a PI in the Polskie Radio range. This test exists so the
+  NRZ-vs-biphase mismatch can never silently return.
 
 ## [0.1.2] — 2026-05-17
 

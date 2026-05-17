@@ -307,6 +307,14 @@ class TestDspCoverage:
         assert freq == 0.0
         np.testing.assert_array_equal(corrected, np.array([1 + 0j], dtype=np.complex64))
 
+        fs = 19_000
+        rotation_hz = 250.0
+        n = np.arange(1024)
+        rotating = np.exp(2j * np.pi * rotation_hz * n / fs).astype(np.complex64)
+        corrected, freq = dsp.coarse_freq_correction(rotating, fs=fs)
+        assert freq == pytest.approx(rotation_hz, abs=5.0)
+        assert np.abs(corrected[-1] - corrected[0]) < 1e-3
+
         filtered = dsp.symbol_lpf(np.ones(8, dtype=np.complex64), fs=19_000)
         assert len(filtered) == 8
         assert dsp.clock_recovery_mm(np.ones(4, dtype=np.complex64), sps=16).size == 0

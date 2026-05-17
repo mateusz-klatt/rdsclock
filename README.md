@@ -229,10 +229,13 @@ the local antenna picks up.
 
 ## Status
 
-- **0.1.3** — current release. Pre-1.0; the CLI and on-disk
-  formats may change.
-- 236 tests across synthetic, integration and live-capture suites;
-  line coverage **100 %** (tracked by SonarCloud).
+- **0.2.0** — current release. First version that decodes real FM
+  broadcasts (earlier 0.1.x worked only on synthetic IQ — see the
+  0.2.0 entry in [`CHANGELOG.md`](CHANGELOG.md)). Pre-1.0; the CLI
+  and on-disk formats may still change.
+- 236 tests including a real-IQ regression backed by a 6 s capture
+  of Polskie Radio Trójka 98.8 from Warsaw; line coverage **100 %**
+  (tracked by SonarCloud).
 
 ## Legal Note
 
