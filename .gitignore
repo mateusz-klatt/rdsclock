@@ -1,0 +1,39 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+src/*.egg-info/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+.scannerwork/
+
+# IDEs
+.vscode/
+.idea/
+
+# Bulk IQ datasets — kept outside the repo (see docs/datasets.md)
+eter/
+scripts/night/
+*.iq
+*.wav
+
+# Operator-generated artefacts
+*.json
+*.tmp
+*.log
