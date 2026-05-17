@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-17
+
+### Changed
+
+- Packaging metadata now uses PEP 639 SPDX format
+  (`license = "Apache-2.0"` + `license-files = ["LICENSE"]`)
+  instead of the legacy `license = { file = "LICENSE" }`. PyPI now
+  shows a short licence label instead of the full Apache text.
+  Requires `setuptools>=77` at build time.
+- Dropped the redundant `License :: OSI Approved :: Apache Software License`
+  trove classifier (covered by the SPDX expression).
+
+### Added
+
+- Two new test files (`tests/test_coverage_extra.py`,
+  `tests/test_coverage_edges.py`) plus a shared `fake_rtl_tcp`
+  fixture in `tests/conftest.py`. **Line coverage is now 100%
+  across every module** (219 unit and integration tests).
+
 ## [0.1.0] — 2026-05-17
 
 ### Added
