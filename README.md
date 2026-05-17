@@ -155,6 +155,11 @@ MAG    = D & 0x1F
 The Modified Julian Day epoch is **1858-11-17 00:00 UT**. The
 `hh:mm` field is UTC; local time = UTC + sign · magnitude · 30 min.
 
+> The same bit layout is described in the free public
+> [NRSC-4-B](https://nrscstandards.org/standards-and-guidelines/)
+> standard, which is a superset of IEC 62106. See
+> [`docs/REFERENCES.md`](docs/REFERENCES.md) for the full source list.
+
 ## Passive Time-Receiver Mode (`recon`)
 
 `recon` implements a continuous, fully passive time receiver designed
@@ -224,10 +229,10 @@ the local antenna picks up.
 
 ## Status
 
-- **0.1.0** — first public release. Pre-1.0; the CLI and on-disk
+- **0.1.2** — current release. Pre-1.0; the CLI and on-disk
   formats may change.
-- ~140 tests passing across synthetic, integration and live-capture
-  suites; line coverage above 80% (tracked by SonarCloud).
+- 226 tests across synthetic, integration and live-capture suites;
+  line coverage **100 %** (tracked by SonarCloud).
 
 ## Legal Note
 

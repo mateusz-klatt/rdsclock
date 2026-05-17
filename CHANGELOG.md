@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-17
+
+### Added
+
+- `docs/REFERENCES.md` — curated list of public sources used to
+  build and verify the decoder: IEC 62106-2:2021, the freely
+  downloadable NRSC-4-B RBDS standard (a public superset of
+  IEC 62106), the open-source `redsea` decoder by Oona Räisänen,
+  the Wikipedia RDS overview, and the relevant RTL-SDR / osmocom
+  documentation. A note in the README's Group 4A section now
+  points readers at the free NRSC-4-B PDF when they don't have
+  IEC webstore access.
+
+### Changed
+
+- Refreshed the README "Status" section: 226 tests, **100 % line
+  coverage**, current version pinned to 0.1.2.
+
 ## [0.1.1] — 2026-05-17
 
 ### Changed
