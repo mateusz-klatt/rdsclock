@@ -214,6 +214,42 @@ class TestDecoderCoverage:
         decoder.decode_iq(np.ones(65, dtype=np.complex64), auto_carrier=False)
         assert carrier_seen["value"] == dsp.RDS_CARRIER_HZ
 
+    def test_decode_iq_short_stream_fallback_can_select_mm(self, monkeypatch):
+        monkeypatch.setattr(decoder.dsp, "channel_filter", lambda iq, fs: iq)
+        monkeypatch.setattr(decoder.dsp, "fm_demod", lambda iq: np.ones(64, dtype=np.float32))
+        monkeypatch.setattr(
+            decoder.dsp,
+            "shift_and_filter",
+            lambda baseband, fs, carrier: np.ones(64, dtype=np.complex64),
+        )
+        monkeypatch.setattr(decoder.dsp, "decimate_to_rds_rate", lambda data, input_fs: data)
+        monkeypatch.setattr(decoder.dsp, "coarse_freq_correction", lambda data, fs: (data, 0.0))
+        monkeypatch.setattr(decoder.dsp, "symbol_lpf", lambda data, fs, cutoff: data)
+        monkeypatch.setattr(decoder.dsp, "costas_loop_bpsk", lambda data, alpha, beta: data)
+        monkeypatch.setattr(
+            decoder.dsp,
+            "best_symbol_offset",
+            lambda data, sps: (np.array([1, -1], dtype=np.complex64), 3),
+        )
+        monkeypatch.setattr(
+            decoder.dsp,
+            "clock_recovery_mm",
+            lambda data, sps: np.array([1, -1, 1], dtype=np.complex64),
+        )
+        variants = iter(
+            [
+                ([], "bo"),
+                ([bytearray(b"\x00" * 8)], "mm"),
+            ]
+        )
+        monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: next(variants))
+        monkeypatch.setattr(decoder, "parse_groups", lambda groups: StationInfo())
+
+        result = decoder.decode_iq(np.ones(65, dtype=np.complex64), auto_carrier=False)
+
+        assert result.n_groups == 1
+        assert result.symbol_offset == -1
+
     def test_decode_file_autodetects_u8_when_complex_sniff_is_invalid(self, monkeypatch):
         monkeypatch.setattr(decoder.os.path, "getsize", lambda path: 16)
         monkeypatch.setattr(
@@ -270,6 +306,14 @@ class TestDspCoverage:
         )
         assert freq == 0.0
         np.testing.assert_array_equal(corrected, np.array([1 + 0j], dtype=np.complex64))
+
+        fs = 19_000
+        rotation_hz = 250.0
+        n = np.arange(1024)
+        rotating = np.exp(2j * np.pi * rotation_hz * n / fs).astype(np.complex64)
+        corrected, freq = dsp.coarse_freq_correction(rotating, fs=fs)
+        assert freq == pytest.approx(rotation_hz, abs=5.0)
+        assert np.abs(corrected[-1] - corrected[0]) < 1e-3
 
         filtered = dsp.symbol_lpf(np.ones(8, dtype=np.complex64), fs=19_000)
         assert len(filtered) == 8

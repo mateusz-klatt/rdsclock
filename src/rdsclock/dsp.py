@@ -165,7 +165,7 @@ def symbol_lpf(x: np.ndarray, fs: float, cutoff: float = SYMBOL_LPF_HZ) -> np.nd
     return filtfilt(taps, [1.0], x)
 
 
-def costas_loop_bpsk(samples: np.ndarray, alpha: float = 0.1, beta: float = 0.002) -> np.ndarray:
+def costas_loop_bpsk(samples: np.ndarray, alpha: float = 0.3, beta: float = 0.005) -> np.ndarray:
     """Second-order Costas loop for BPSK. Stabilises carrier phase."""
     samples = np.asarray(samples, dtype=np.complex64)
     out = np.empty_like(samples)
@@ -182,6 +182,21 @@ def costas_loop_bpsk(samples: np.ndarray, alpha: float = 0.1, beta: float = 0.00
         elif phase < -np.pi:
             phase += 2 * np.pi
     return out
+
+
+def agc(samples: np.ndarray, eps: float = 1e-9) -> np.ndarray:
+    """Normalize complex baseband amplitude by its mean magnitude."""
+    samples = np.asarray(samples, dtype=np.complex64)
+    return (samples / (np.abs(samples).mean() + eps)).astype(np.complex64)
+
+
+def biphase_matched_filter(post_costas_samples: np.ndarray, sps_bit: int = 16) -> np.ndarray:
+    """Matched-filter Manchester/biphase symbols without choosing a clock offset."""
+    sps_half = sps_bit // 2
+    template = np.concatenate(
+        [np.ones(sps_half, dtype=np.float32), -np.ones(sps_half, dtype=np.float32)]
+    )
+    return np.convolve(np.real(post_costas_samples), template, mode="valid")
 
 
 def best_symbol_offset(samples: np.ndarray, sps: int) -> tuple[np.ndarray, int]:
@@ -229,10 +244,11 @@ def clock_recovery_mm(
 
 
 def bits_from_symbols_diff(symbols: np.ndarray) -> np.ndarray:
-    """Hard-decide BPSK symbols (``real >= 0`` ⇒ 1) and differentially decode.
+    """Hard-decide sampled biphase symbols and differentially decode.
 
-    RDS uses differential encoding ``tx[n] = data[n] XOR tx[n-1]``, so
-    XOR'ing adjacent hard decisions recovers the original data bits.
+    The input is the biphase matched-filter output sampled once per bit.
+    Hard decisions recover the transmitted differential bitstream, and
+    XOR'ing adjacent decisions recovers the original data bits.
     """
     hard = (np.real(symbols) >= 0).astype(np.uint8)
     if len(hard) < 2:

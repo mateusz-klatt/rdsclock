@@ -138,6 +138,8 @@ def test_live_clock_time_year_matches_system():
         pytest.skip("no station with valid Clock-Time audible on the local antenna")
 
     sys_year = sys_now.year
-    assert ct.utc.year in (sys_year - 1, sys_year, sys_year + 1), (
-        f"decoded CT year {ct.utc.year} disagrees with system year {sys_year}"
-    )
+    assert ct.utc.year in (
+        sys_year - 1,
+        sys_year,
+        sys_year + 1,
+    ), f"decoded CT year {ct.utc.year} disagrees with system year {sys_year}"

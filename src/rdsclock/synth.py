@@ -6,7 +6,7 @@ Pipeline:
        └→ block-level encoding (CRC + offset words)  [rds_blocks]
             └→ raw bitstream
                  └→ differential encoding
-                      └→ NRZ symbol shaping at ~228 kS/s
+                      └→ biphase / Manchester shaping at ~228 kS/s
                            └→ BPSK modulation onto 57 kHz subcarrier
                                 └→ MPX baseband (mono audio + 19 kHz pilot + 57 kHz RDS)
                                      └→ FM modulation (integrated MPX as phase)
@@ -71,16 +71,19 @@ def rds_groups_to_bits(
     return differential_encode(data_bits) if differential else data_bits
 
 
-def biphase_symbols(bits: np.ndarray, samples_per_symbol: int) -> np.ndarray:
-    """Symbol shaping: map each bit to +1/-1 and oversample.
+def biphase_symbols(bits: np.ndarray, samples_per_bit: int) -> np.ndarray:
+    """Manchester/biphase symbol shaping for RDS.
 
-    RDS actually uses biphase / Manchester coding; for this MVP we emit
-    a simpler NRZ shape (+1 for bit 1, -1 for bit 0). The decoder side
-    is symmetric, so synthesised IQ round-trips through the pipeline.
+    Bit 1 is encoded as a positive half-bit followed by a negative
+    half-bit; bit 0 uses the opposite polarity. ``samples_per_bit`` must
+    be even so each chip spans the same number of samples.
     """
+    if samples_per_bit % 2:
+        raise ValueError("samples_per_bit must be even for biphase shaping")
     bits = np.asarray(bits, dtype=np.uint8)
     levels = bits.astype(np.float32) * 2.0 - 1.0
-    return np.repeat(levels, samples_per_symbol)
+    chips = np.column_stack((levels, -levels)).reshape(-1)
+    return np.repeat(chips, samples_per_bit // 2)
 
 
 def rds_baseband(
@@ -88,17 +91,19 @@ def rds_baseband(
     fs: float = DEFAULT_INTERMEDIATE_FS,
     symbol_rate: float = RDS_SYMBOL_RATE,
 ) -> np.ndarray:
-    """Convert raw bits into a band-limited NRZ stream ready for mixing."""
+    """Convert raw bits into a band-limited biphase stream ready for mixing."""
     sps = fs / symbol_rate
     if not np.isclose(sps, round(sps)):
         raise ValueError(
             f"fs ({fs}) must be an integer multiple of symbol_rate ({symbol_rate}); sps={sps}"
         )
     sps_int = int(round(sps))
-    nrz = biphase_symbols(bits, sps_int)
-    # Shaping LPF: keeps energy around ±symbol_rate
-    taps = firwin(numtaps=2 * sps_int + 1, cutoff=symbol_rate, fs=fs)
-    return lfilter(taps, 1.0, nrz).astype(np.float32)
+    if sps_int % 2:
+        raise ValueError(f"fs ({fs}) must yield an even number of samples per bit; sps={sps_int}")
+    biphase = biphase_symbols(bits, sps_int)
+    # Biphase coding uses half-bit chips, so preserve energy up to the chip rate.
+    taps = firwin(numtaps=2 * sps_int + 1, cutoff=2 * symbol_rate, fs=fs)
+    return lfilter(taps, 1.0, biphase).astype(np.float32)
 
 
 def modulate_rds(

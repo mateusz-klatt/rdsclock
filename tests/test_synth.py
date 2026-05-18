@@ -1,6 +1,7 @@
 """Tests for synthetic FM + RDS signal synthesis."""
 
 import numpy as np
+import pytest
 
 from rdsclock.rds_blocks import differential_decode, find_groups_in_bitstream
 from rdsclock.rds_groups import encode_ps_groups, parse_groups
@@ -8,6 +9,7 @@ from rdsclock.synth import (
     DEFAULT_INTERMEDIATE_FS,
     RDS_CARRIER,
     add_awgn,
+    biphase_symbols,
     fm_modulate,
     make_mpx,
     modulate_rds,
@@ -18,6 +20,15 @@ from rdsclock.synth import (
 
 
 class TestBitstreamSynth:
+    def test_biphase_symbols_use_half_bit_chips(self):
+        bits = np.array([1, 0], dtype=np.uint8)
+        shaped = biphase_symbols(bits, samples_per_bit=4)
+        np.testing.assert_array_equal(shaped, [1, 1, -1, -1, -1, -1, 1, 1])
+
+    def test_biphase_symbols_require_even_samples_per_bit(self):
+        with pytest.raises(ValueError, match="even"):
+            biphase_symbols(np.array([1], dtype=np.uint8), samples_per_bit=3)
+
     def test_known_group_present(self):
         # Single group -> bits -> find it again
         ps = encode_ps_groups(pi=0xCAFE, ps_name="HELLO   ")
@@ -39,15 +50,20 @@ class TestBitstreamSynth:
 
 class TestSpectra:
     def test_rds_baseband_below_symbol_rate(self):
-        # Bits -> baseband. Energy should stay around 0..1187.5 Hz, not higher.
+        # Bits -> baseband. Biphase energy should stay around the chip-rate band.
         bits = np.array([0, 1, 0, 1, 0, 1, 0, 1] * 200, dtype=np.uint8)
         bb = rds_baseband(bits, fs=DEFAULT_INTERMEDIATE_FS)
         spec = np.abs(np.fft.rfft(bb))
         freqs = np.fft.rfftfreq(len(bb), 1.0 / DEFAULT_INTERMEDIATE_FS)
-        # Most energy below 2 kHz
-        below = np.sum(spec[freqs < 2000])
-        above = np.sum(spec[freqs >= 2000])
-        assert below > 5 * above
+        # Most energy below 3 kHz after the transmit shaping filter.
+        below = np.sum(spec[freqs < 3000])
+        above = np.sum(spec[freqs >= 3000])
+        assert below > 2 * above
+
+    def test_rds_baseband_requires_even_integer_samples_per_bit(self):
+        bits = np.array([0, 1], dtype=np.uint8)
+        with pytest.raises(ValueError, match="even"):
+            rds_baseband(bits, fs=RDS_CARRIER / 16, symbol_rate=RDS_CARRIER / 48)
 
     def test_modulator_peak_near_carrier(self):
         # After BPSK modulation, the band should be around 57 kHz.
