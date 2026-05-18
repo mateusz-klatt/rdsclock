@@ -160,7 +160,7 @@ def test_audio_play_file_complex64_and_u8_paths(tmp_path, monkeypatch):
     u8_path = tmp_path / "u8-ish.iq"
     np.full(512, 200 + 0j, dtype=np.complex64).tofile(u8_path)
     play_iq_file(str(u8_path), fs_in=50_000, fs_audio=48_000)
-    assert sd.play_calls[-1][1] == 2_000
+    assert sd.play_calls[-1][1] == 48_000
 
 
 def test_audio_play_file_keyboard_interrupt_stops(tmp_path, monkeypatch, capsys):
@@ -204,6 +204,31 @@ def test_audio_play_live_streams_until_keyboard_interrupt(
 
     assert expected_call in clients[0].calls
     assert sd.stream_writes
+    assert "Interrupted" in capsys.readouterr().out
+
+
+def test_audio_play_live_supports_rational_audio_rate(monkeypatch, capsys):
+    sd = _FakeSoundDevice()
+    clients: list[_FakeAudioClient] = []
+
+    class RecordingClient(_FakeAudioClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            clients.append(self)
+
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    monkeypatch.setattr("rdsclock.audio.RtlTcpClient", RecordingClient)
+
+    play_iq_live(
+        95.5,
+        fs_sdr=50_000,
+        fs_audio=48_000,
+        chunk_samples=256,
+    )
+
+    assert ("sample_rate", 50_000) in clients[0].calls
+    assert sd.stream_writes
+    assert sd.stream_writes[0].dtype == np.float32
     assert "Interrupted" in capsys.readouterr().out
 
 

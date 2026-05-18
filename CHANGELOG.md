@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-05-18
+
+### Fixed
+
+- FM audio extraction now supports rational SDR-to-audio sample-rate
+  ratios. The common rtl_tcp path of 250 kS/s input to 48 kHz audio
+  uses polyphase resampling after the existing audio low-pass stage,
+  while integer ratios keep the fast FIR decimation path.
+- Programme Service decoding now validates completed PS frames before
+  exposing them through `StationInfo.ps_name`. Dynamic-PS stations that
+  scroll text through Group 0A/0B no longer overwrite the displayed PS
+  with mixed fragments from different rotations.
+
+### Changed
+
+- `StationInfo.ps_name` and CLI displays may remain empty for the first
+  couple of PS rotations, and dynamic-PS stations may stay empty unless
+  the same 8-character frame is seen twice consecutively. Use
+  `StationInfo.latest_ps_candidate` for the latest complete unvalidated
+  PS frame.
+
 ## [0.2.1] — 2026-05-18
 
 ### Changed

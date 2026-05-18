@@ -10,7 +10,7 @@ audio sink is needed; the rest of the package works without it.
 """
 
 import numpy as np
-from scipy.signal import firwin, lfilter, lfilter_zi
+from scipy.signal import firwin, lfilter, lfilter_zi, resample_poly
 
 from .rtl_tcp import RtlTcpClient
 
@@ -33,12 +33,11 @@ def design_audio_filter(
 ) -> tuple[np.ndarray, int]:
     """Design the mono-audio LPF used during decimation from ``fs_in`` to ``fs_out``.
 
-    Returns ``(taps, decimation_factor)``. ``fs_in`` must be an integer
-    multiple of ``fs_out``.
+    Returns ``(taps, decimation_factor)``. Integer SDR/audio ratios return the
+    real decimation factor; rational ratios return ``1`` so callers can apply
+    polyphase resampling after the same low-pass stage.
     """
-    if fs_in % fs_out != 0:
-        raise ValueError(f"SDR sample rate ({fs_in}) must be a multiple of audio rate ({fs_out})")
-    decim = fs_in // fs_out
+    decim = fs_in // fs_out if fs_in % fs_out == 0 else 1
     nyq = fs_in / 2.0
     taps = firwin(numtaps=numtaps, cutoff=cutoff_hz / nyq).astype(np.float32)
     return taps, decim
@@ -53,13 +52,15 @@ def fm_audio_from_iq(
 ) -> np.ndarray:
     """Convert an IQ buffer into a mono audio float32 buffer at ``fs_out``.
 
-    Steps: FM phase demodulation → LPF (cutoff = ``cutoff_hz``) → decimation
-    to ``fs_out`` → optional peak normalisation to ±0.5 to avoid clipping.
+    Steps: FM phase demodulation → LPF (cutoff = ``cutoff_hz``) → rate
+    conversion to ``fs_out`` → optional peak normalisation to ±0.5 to avoid
+    clipping. Integer SDR/audio ratios use the fast FIR decimation path;
+    rational ratios use polyphase resampling after the same LPF stage.
     """
     taps, decim = design_audio_filter(fs_in, fs_out, cutoff_hz=cutoff_hz)
     fm = fm_demod(iq)
     audio, _ = lfilter(taps, 1.0, fm), None
-    audio = audio[::decim]
+    audio = audio[::decim] if fs_in % fs_out == 0 else resample_poly(audio, fs_out, fs_in)
     if normalise:
         peak = float(np.max(np.abs(audio)) + 1e-6)
         audio = (audio / peak) * 0.5
@@ -88,8 +89,10 @@ def play_iq_live(
         ) from exc
 
     chunk_samples = chunk_samples or fs_sdr // 10  # 100 ms per block
-    taps, decim = design_audio_filter(fs_sdr, fs_audio)
-    zi = lfilter_zi(taps, 1.0)
+    integer_decim = fs_sdr % fs_audio == 0
+    if integer_decim:
+        taps, decim = design_audio_filter(fs_sdr, fs_audio)
+        zi = lfilter_zi(taps, 1.0)
 
     sd.default.samplerate = fs_audio
     sd.default.channels = 1
@@ -117,11 +120,14 @@ def play_iq_live(
             try:
                 while True:
                     iq = client.read_iq(chunk_samples, settle_s=0.0)
-                    fm = fm_demod(iq)
-                    audio, zi = lfilter(taps, 1.0, fm, zi=zi)
-                    audio = audio[::decim]
-                    peak = float(np.max(np.abs(audio)) + 1e-6)
-                    audio = (audio / peak) * 0.5
+                    if integer_decim:
+                        fm = fm_demod(iq)
+                        audio, zi = lfilter(taps, 1.0, fm, zi=zi)
+                        audio = audio[::decim]
+                        peak = float(np.max(np.abs(audio)) + 1e-6)
+                        audio = (audio / peak) * 0.5
+                    else:
+                        audio = fm_audio_from_iq(iq, fs_in=fs_sdr, fs_out=fs_audio)
                     stream.write(audio.astype("float32"))
             except KeyboardInterrupt:
                 print("\nInterrupted by operator (Ctrl+C).")
@@ -151,20 +157,7 @@ def play_iq_file(
     if len(iq) == 0 or np.max(np.abs(iq[:1000])) > 100:
         iq = dsp.read_iq_u8(path)
 
-    # If the file was captured at the standard 250 kS/s, decimate by 5 to
-    # reach 50 kS/s, then by ~1.04 to 48 kHz. We keep it simple: design a
-    # filter using a chosen integer ratio and accept whatever audio rate
-    # the file allows.
-    if fs_in % fs_audio == 0:
-        audio = fm_audio_from_iq(iq, fs_in=fs_in, fs_out=fs_audio)
-    else:
-        # Fall back: drop to the largest fs_audio divisor of fs_in.
-        from math import gcd
-
-        target = gcd(fs_in, fs_audio)
-        audio = fm_audio_from_iq(iq, fs_in=fs_in, fs_out=target)
-        fs_audio = target
-
+    audio = fm_audio_from_iq(iq, fs_in=fs_in, fs_out=fs_audio)
     duration_s = len(audio) / fs_audio
     print(f"Playing {path}: {duration_s:.1f}s of audio @ {fs_audio} Hz (Ctrl+C to stop)…")
     try:
