@@ -27,16 +27,37 @@ Passive receiver workflow:
 # 1. Start rtl_tcp on the host that has the dongle
 rtl_tcp -a 127.0.0.1 -p 1234
 
-# 2. Scan the band for stations broadcasting RDS Clock-Time
+# 2. Scan the band for stations broadcasting RDS Clock-Time (~17 min for the
+#    full FM band at 30 s per channel — long enough to catch most PS rotations).
 rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
 
-# 3. Continuous passive time consensus — picks up Group 4A from the scanned stations
-rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 30 --iterations 3
+# 3. Continuous passive time consensus across an explicit set of known
+#    CT-broadcasting stations. Use HOP mode when the stations are spread
+#    further than ~2 MHz apart (any single-dongle FM band picks of public
+#    radio fit this case).
+rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 60 --iterations 3
 
-# 4. (Optional) full multi-station baseline recording
-rdsclock multi --freqs 91.0,98.8,102.4 --mode hop --duration 300 \
-  --save eter/baseline.iq
+# 4. WIDE mode — three stations decoded synchronously from one capture.
+#    Requires that all frequencies fit within fs (2.4 MS/s default → ~2 MHz
+#    span). Two CT-broadcasting stations + one bonus station fit this slot
+#    in Warsaw: Polskie Radio Jedynka 102.4 + Radio Kolor 103.0 + Rock
+#    Radio 103.7 (centre 103.05 MHz, span 1.3 MHz).
+rdsclock multi --freqs 102.4,103.0,103.7 --mode wide --fs 2400000 \
+  --duration 60 --save eter/wide-103.iq
+# Each 60 s of 2.4 MS/s complex64 capture is ~2 GB in memory. Keep
+# duration modest if your host is RAM-constrained — recon mode is
+# the right tool for long-running observations.
+
+# 5. HOP mode — multi-station baseline that does NOT need them adjacent.
+#    Useful for the strongest CT broadcasters in Warsaw:
+rdsclock multi --freqs 91.0,94.0,96.5,98.3,98.8,102.4,103.7,107.5 \
+  --mode hop --duration 60 --save eter/hop-warsaw.iq
 ```
+
+> **Known CT-broadcasting stations in Warsaw (verified May 2026):** 91.0 RMF FM,
+> 94.0 Meloradio, 96.5 Radio Plus, 98.3 RMF Classic, 98.8 PR Trójka, 102.4 PR
+> Jedynka, 103.7 Rock Radio, 107.5 Radio ZET. Other stations broadcast RDS PS
+> but not Group 4A (commercial / religious stations frequently omit CT).
 
 Python API:
 
@@ -140,8 +161,11 @@ RTL-SDR ppm drift. Reproduce either figure with:
 rdsclock generate build/test.iq --snr 30
 rdsclock plot build/test.iq --out spectrum.png      # needs the [plot] extra
 
-# From your own local capture (no broadcast content shared, plot only)
-rdsclock live --freq 89.0 --duration 30 --save build/local.iq
+# From your own local capture (no broadcast content shared, plot only).
+# Pick any strong local FM frequency — the frequency below is illustrative,
+# not a station recommendation. Public-radio frequencies generally broadcast
+# RDS Clock-Time more reliably than commercial / religious channels.
+rdsclock live --freq 102.4 --duration 30 --save build/local.iq
 rdsclock plot build/local.iq --out spectrum.png
 ```
 

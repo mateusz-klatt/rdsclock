@@ -28,15 +28,36 @@ Przepływ pracy pasywnego odbiornika czasu:
 rtl_tcp -a 127.0.0.1 -p 1234
 
 # 2. Skan pasma w poszukiwaniu stacji nadających RDS Clock-Time
+#    (~17 min dla całego pasma FM przy 30 s na kanał — wystarcza,
+#    by uchwycić większość rotacji PS).
 rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
 
-# 3. Ciągły pasywny konsensus czasu — zbiera Group 4A ze stacji znalezionych w skanie
-rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 30 --iterations 3
+# 3. Ciągły pasywny konsensus czasu z jawnej listy stacji nadających CT.
+#    Tryb HOP — gdy stacje są rozsiane szerzej niż ~2 MHz (typowe dla
+#    publicznych stacji FM w jednym mieście).
+rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 60 --iterations 3
 
-# 4. (Opcjonalnie) wielostacyjne nagranie odniesieniowe
-rdsclock multi --freqs 91.0,98.8,102.4 --mode hop --duration 300 \
-  --save eter/baseline.iq
+# 4. Tryb WIDE — trzy stacje dekodowane synchronicznie z jednej kapsuły.
+#    Wymaga, by wszystkie częstotliwości mieściły się w fs (domyślnie
+#    2.4 MS/s → ~2 MHz spread). W Warszawie pasują: Polskie Radio Jedynka
+#    102.4 + Radio Kolor 103.0 + Rock Radio 103.7 (centrum 103.05 MHz,
+#    spread 1.3 MHz — dwie stacje z CT plus jedna z RDS).
+rdsclock multi --freqs 102.4,103.0,103.7 --mode wide --fs 2400000 \
+  --duration 60 --save eter/wide-103.iq
+# Każde 60 s nagrania 2.4 MS/s complex64 to ~2 GB pamięci RAM. Trzymaj
+# krótki czas trwania jeśli host ma ograniczoną pamięć — do długotrwałych
+# obserwacji służy tryb recon.
+
+# 5. Tryb HOP — wielostacyjna baseline na rozproszonych częstotliwościach.
+#    Lista najsilniejszych stacji warszawskich nadających CT:
+rdsclock multi --freqs 91.0,94.0,96.5,98.3,98.8,102.4,103.7,107.5 \
+  --mode hop --duration 60 --save eter/hop-warsaw.iq
 ```
+
+> **Stacje warszawskie nadające RDS Clock-Time (zweryfikowane maj 2026):** 91.0 RMF FM,
+> 94.0 Meloradio, 96.5 Radio Plus, 98.3 RMF Classic, 98.8 PR Trójka, 102.4 PR
+> Jedynka, 103.7 Rock Radio, 107.5 Radio ZET. Inne stacje nadają RDS PS, ale
+> nie nadają Group 4A (stacje komercyjne i religijne często pomijają CT).
 
 API Pythona:
 
@@ -139,8 +160,11 @@ odbiorników RTL-SDR. Każdy z wykresów można odtworzyć poleceniami:
 rdsclock generate build/test.iq --snr 30
 rdsclock plot build/test.iq --out spectrum.png      # wymaga rozszerzenia [plot]
 
-# Z własnego nagrania lokalnego (bez udostępniania treści — sam wykres)
-rdsclock live --freq 89.0 --duration 30 --save build/local.iq
+# Z własnego nagrania lokalnego (bez udostępniania treści — sam wykres).
+# Częstotliwość jest tylko przykładem — wybierz dowolną silną stację FM
+# w swojej lokalizacji. Stacje publiczne na ogół częściej nadają RDS
+# Clock-Time niż komercyjne / religijne.
+rdsclock live --freq 102.4 --duration 30 --save build/local.iq
 rdsclock plot build/local.iq --out spectrum.png
 ```
 
