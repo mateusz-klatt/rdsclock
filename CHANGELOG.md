@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-05-18
+
+### Added
+
+- Polish README (`README.pl.md`) translated as a neutral technical document
+  with the same structure, diagrams, and command/API examples as the English
+  README.
+- Bilingual README cross-reference links at the top of both README files.
+- `tools/benchmark.py --check FILE.json`, a regression gate that fails on
+  lower per-station group counts, changed stable PI codes, or per-station
+  decode-time increases above 50%.
+- Public top-level imports for the supported API:
+  `decode_file`, `decode_iq`, `DecodeResult`, `ClockTime`, `StationInfo`,
+  `TimeConsensus`, and `SubSecondEstimate`.
+
+### Changed
+
+- API surface frozen at 1.0.0 (`from rdsclock import ...`). Internal helpers
+  under `rdsclock.*` modules may still change; the top-level `__all__` is the
+  support contract.
+- README quick start now documents the complete passive time-receiver path:
+  `rtl_tcp`, band scan, continuous `recon` consensus, optional multi-station
+  baseline recording, and the Python sub-second consensus API.
+- Package metadata now marks the project as
+  `Development Status :: 5 - Production/Stable`.
+
+### Release Line Summary
+
+- 0.1.0–0.1.2 established the synthetic baseline: the package generated and
+  decoded its own IQ reliably, but the initial line was broken on real
+  broadcasts because both synth and decoder used the same non-RDS coding
+  assumption.
+- 0.2.0 fixed the real-broadcast decoder by moving to proper biphase
+  (Manchester) handling.
+- 0.2.1 delivered the decoder hot-path optimisation, about a 7× speedup on
+  the baseline IQ corpus while preserving group counts and PI codes.
+- 0.2.2 added FM audio extraction and validated Programme Service handling so
+  dynamic-PS rotations no longer overwrite the displayed PS with mixed frames.
+- 0.3.0 added fault-tolerant block sync with conservative single-bit syndrome
+  correction and explicit clean/corrected group counters.
+- 0.4.0 added sub-second receive timestamping, pilot-derived bit-rate drift
+  correction, and multi-station sub-second consensus.
+- 1.0.0 stabilises the public API, adds the Polish README, documents the
+  release demo path, and locks benchmark thresholds for future regression
+  checks.
+
 ## [0.4.0] — 2026-05-18
 
 ### Added

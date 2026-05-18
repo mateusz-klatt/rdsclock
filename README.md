@@ -1,3 +1,5 @@
+> 🇵🇱 Polska wersja: [`README.pl.md`](README.pl.md)
+
 # rdsclock — Passive RDS Clock-Time Receiver
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -19,27 +21,42 @@ time estimate with an explicit uncertainty.
 
 ## Quick Start
 
+Passive receiver workflow:
+
 ```bash
-make setup            # creates .venv and installs the package (editable)
-make test             # runs the unit and integration test suite
-make demo             # synthetic 3-station multi-channel showcase (no SDR)
-make recon-offline    # replay recon over eter/ recordings
-make recon            # passive recon LIVE with an RTL-SDR
+# 1. Start rtl_tcp on the host that has the dongle
+rtl_tcp -a 127.0.0.1 -p 1234
+
+# 2. Scan the band for stations broadcasting RDS Clock-Time
+rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
+
+# 3. Continuous passive time consensus — picks up Group 4A from the scanned stations
+rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 30 --iterations 3
+
+# 4. (Optional) full multi-station baseline recording
+rdsclock multi --freqs 91.0,98.8,102.4 --mode hop --duration 300 \
+  --save eter/baseline.iq
 ```
 
-All sub-commands are also available through the CLI:
+Python API:
 
-```bash
-rdsclock generate build/test.iq --time 2026-05-17T12:00 --snr 25
-rdsclock decode build/test.iq -v
-rdsclock live --freq 95.5 --duration 10
-rdsclock multi --freqs 92.0,98.3,106.8 --mode auto
-rdsclock recon --start 87.5 --end 108.0 --max-stations 5
-rdsclock scan --start 87.5 --end 108 --step 0.1
-rdsclock play --freq 102.4                       # live FM audio (needs [audio] extra)
-rdsclock play --file build/capture.iq --fs 250000
-rdsclock plot build/capture.iq --out spec.png    # MPX spectrum (needs [plot] extra)
-rdsclock plot wide.iq --kind waterfall --fs 2400000
+```python
+from rdsclock.decoder import decode_file
+from rdsclock.time_consensus import TimeConsensus
+
+# Offline: decode a captured IQ file
+result = decode_file("eter/baseline-20260518-035918/live-102.4MHz-300s.iq", fs=250_000)
+print(f"PI {result.info.pi:#06x}  PS {result.info.ps_name!r}")
+print(f"Clock times observed: {len(result.info.clock_times)}")
+for ct in result.info.clock_times:
+    print(f"  {ct}  rx={ct.rx_monotonic_ns} ns")
+
+# Sub-second consensus (requires multiple stations with rx_monotonic_ns set)
+tc = TimeConsensus()
+# … feed observations from multiple stations …
+est = tc.sub_second_consensus()
+if est is not None:
+    print(f"Consensus UTC: {est.utc} (±{est.precision_ms:.0f} ms across {est.station_count} stations)")
 ```
 
 Optional dependency groups (install with `pip install 'rdsclock[audio]'` etc.):
@@ -195,16 +212,6 @@ for environments where:
    the most recent CT.
 7. **Operator display** — `UTC 2026-05-17 04:23:18  ±2s  N=3  trust=HIGH`.
 
-### Quick Run
-
-```bash
-# Live
-rdsclock recon --start 87.5 --end 108 --max-stations 5 --rescan-min 10
-
-# Offline (no SDR, replays recordings or any directory of .iq files)
-rdsclock recon --from-dir eter/
-```
-
 See `docs/operator-quickstart.md` for an operator-oriented walkthrough
 and `docs/THREAT_MODEL.md` for the security threat model.
 
@@ -235,18 +242,18 @@ the local antenna picks up.
 
 ## Status
 
-- **0.4.0** — current release. Decoded Clock-Time values now include
-  optional receive timestamp metadata on the host monotonic clock, using
-  group bit positions plus pilot-derived bit-rate drift correction. A
-  parallel sub-second consensus path can learn per-station Group 4A
-  transmit latency across multiple stations. Expected UTC precision is
-  about 30-80 ms with a healthy NTP-disciplined host and about
-  100-250 ms in a 3+ station field demo without internet; this is not
-  a hardware-time-source claim. Pre-1.0; the CLI and on-disk formats may
-  still change.
-- 240+ tests including a real-IQ regression backed by a 6 s capture
-  of Polskie Radio Trójka 98.8 from Warsaw; line coverage **100 %**
-  (tracked by SonarCloud).
+- **1.0.0** — first stable release. The top-level public API is frozen
+  at `from rdsclock import ...`; internal module helpers may still change.
+- Real-IQ regression coverage and `tools/benchmark.py --check` provide a
+  release gate against group-count, PI-code, and decode-time regressions.
+- Multi-station sub-second consensus is available through
+  `TimeConsensus.sub_second_consensus()` when observations carry
+  `rx_monotonic_ns` receive timestamps.
+- Precision claims are intentionally bounded: see the
+  [0.4.0 changelog entry](CHANGELOG.md#040--2026-05-18) for the receive
+  timestamping model and expected UTC precision ranges.
+- 240+ tests including real-IQ regression coverage; line coverage
+  **100 %** (tracked by SonarCloud).
 
 ## Legal Note
 
