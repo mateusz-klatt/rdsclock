@@ -23,8 +23,7 @@ def test_trojka_98p8_real_iq_decodes_groups_and_polskie_radio_pi():
     assert result.n_groups_clean + result.n_groups_corrected == result.n_groups
     assert result.n_groups_clean + result.n_groups_corrected >= 30
     assert result.n_groups_corrected < result.n_groups_clean * 0.5
-    assert result.info.pi is not None
-    assert (result.info.pi & 0xFF00) == 0x3200
+    assert result.info.pi == 0x3233
 
 
 @pytest.mark.integration

@@ -13,7 +13,7 @@ Supported types:
     4A       — Clock-Time
 """
 
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,13 +23,16 @@ from .rds_clock import ClockTime, decode_clock_time, encode_clock_time
 
 PS_LEN = 8
 RT_LEN = 64
+PI_CONFIRMATION_THRESHOLD = 3
 
 
 @dataclass
 class StationInfo:
     """Accumulator for fields decoded from many RDS groups of one station."""
 
-    pi: int | None = None
+    _pi_counts: Counter[int] = field(default_factory=Counter, init=False, repr=False)
+    first_pi: int | None = field(default=None, init=False)
+    pi: int | None = field(default=None, repr=False)
     pty: int | None = None
     ps_chars: list[str] = field(default_factory=lambda: [" "] * PS_LEN)
     _ps_candidate: list[str] = field(default_factory=lambda: [" "] * PS_LEN)
@@ -76,6 +79,23 @@ class StationInfo:
         return self.clock_times[-1] if self.clock_times else None
 
 
+def _station_info_get_pi(info: StationInfo) -> int | None:
+    if not info._pi_counts:
+        return None
+    most_common, count = info._pi_counts.most_common(1)[0]
+    return most_common if count >= PI_CONFIRMATION_THRESHOLD else None
+
+
+def _station_info_set_pi(info: StationInfo, value: int | None) -> None:
+    info._pi_counts.clear()
+    info.first_pi = value
+    if value is not None:
+        info._pi_counts[value] = PI_CONFIRMATION_THRESHOLD
+
+
+StationInfo.pi = property(_station_info_get_pi, _station_info_set_pi)  # type: ignore[assignment]
+
+
 def _safe_char(byte: int) -> str:
     """Decode a single RDS character byte.
 
@@ -98,7 +118,9 @@ def parse_group(
     ``info`` to enable chaining."""
     a, b, c, d = group_bytes_to_words(group_bytes)
 
-    info.pi = a if info.pi is None else info.pi  # first PI wins
+    if info.first_pi is None:
+        info.first_pi = a
+    info._pi_counts[a] += 1
     group_type = (b >> 12) & 0xF
     version = (b >> 11) & 0x1  # bit selects group version A or B
     info.pty = (b >> 5) & 0x1F if info.pty is None else info.pty

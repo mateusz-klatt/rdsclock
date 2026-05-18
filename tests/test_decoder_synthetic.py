@@ -11,6 +11,7 @@ import pytest
 
 from rdsclock import decoder as decoder_module
 from rdsclock import dsp
+from rdsclock.cli import _trim_settle_iq
 from rdsclock.decoder import decode_iq
 from rdsclock.rds_groups import encode_group_4a, encode_ps_groups
 from rdsclock.synth import DEFAULT_FS, synthesize_fm_iq
@@ -63,6 +64,42 @@ def test_roundtrip_with_carrier_offset():
     ct = result.info.latest_clock
     assert ct is not None
     assert ct.utc == expected
+
+
+def test_settle_trim_crossfade_rejects_previous_station_pi():
+    fs = DEFAULT_FS
+    n_full_a = int(round(0.5 * fs))
+    n_fade = int(round(0.5 * fs))
+    n_clean_b = int(round(4.5 * fs))
+    station_a = encode_ps_groups(pi=0x1111, ps_name="STNA    ")
+    station_b = encode_ps_groups(pi=0x2222, ps_name="STNB    ")
+    iq_a = synthesize_fm_iq(
+        station_a,
+        duration_s=(n_full_a + n_fade) / fs,
+        fs=fs,
+        snr_db=None,
+    )
+    iq_b = synthesize_fm_iq(
+        station_b,
+        duration_s=(n_fade + n_clean_b) / fs,
+        fs=fs,
+        snr_db=None,
+    )
+    fade_out = np.linspace(1.0, 0.0, n_fade, endpoint=False, dtype=np.float32)
+    fade_in = 1.0 - fade_out
+    iq = np.concatenate(
+        [
+            iq_a[:n_full_a],
+            iq_a[n_full_a:] * fade_out + iq_b[:n_fade] * fade_in,
+            iq_b[n_fade : n_fade + n_clean_b],
+        ]
+    ).astype(np.complex64)
+
+    iq_decode, n_trimmed = _trim_settle_iq(iq, fs, settle_seconds=2.0)
+    result = decode_iq(iq_decode, fs=fs)
+
+    assert n_trimmed == int(round(2.0 * fs))
+    assert result.info.pi == 0x2222
 
 
 def test_pipeline_returns_diagnostics():

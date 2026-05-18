@@ -49,9 +49,14 @@ rdsclock multi --freqs 102.4,103.0,103.7 --mode wide --fs 2400000 \
 # obserwacji służy tryb recon.
 
 # 5. Tryb HOP — wielostacyjna baseline na rozproszonych częstotliwościach.
-#    Lista najsilniejszych stacji warszawskich nadających CT:
-rdsclock multi --freqs 91.0,94.0,96.5,98.3,98.8,102.4,103.7,107.5 \
-  --mode hop --duration 60 --save eter/hop-warsaw.iq
+#    Sześć stacji wysokiej mocy z CT, deterministycznie dekodowanych
+#    z różnych dzielnic Warszawy na standardowym odbiorniku RTL2838.
+#    Całkowity czas: 6 × 90 s ≈ 9 min.
+#    Pierwsze 3.0 s po każdym przestrojeniu jest domyślnie ucinane
+#    (--settle-seconds 3.0), aby pominąć stabilizację PLL/AGC/Costasa.
+#    Obniż, jeśli twój tuner stabilizuje się szybciej.
+rdsclock multi --freqs 91.0,94.0,96.5,98.8,102.4,107.5 \
+  --mode hop --duration 90 --save eter/hop-warsaw.iq
 ```
 
 > **Stacje warszawskie nadające RDS Clock-Time (zweryfikowane maj 2026):** 91.0 RMF FM,

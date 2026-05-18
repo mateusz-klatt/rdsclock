@@ -24,7 +24,8 @@ class TestPsParsing:
         g = encode_group_0a(pi=0xABCD, ps_segment_index=0, ps_chars="RM")
         info = StationInfo()
         parse_group(g, info)
-        assert info.pi == 0xABCD
+        assert info.first_pi == 0xABCD
+        assert info.pi is None
         assert info.ps_name == ""
         assert info.latest_ps_candidate == ""
 
@@ -100,11 +101,30 @@ class TestCtParsing:
         g = encode_group_4a(pi=0xCAFE, clock_time_local=dt)
         info = StationInfo()
         parse_group(g, info)
-        assert info.pi == 0xCAFE
+        assert info.first_pi == 0xCAFE
+        assert info.pi is None
         assert info.clock_times
         ct = info.latest_clock
         assert ct is not None
         assert ct.utc == dt
+
+    def test_pi_is_dominant_after_three_observations(self):
+        dt = datetime(2026, 5, 16, 14, 30, tzinfo=UTC)
+        station_a = encode_group_4a(pi=0x1111, clock_time_local=dt)
+        station_b = encode_group_4a(pi=0x2222, clock_time_local=dt)
+        info = parse_groups([station_a, station_b, station_b, station_b])
+
+        assert info.first_pi == 0x1111
+        assert info.pi == 0x2222
+
+    def test_seeded_pi_compatibility_and_clear(self):
+        info = StationInfo(pi=0xCAFE)
+        assert info.first_pi == 0xCAFE
+        assert info.pi == 0xCAFE
+
+        info.pi = None
+        assert info.first_pi is None
+        assert info.pi is None
 
     def test_local_offset(self):
         tz = timezone(timedelta(minutes=120))

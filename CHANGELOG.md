@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-05-18
+
+### Fixed
+
+- HOP-mode retunes no longer let the previous station's PI contaminate the
+  next station. `rdsclock multi --mode hop` now trims the first 2.0 seconds
+  from each per-station capture before decoding, skipping RTL-SDR PLL, AGC,
+  and Costas-loop settling after every retune. `rdsclock live` applies the
+  same default trim for single-station captures.
+- `StationInfo.pi` now reports the dominant PI code after at least three
+  valid block-A observations instead of the first PI ever seen. The first
+  observed PI remains available as `StationInfo.first_pi` for callers that
+  need the old diagnostic value.
+
+### Added
+
+- New `--settle-seconds FLOAT` CLI option for `rdsclock live` and HOP-mode
+  `rdsclock multi`, defaulting to `2.0`.
+
 ## [1.0.0] — 2026-05-18
 
 ### Added

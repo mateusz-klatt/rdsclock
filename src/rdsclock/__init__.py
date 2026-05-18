@@ -24,7 +24,7 @@ from .rds_clock import ClockTime
 from .rds_groups import StationInfo
 from .time_consensus import SubSecondEstimate, TimeConsensus
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __all__ = [
     "__version__",
