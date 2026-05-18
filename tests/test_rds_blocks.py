@@ -10,6 +10,8 @@ from rdsclock.rds_blocks import (
     OFFSET_C,
     OFFSET_C_PRIME,
     OFFSETS,
+    _bits_to_words_26,
+    _crc10_many,
     bits_to_word,
     block_dataword,
     block_valid,
@@ -23,6 +25,19 @@ from rdsclock.rds_blocks import (
     group_bytes_to_words,
     group_words_to_bytes,
 )
+
+
+def _crc10_reference(dataword: int) -> int:
+    reg = 0
+    for i in range(DATA_BITS - 1, -1, -1):
+        reg = (reg << 1) | ((dataword >> i) & 1)
+        if reg & (1 << 10):
+            reg ^= 0x5B9 | (1 << 10)
+    for _ in range(10):
+        reg <<= 1
+        if reg & (1 << 10):
+            reg ^= 0x5B9 | (1 << 10)
+    return reg & ((1 << 10) - 1)
 
 
 class TestCrc10:
@@ -44,6 +59,16 @@ class TestCrc10:
         a = crc10(0x1234)
         b = crc10(0x1235)
         assert a != b
+
+    def test_matches_shift_register_for_full_u16_space(self):
+        expected = np.fromiter(
+            (_crc10_reference(v) for v in range(1 << DATA_BITS)),
+            dtype=np.uint16,
+            count=1 << DATA_BITS,
+        )
+        actual = _crc10_many(np.arange(1 << DATA_BITS, dtype=np.uint32))
+        np.testing.assert_array_equal(actual, expected)
+        assert crc10(0x1FFFF) == int(expected[-1])
 
 
 class TestEncodeBlock:
@@ -116,6 +141,14 @@ class TestBitstream:
         bits = [1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0]
         assert bits_to_word(bits) == 0xCCCC
 
+    def test_bits_to_word_26_uses_vectorized_weights(self):
+        bits = np.array(
+            [1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1],
+            dtype=np.uint8,
+        )
+        assert bits_to_word(bits) == 0b10110010101011100101101001
+        np.testing.assert_array_equal(_bits_to_words_26(bits[None, :]), [bits_to_word(bits)])
+
     def test_find_groups_in_clean_bitstream(self):
         # Encode 3 groups with different data, then find them all.
         all_blocks = []
@@ -151,6 +184,9 @@ class TestBitstream:
         for g in groups:
             a, _, _, _ = group_bytes_to_words(g)
             assert a in (0xBABE, 0xCAFE)
+
+    def test_find_groups_short_stream_returns_empty(self):
+        assert find_groups_in_bitstream(np.zeros(GROUP_BITS - 1, dtype=np.uint8)) == []
 
 
 class TestDifferential:

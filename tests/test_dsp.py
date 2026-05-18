@@ -78,6 +78,19 @@ class TestCostas:
         # After a short transient, the signal still has constant phase
         assert np.max(np.abs(np.imag(out[20:]))) < 1.0
 
+    def test_python_fallback_matches_public_wrapper(self, monkeypatch):
+        samples = np.array([1 + 0j, 0.5 + 0.2j, -1 + 0.1j], dtype=np.complex64)
+        monkeypatch.setattr(dsp, "_COSTAS_LOOP_BPSK_NUMBA", None)
+        wrapper = dsp.costas_loop_bpsk(samples, alpha=0.1, beta=0.002)
+        direct = dsp._costas_loop_bpsk_python(samples, alpha=0.1, beta=0.002)
+        np.testing.assert_array_equal(wrapper, direct)
+
+    def test_python_fallback_wraps_phase_both_directions(self):
+        positive = np.array([1 + 1j, 1 + 0j], dtype=np.complex64)
+        negative = np.array([1 - 1j, 1 + 0j], dtype=np.complex64)
+        assert dsp._costas_loop_bpsk_python(positive, alpha=4.0, beta=0.0).shape == positive.shape
+        assert dsp._costas_loop_bpsk_python(negative, alpha=4.0, beta=0.0).shape == negative.shape
+
 
 class TestBiphaseRecovery:
     def test_agc_normalizes_mean_magnitude(self):
