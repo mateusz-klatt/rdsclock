@@ -9,6 +9,7 @@ Run from the repository root with the editable install active:
 
     .venv/bin/python scripts/night_recorder.py
 """
+
 import os
 import time
 from datetime import datetime
