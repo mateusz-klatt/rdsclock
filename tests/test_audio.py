@@ -41,9 +41,10 @@ class TestDesignAudioFilter:
         assert taps.dtype == np.float32
         assert len(taps) == 129  # default numtaps
 
-    def test_rejects_non_integer_ratio(self):
-        with pytest.raises(ValueError):
-            design_audio_filter(1_000_000, 48_000)
+    def test_non_integer_ratio_returns_filter_without_decimation(self):
+        taps, decim = design_audio_filter(1_000_000, 48_000)
+        assert decim == 1
+        assert taps.dtype == np.float32
 
 
 class TestFmAudioFromIq:
@@ -64,6 +65,18 @@ class TestFmAudioFromIq:
         assert abs(len(audio) - expected_len) <= 1
         # Normalisation pushes peak to 0.5.
         assert np.max(np.abs(audio)) == pytest.approx(0.5, rel=0.01)
+
+    def test_rational_resampling_ratio_succeeds(self):
+        fs_in = 250_000
+        fs_out = 48_000
+        n = np.arange(fs_in // 10)
+        iq = np.exp(1j * 2 * np.pi * 1_000 * n / fs_in).astype(np.complex64)
+
+        audio = fm_audio_from_iq(iq, fs_in=fs_in, fs_out=fs_out)
+
+        expected_len = len(iq) * fs_out / fs_in
+        assert abs(len(audio) - expected_len) <= 2
+        assert audio.dtype == np.float32
 
     def test_skip_normalisation(self):
         fs_in = 1_200_000

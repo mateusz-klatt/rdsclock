@@ -14,29 +14,79 @@ from rdsclock.rds_groups import (
 )
 
 
+def _validated_ps_groups(pi: int, ps_name: str) -> list[bytearray]:
+    groups = encode_ps_groups(pi=pi, ps_name=ps_name)
+    return groups + groups
+
+
 class TestPsParsing:
     def test_single_segment(self):
         g = encode_group_0a(pi=0xABCD, ps_segment_index=0, ps_chars="RM")
         info = StationInfo()
         parse_group(g, info)
         assert info.pi == 0xABCD
-        assert info.ps_name == "RM"
+        assert info.ps_name == ""
+        assert info.latest_ps_candidate == ""
 
     def test_all_segments(self):
-        groups = encode_ps_groups(pi=0x3F44, ps_name="RMF FM  ")
+        groups = _validated_ps_groups(pi=0x3F44, ps_name="RMF FM  ")
         info = parse_groups(groups)
         assert info.pi == 0x3F44
         assert info.ps_name == "RMF FM"
+        assert info.validated_ps_name == "RMF FM"
+        assert info.latest_ps_candidate == "RMF FM  "
 
     def test_short_name_padded(self):
-        groups = encode_ps_groups(pi=0x1234, ps_name="ABC")
+        groups = _validated_ps_groups(pi=0x1234, ps_name="ABC")
         info = parse_groups(groups)
         assert info.ps_name == "ABC"
 
     def test_full_eight_chars(self):
-        groups = encode_ps_groups(pi=0x4321, ps_name="RadioZET")
+        groups = _validated_ps_groups(pi=0x4321, ps_name="RadioZET")
         info = parse_groups(groups)
         assert info.ps_name == "RadioZET"
+
+    def test_single_rotation_is_only_latest_candidate(self):
+        groups = encode_ps_groups(pi=0x3001, ps_name="JEDYNKA ")
+        info = parse_groups(groups)
+        assert info.ps_name == ""
+        assert info.latest_ps_candidate == "JEDYNKA "
+        assert info._ps_stable_count == 1
+
+    def test_static_ps_validates_after_two_rotations(self):
+        groups = _validated_ps_groups(pi=0x3001, ps_name="JEDYNKA ")
+        info = parse_groups(groups)
+        assert info.ps_name == "JEDYNKA"
+        assert info.validated_ps_name == "JEDYNKA"
+        assert info.latest_ps_candidate == "JEDYNKA "
+
+    def test_dynamic_ps_requires_consecutive_matching_completions(self):
+        plus = encode_ps_groups(pi=0x3002, ps_name="+PLUS+  ")
+        web = encode_ps_groups(pi=0x3002, ps_name="WWW.RPL ")
+        info = parse_groups(plus + web + plus)
+        assert info.ps_name == ""
+        assert info.latest_ps_candidate == "+PLUS+  "
+        assert info._ps_stable_count == 1
+
+        for group in plus:
+            parse_group(group, info)
+
+        assert info.ps_name == "+PLUS+"
+        assert info.latest_ps_candidate == "+PLUS+  "
+        assert list(info._ps_history) == ["+PLUS+  ", "WWW.RPL ", "+PLUS+  ", "+PLUS+  "]
+
+    def test_duplicate_segment_does_not_overwrite_candidate_rotation(self):
+        groups = [
+            encode_group_0a(pi=0x3003, ps_segment_index=0, ps_chars="JE"),
+            encode_group_0a(pi=0x3003, ps_segment_index=0, ps_chars="XX"),
+            encode_group_0a(pi=0x3003, ps_segment_index=1, ps_chars="DY"),
+            encode_group_0a(pi=0x3003, ps_segment_index=2, ps_chars="NK"),
+            encode_group_0a(pi=0x3003, ps_segment_index=3, ps_chars="A "),
+        ]
+        info = parse_groups(groups + groups)
+        assert info.ps_name == "JEDYNKA"
+        assert info.latest_ps_candidate == "JEDYNKA "
+        assert info._ps_segments_seen == 0
 
     def test_group_count(self):
         groups = encode_ps_groups(pi=0x1111, ps_name="HELLO   ")

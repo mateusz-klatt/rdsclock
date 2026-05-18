@@ -35,7 +35,7 @@ class TestBitstreamSynth:
         bits = rds_groups_to_bits(ps, differential=False)  # no differential coding for simplicity
         groups = find_groups_in_bitstream(bits)
         assert len(groups) >= len(ps)
-        info = parse_groups(groups[: len(ps)])
+        info = parse_groups(groups[: len(ps)] + groups[: len(ps)])
         assert info.pi == 0xCAFE
         assert info.ps_name == "HELLO"
 

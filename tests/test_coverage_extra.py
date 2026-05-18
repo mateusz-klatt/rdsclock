@@ -171,7 +171,7 @@ class TestAudioPlaybackCoverage:
         ):
             audio.play_iq_file("recording.iq", fs_in=250_000, fs_audio=48_000)
 
-        fm_audio_from_iq.assert_called_once_with(iq, fs_in=250_000, fs_out=2_000)
+        fm_audio_from_iq.assert_called_once_with(iq, fs_in=250_000, fs_out=48_000)
         sd_stop.assert_called_once()
 
 

@@ -13,6 +13,7 @@ Supported types:
     4A       — Clock-Time
 """
 
+from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,6 +32,10 @@ class StationInfo:
     pi: int | None = None
     pty: int | None = None
     ps_chars: list[str] = field(default_factory=lambda: [" "] * PS_LEN)
+    _ps_candidate: list[str] = field(default_factory=lambda: [" "] * PS_LEN)
+    _ps_segments_seen: int = 0
+    _ps_history: deque[str] = field(default_factory=lambda: deque(maxlen=4))
+    _ps_stable_count: int = 0
     rt_chars: list[str] = field(default_factory=lambda: [" "] * RT_LEN)
     rt_ab_flag: int | None = None
     clock_times: list[ClockTime] = field(default_factory=list)
@@ -38,7 +43,24 @@ class StationInfo:
 
     @property
     def ps_name(self) -> str:
+        """Validated Programme Service name.
+
+        Dynamic-PS stations often scroll text through the PS field. This value
+        remains empty until the same complete 8-character frame has been seen
+        in two consecutive PS completion cycles, then exposes the validated
+        frame with the historical right-padding stripped.
+        """
         return "".join(self.ps_chars).rstrip()
+
+    @property
+    def validated_ps_name(self) -> str:
+        """Alias for :attr:`ps_name`, explicit about the validation semantics."""
+        return self.ps_name
+
+    @property
+    def latest_ps_candidate(self) -> str:
+        """Most recently received complete 8-character PS frame, without validation."""
+        return self._ps_history[-1] if self._ps_history else ""
 
     @property
     def rt_text(self) -> str:
@@ -83,8 +105,23 @@ def parse_group(group_bytes: Sequence[int], info: StationInfo) -> StationInfo:
     if group_type == 0:
         seg = b & 0x3  # 2-bit segment address (0..3)
         # Block D carries two PS characters
-        info.ps_chars[seg * 2] = _safe_char((d >> 8) & 0xFF)
-        info.ps_chars[seg * 2 + 1] = _safe_char(d & 0xFF)
+        bit = 1 << seg
+        if not info._ps_segments_seen & bit:
+            info._ps_candidate[seg * 2] = _safe_char((d >> 8) & 0xFF)
+            info._ps_candidate[seg * 2 + 1] = _safe_char(d & 0xFF)
+            info._ps_segments_seen |= bit
+        if info._ps_segments_seen == 0b1111:
+            candidate = "".join(info._ps_candidate)
+            previous = info._ps_history[-1] if info._ps_history else None
+            info._ps_history.append(candidate)
+            if candidate == previous:
+                info._ps_stable_count += 1
+            else:
+                info._ps_stable_count = 1
+            if info._ps_stable_count >= 2:
+                info.ps_chars[:] = list(candidate)
+            info._ps_candidate = [" "] * PS_LEN
+            info._ps_segments_seen = 0
 
     elif group_type == 2:
         ab_flag = (b >> 4) & 0x1
