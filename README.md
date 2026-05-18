@@ -229,12 +229,12 @@ the local antenna picks up.
 
 ## Status
 
-- **0.2.2** — current release. Operator-facing polish: 250 kS/s SDR
-  captures can now play at 48 kHz audio via rational resampling, and
-  Programme Service names are displayed only after validation so
-  dynamic-PS stations do not show mixed scrolling fragments. Decoder
-  group counts and PI codes remain locked to the 0.2.1 baseline.
-  Pre-1.0; the CLI and on-disk formats may still change.
+- **0.3.0** — current release. The decoder now uses conservative
+  single-bit RDS block syndrome correction during IQ decode, allowing
+  weak captures to recover groups that previously failed when one bit
+  in a 104-bit group was wrong. Corrected groups are reported separately
+  from clean groups; group totals are intentionally not comparable with
+  0.2.x outputs. Pre-1.0; the CLI and on-disk formats may still change.
 - 240+ tests including a real-IQ regression backed by a 6 s capture
   of Polskie Radio Trójka 98.8 from Warsaw; line coverage **100 %**
   (tracked by SonarCloud).

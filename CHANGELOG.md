@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-18
+
+### Added
+
+- RDS block sync can now tolerate one single-bit block error per group
+  using the block syndrome table from the `(26, 16)` RDS CRC code.
+  Decoder runs recover the corrected dataword when the flipped bit is
+  in the 16-bit data half; CRC-half errors are accepted without changing
+  the dataword.
+- `DecodeResult` now reports `n_groups_clean` and
+  `n_groups_corrected` alongside the existing total `n_groups`.
+
+### Changed
+
+- `decode_iq` enables conservative single-bit correction by default.
+  `find_groups_in_bitstream` remains strict unless callers explicitly
+  pass `tolerate_single_bit=True`.
+- Existing decode runs may now report more groups, especially on weak
+  stations. This is the intended behavior; group counts are not directly
+  comparable to 0.2.x outputs.
+
 ## [0.2.2] — 2026-05-18
 
 ### Fixed

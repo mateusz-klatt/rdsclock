@@ -48,6 +48,8 @@ def benchmark_file(iq_path: Path, fs: int = 250_000) -> dict:
     return {
         "file": iq_path.name,
         "groups": result.n_groups,
+        "groups_clean": result.n_groups_clean,
+        "groups_corrected": result.n_groups_corrected,
         "bits": result.n_bits,
         "pi": f"0x{info.pi:04X}" if info.pi is not None else None,
         "pty": info.pty,
