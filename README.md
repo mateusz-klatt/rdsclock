@@ -49,9 +49,13 @@ rdsclock multi --freqs 102.4,103.0,103.7 --mode wide --fs 2400000 \
 # the right tool for long-running observations.
 
 # 5. HOP mode — multi-station baseline that does NOT need them adjacent.
-#    Useful for the strongest CT broadcasters in Warsaw:
-rdsclock multi --freqs 91.0,94.0,96.5,98.3,98.8,102.4,103.7,107.5 \
-  --mode hop --duration 60 --save eter/hop-warsaw.iq
+#    Six high-power CT broadcasters that decode reliably across Warsaw
+#    on a stock RTL2838 dongle. Total runtime: 6 × 90 s ≈ 9 min.
+#    The first 3.0 s after each retune is trimmed by default
+#    (--settle-seconds 3.0) to skip RTL-SDR PLL/AGC/Costas settling.
+#    Observed empirically — tune lower if your front-end settles faster.
+rdsclock multi --freqs 91.0,94.0,96.5,98.8,102.4,107.5 \
+  --mode hop --duration 90 --save eter/hop-warsaw.iq
 ```
 
 > **Known CT-broadcasting stations in Warsaw (verified May 2026):** 91.0 RMF FM,

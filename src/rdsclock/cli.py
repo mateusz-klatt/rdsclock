@@ -92,6 +92,14 @@ def _capture_start_iso_to_ns(value: str | None) -> int | None:
     return int(dt.timestamp() * 1_000_000_000)
 
 
+def _trim_settle_iq(iq: np.ndarray, fs: int, settle_seconds: float) -> tuple[np.ndarray, int]:
+    """Drop retune-settling samples when doing so leaves samples to decode."""
+    n_settle = int(round(settle_seconds * fs))
+    if n_settle <= 0 or n_settle >= len(iq):
+        return iq, 0
+    return iq[n_settle:], n_settle
+
+
 # ---------- generate ----------
 
 
@@ -210,13 +218,16 @@ def cmd_live(args: argparse.Namespace) -> int:
         dsp.write_iq_complex64(iq, args.save)
         print(f"  saved: {args.save}")
 
+    iq_decode, n_trimmed = _trim_settle_iq(iq, args.fs, args.settle_seconds)
+    capture_decode_start_ns = capture_start_ns + int(round(n_trimmed * 1_000_000_000 / args.fs))
+
     result = decode_iq(
-        iq,
+        iq_decode,
         fs=args.fs,
         carrier_hz=args.carrier_hz,
         auto_carrier=args.carrier_hz is None,
         progress=(lambda m: print(f"  ▸ {m}")) if args.verbose else None,
-        capture_start_monotonic_ns=capture_start_ns,
+        capture_start_monotonic_ns=capture_decode_start_ns,
     )
     print(
         f"\n  Groups: {result.n_groups}  Bits: {result.n_bits}  Δf={result.freq_offset_hz:+.1f} Hz"
@@ -352,7 +363,8 @@ def _hop_one_station(
     client.set_frequency(int(freq_mhz * 1e6))
     iq = client.record(args.duration, fs)
     power = 10 * np.log10(np.mean(np.abs(iq) ** 2) + 1e-12)
-    res = decode_iq(iq, fs=fs)
+    iq_decode, _ = _trim_settle_iq(iq, fs, args.settle_seconds)
+    res = decode_iq(iq_decode, fs=fs)
     elapsed = time.time() - t0
     snapshot = datetime.now(UTC).strftime("%H:%M:%S")
     print(
@@ -360,7 +372,7 @@ def _hop_one_station(
         f"power={power:+5.1f} dBFS  groups={res.n_groups:4d}  "
         f"PS='{res.info.ps_name}'  ({elapsed:.1f}s)"
     )
-    return res, len(iq), snapshot
+    return res, len(iq_decode), snapshot
 
 
 def _multi_hop(freqs_mhz: list[float], args: argparse.Namespace) -> int:
@@ -374,6 +386,7 @@ def _multi_hop(freqs_mhz: list[float], args: argparse.Namespace) -> int:
     print(f"  Stations:       {', '.join(f'{f:.2f} MHz' for f in freqs_mhz)}")
     print(f"  Per-station fs: {fs} S/s")
     print(f"  Duration/stn:   {args.duration}s")
+    print(f"  Settle trim:    {args.settle_seconds}s")
     print(f"  Total time:     ~{args.duration * len(freqs_mhz):.0f}s")
     print()
 
@@ -695,6 +708,13 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--gain", type=float, default=None, help="Manual gain (dB), default AGC")
     pl.add_argument("--ppm", type=int, default=0, help="Tuner PPM correction")
     pl.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=3.0,
+        dest="settle_seconds",
+        help="Trim this many seconds from the start of every retune to skip RTL-SDR PLL/AGC/Costas settling",
+    )
+    pl.add_argument(
         "--carrier-hz",
         type=float,
         default=None,
@@ -739,6 +759,13 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--host", default="localhost")
     pm.add_argument("--port", type=int, default=1234)
     pm.add_argument("--gain", type=float, default=None)
+    pm.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=3.0,
+        dest="settle_seconds",
+        help="HOP mode: trim this many seconds from each retune to skip RTL-SDR PLL/AGC/Costas settling",
+    )
     pm.add_argument("--save", default=None, help="Save wide IQ to file (WIDE only)")
     pm.add_argument("-v", "--verbose", action="store_true")
     pm.set_defaults(func=cmd_multi)

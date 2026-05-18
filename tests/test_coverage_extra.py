@@ -673,6 +673,21 @@ class TestCliCoverage:
         assert cli._capture_start_iso_to_ns("1970-01-01T00:00:01Z") == 1_000_000_000
         assert cli._capture_start_iso_to_ns("1970-01-01T00:00:02") == 2_000_000_000
 
+    def test_trim_settle_iq_branches(self):
+        iq = np.arange(10, dtype=np.float32).astype(np.complex64)
+
+        untrimmed, n_trimmed = cli._trim_settle_iq(iq, fs=10, settle_seconds=0.0)
+        assert untrimmed is iq
+        assert n_trimmed == 0
+
+        trimmed, n_trimmed = cli._trim_settle_iq(iq, fs=10, settle_seconds=0.2)
+        np.testing.assert_array_equal(trimmed, iq[2:])
+        assert n_trimmed == 2
+
+        too_short, n_trimmed = cli._trim_settle_iq(iq, fs=10, settle_seconds=1.0)
+        assert too_short is iq
+        assert n_trimmed == 0
+
     def test_cmd_decode_falls_back_to_u8_reader(self, monkeypatch):
         args = argparse.Namespace(
             verbose=False,
