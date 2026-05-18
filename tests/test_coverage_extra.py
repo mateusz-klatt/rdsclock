@@ -186,6 +186,8 @@ class TestDecoderCoverage:
             symbol_offset=0,
         )
         assert result.clock_times == [clock]
+        assert result.n_groups_clean == 1
+        assert result.n_groups_corrected == 0
 
     def test_decode_iq_uses_default_carrier_when_auto_disabled(self, monkeypatch):
         monkeypatch.setattr(decoder.dsp, "channel_filter", lambda iq, fs: iq)
@@ -208,7 +210,7 @@ class TestDecoderCoverage:
         monkeypatch.setattr(
             decoder.dsp, "clock_recovery_mm", lambda data, sps: np.zeros(0, dtype=np.complex64)
         )
-        monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: ([], "normal"))
+        monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: ([], "normal", 0, 0))
         monkeypatch.setattr(decoder, "parse_groups", lambda groups: StationInfo())
 
         decoder.decode_iq(np.ones(65, dtype=np.complex64), auto_carrier=False)
@@ -238,8 +240,8 @@ class TestDecoderCoverage:
         )
         variants = iter(
             [
-                ([], "bo"),
-                ([bytearray(b"\x00" * 8)], "mm"),
+                ([], "bo", 0, 0),
+                ([bytearray(b"\x00" * 8)], "mm", 1, 0),
             ]
         )
         monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: next(variants))
@@ -248,6 +250,8 @@ class TestDecoderCoverage:
         result = decoder.decode_iq(np.ones(65, dtype=np.complex64), auto_carrier=False)
 
         assert result.n_groups == 1
+        assert result.n_groups_clean == 1
+        assert result.n_groups_corrected == 0
         assert result.symbol_offset == -1
 
     def test_decode_file_autodetects_u8_when_complex_sniff_is_invalid(self, monkeypatch):

@@ -1,8 +1,11 @@
 """Tests for the block layer: CRC, block encode/decode, syndromes, bitstream."""
 
 import numpy as np
+import pytest
 
+import rdsclock.rds_blocks as rds_blocks
 from rdsclock.rds_blocks import (
+    _SINGLE_BIT_SYNDROME_TABLE,
     BLOCK_BITS,
     DATA_BITS,
     GROUP_BITS,
@@ -12,6 +15,8 @@ from rdsclock.rds_blocks import (
     OFFSETS,
     _bits_to_words_26,
     _crc10_many,
+    _drop_corrected_starts_overlapping_clean,
+    _find_groups_in_bitstream_with_counts,
     bits_to_word,
     block_dataword,
     block_valid,
@@ -112,6 +117,32 @@ class TestEncodeBlock:
         assert block_valid(blk_c, 2)
         assert block_valid(blk_c_prime, 2)
 
+    def test_single_bit_syndrome_table_covers_block_positions(self):
+        assert len(_SINGLE_BIT_SYNDROME_TABLE) == BLOCK_BITS
+        assert set(_SINGLE_BIT_SYNDROME_TABLE.values()) == set(range(BLOCK_BITS))
+        assert 0 not in _SINGLE_BIT_SYNDROME_TABLE
+
+    def test_single_bit_syndrome_table_rejects_collisions(self, monkeypatch):
+        monkeypatch.setattr(rds_blocks, "_block_syndrome", lambda block, offset: 1)
+        with pytest.raises(RuntimeError, match="non-unique"):
+            rds_blocks._build_single_bit_syndrome_table()
+
+    def test_block_valid_can_accept_one_single_bit_error_when_requested(self):
+        data = 0xBEEF
+        blk = encode_block(data, OFFSET_A)
+        corrupted_data = blk ^ (1 << (BLOCK_BITS - 1 - 3))
+        corrupted_crc = blk ^ (1 << (BLOCK_BITS - 1 - 20))
+        corrupted_double = corrupted_data ^ (1 << (BLOCK_BITS - 1 - 20))
+
+        assert not block_valid(corrupted_data, 0)
+        assert block_valid(corrupted_data, 0, correct_single_bit=True)
+        assert block_valid(corrupted_crc, 0, correct_single_bit=True)
+        assert not block_valid(corrupted_double, 0, correct_single_bit=True)
+
+        blk_c_prime = encode_block(data, OFFSET_C_PRIME)
+        corrupted_c_prime = blk_c_prime ^ (1 << (BLOCK_BITS - 1 - 4))
+        assert block_valid(corrupted_c_prime, 2, correct_single_bit=True)
+
 
 class TestEncodeGroup:
     def test_basic_a_version(self):
@@ -187,6 +218,69 @@ class TestBitstream:
 
     def test_find_groups_short_stream_returns_empty(self):
         assert find_groups_in_bitstream(np.zeros(GROUP_BITS - 1, dtype=np.uint8)) == []
+
+    def test_find_groups_can_recover_one_corrupted_data_bit(self):
+        words = (0xCAFE, 0x4000, 0x1234, 0x5678)
+        bits = blocks_to_bits(encode_group(words)).copy()
+        bits[BLOCK_BITS + 4] ^= 1  # block B version bit: raw data would select C'.
+
+        assert find_groups_in_bitstream(bits) == []
+        groups, n_clean, n_corrected = _find_groups_in_bitstream_with_counts(
+            bits, tolerate_single_bit=True
+        )
+
+        assert n_clean == 0
+        assert n_corrected == 1
+        assert len(groups) == 1
+        assert group_bytes_to_words(groups[0]) == words
+
+    def test_find_groups_can_recover_one_corrupted_crc_bit_without_changing_data(self):
+        words = (0xCAFE, 0x4000, 0x1234, 0x5678)
+        bits = blocks_to_bits(encode_group(words)).copy()
+        bits[3 * BLOCK_BITS + 20] ^= 1
+
+        groups = find_groups_in_bitstream(bits, tolerate_single_bit=True)
+
+        assert len(groups) == 1
+        assert group_bytes_to_words(groups[0]) == words
+
+    def test_find_groups_drops_candidates_requiring_two_corrections(self):
+        bits = blocks_to_bits(encode_group((0xCAFE, 0x4000, 0x1234, 0x5678))).copy()
+        bits[3] ^= 1
+        bits[3 * BLOCK_BITS + 20] ^= 1
+
+        groups, n_clean, n_corrected = _find_groups_in_bitstream_with_counts(
+            bits, tolerate_single_bit=True
+        )
+
+        assert groups == []
+        assert n_clean == 0
+        assert n_corrected == 0
+
+    def test_corrected_group_starts_do_not_displace_overlapping_clean_starts(self):
+        correction_counts = np.zeros(400, dtype=np.uint8)
+        correction_counts[[40, 260]] = 1
+        starts = np.array([40, 120, 260], dtype=np.intp)
+
+        filtered = _drop_corrected_starts_overlapping_clean(starts, correction_counts)
+
+        np.testing.assert_array_equal(filtered, np.array([120, 260], dtype=np.intp))
+        np.testing.assert_array_equal(
+            _drop_corrected_starts_overlapping_clean(
+                np.array([40], dtype=np.intp), correction_counts
+            ),
+            np.array([40], dtype=np.intp),
+        )
+
+    def test_find_groups_tolerant_mode_rejects_random_noise_smoke(self):
+        """Single-bit correction must not turn random noise into many fake groups."""
+        noise = np.random.RandomState(42).randint(0, 2, size=10_000).astype(np.uint8)
+        groups, n_clean, n_corrected = _find_groups_in_bitstream_with_counts(
+            noise, tolerate_single_bit=True
+        )
+
+        assert len(groups) < 10
+        assert n_clean + n_corrected == len(groups)
 
 
 class TestDifferential:

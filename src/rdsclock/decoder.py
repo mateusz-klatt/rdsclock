@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import dsp
-from .rds_blocks import find_groups_in_bitstream
+from .rds_blocks import _find_groups_in_bitstream_with_counts
 from .rds_clock import ClockTime
 from .rds_groups import StationInfo, parse_groups
 
@@ -25,6 +25,12 @@ class DecodeResult:
     n_bits: int
     freq_offset_hz: float
     symbol_offset: int
+    n_groups_clean: int = -1
+    n_groups_corrected: int = 0
+
+    def __post_init__(self) -> None:
+        if self.n_groups_clean < 0:
+            self.n_groups_clean = self.n_groups
 
     @property
     def clock_times(self) -> list[ClockTime]:
@@ -93,6 +99,8 @@ def decode_iq(
     emit(f"biphase matched filter + offset search (sps {sps})")
     matched = dsp.biphase_matched_filter(rds_sync, sps_bit=sps)
     best_groups: list[bytearray] | None = None
+    best_groups_clean = 0
+    best_groups_corrected = 0
     best_bits: np.ndarray | None = None
     variant_used = "biphase/none"
     sym_offset = 0
@@ -101,9 +109,18 @@ def decode_iq(
         if len(sampled) < 100:
             continue
         bits_candidate = dsp.bits_from_symbols_diff(sampled)
-        groups_candidate, variant_candidate = _best_variant_groups(bits_candidate)
-        if best_groups is None or len(groups_candidate) > len(best_groups):
+        (
+            groups_candidate,
+            variant_candidate,
+            groups_clean_candidate,
+            groups_corrected_candidate,
+        ) = _best_variant_groups(bits_candidate)
+        if best_groups is None or _group_score(
+            groups_candidate, groups_clean_candidate, groups_corrected_candidate
+        ) > _group_score(best_groups, best_groups_clean, best_groups_corrected):
             best_groups = groups_candidate
+            best_groups_clean = groups_clean_candidate
+            best_groups_corrected = groups_corrected_candidate
             best_bits = bits_candidate
             variant_used = f"biphase/off{offset}/{variant_candidate}"
             sym_offset = offset
@@ -114,28 +131,39 @@ def decode_iq(
         emit(f"clock recovery fallback: best_offset + mueller_muller (sps {sps})")
         bo_symbols, bo_sym_off = dsp.best_symbol_offset(rds_sync, sps=sps)
         bo_bits = dsp.bits_from_symbols_diff(bo_symbols)
-        bo_groups, bo_variant = _best_variant_groups(bo_bits)
+        bo_groups, bo_variant, bo_groups_clean, bo_groups_corrected = _best_variant_groups(bo_bits)
 
         mm_symbols = dsp.clock_recovery_mm(rds_sync, sps=sps)
         mm_bits = dsp.bits_from_symbols_diff(mm_symbols)
-        mm_groups, mm_variant = _best_variant_groups(mm_bits)
+        mm_groups, mm_variant, mm_groups_clean, mm_groups_corrected = _best_variant_groups(mm_bits)
 
-        if len(mm_groups) > len(bo_groups):
+        if _group_score(mm_groups, mm_groups_clean, mm_groups_corrected) > _group_score(
+            bo_groups, bo_groups_clean, bo_groups_corrected
+        ):
             groups = mm_groups
+            groups_clean = mm_groups_clean
+            groups_corrected = mm_groups_corrected
             variant_used = f"mm/{mm_variant}"
             bits = mm_bits
             sym_offset = -1  # MM has no fixed offset, only its mu state
         else:
             groups = bo_groups
+            groups_clean = bo_groups_clean
+            groups_corrected = bo_groups_corrected
             variant_used = f"bo/{bo_variant}"
             bits = bo_bits
             sym_offset = bo_sym_off
     else:
         groups = best_groups
+        groups_clean = best_groups_clean
+        groups_corrected = best_groups_corrected
         bits = best_bits
 
     info = parse_groups(groups)
-    emit(f"groups={len(groups)} variant={variant_used} freq_off={freq_off:+.1f} Hz")
+    emit(
+        f"groups={len(groups)} clean={groups_clean} corrected={groups_corrected} "
+        f"variant={variant_used} freq_off={freq_off:+.1f} Hz"
+    )
 
     return DecodeResult(
         info=info,
@@ -143,10 +171,18 @@ def decode_iq(
         n_bits=len(bits),
         freq_offset_hz=float(freq_off),
         symbol_offset=sym_offset,
+        n_groups_clean=groups_clean,
+        n_groups_corrected=groups_corrected,
     )
 
 
-def _best_variant_groups(bits: np.ndarray) -> tuple[list[bytearray], str]:
+def _group_score(
+    groups: list[bytearray], n_groups_clean: int, n_groups_corrected: int
+) -> tuple[int, int, int]:
+    return len(groups), n_groups_clean, -n_groups_corrected
+
+
+def _best_variant_groups(bits: np.ndarray) -> tuple[list[bytearray], str, int, int]:
     """Try the four bitstream polarity/order variants and return the one
     that yields the most groups.
 
@@ -163,12 +199,18 @@ def _best_variant_groups(bits: np.ndarray) -> tuple[list[bytearray], str]:
     ]
     best: list[bytearray] = []
     best_name = "normal"
+    best_clean = 0
+    best_corrected = 0
     for name, bstream in candidates:
-        g = find_groups_in_bitstream(np.ascontiguousarray(bstream))
-        if len(g) > len(best):
+        g, n_clean, n_corrected = _find_groups_in_bitstream_with_counts(
+            np.ascontiguousarray(bstream), tolerate_single_bit=True
+        )
+        if _group_score(g, n_clean, n_corrected) > _group_score(best, best_clean, best_corrected):
             best = g
             best_name = name
-    return best, best_name
+            best_clean = n_clean
+            best_corrected = n_corrected
+    return best, best_name, best_clean, best_corrected
 
 
 def decode_file(
