@@ -11,12 +11,12 @@ For a detailed threat model, see [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
 ## Supported Versions
 
-Pre-1.0 releases: only the latest minor version receives security fixes.
+Stable releases receive security fixes on the latest minor line.
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.1.x   | :white_check_mark: |
-| < 0.1   | :x:                |
+| 1.0.x   | :white_check_mark: |
+| < 1.0   | :x:                |
 
 ## Reporting a Vulnerability
 

@@ -19,4 +19,20 @@ Modules:
                      scan / recon / demo.
 """
 
-__version__ = "0.4.0"
+from .decoder import DecodeResult, decode_file, decode_iq
+from .rds_clock import ClockTime
+from .rds_groups import StationInfo
+from .time_consensus import SubSecondEstimate, TimeConsensus
+
+__version__ = "1.0.0"
+
+__all__ = [
+    "__version__",
+    "decode_file",
+    "decode_iq",
+    "DecodeResult",
+    "ClockTime",
+    "StationInfo",
+    "TimeConsensus",
+    "SubSecondEstimate",
+]
