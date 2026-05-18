@@ -8,6 +8,11 @@ for FM-demodulated baseband).
 import numpy as np
 from scipy.signal import filtfilt, firwin, lfilter, resample_poly
 
+try:
+    from numba import njit as _numba_njit
+except ImportError:  # pragma: no cover - optional acceleration dependency
+    _numba_njit = None
+
 # RDS / FM constants
 FM_CHANNEL_BW_HZ = 100_000  # half-width of an FM channel (~200 kHz total)
 RDS_CARRIER_HZ = 57_000
@@ -165,9 +170,7 @@ def symbol_lpf(x: np.ndarray, fs: float, cutoff: float = SYMBOL_LPF_HZ) -> np.nd
     return filtfilt(taps, [1.0], x)
 
 
-def costas_loop_bpsk(samples: np.ndarray, alpha: float = 0.3, beta: float = 0.005) -> np.ndarray:
-    """Second-order Costas loop for BPSK. Stabilises carrier phase."""
-    samples = np.asarray(samples, dtype=np.complex64)
+def _costas_loop_bpsk_python(samples: np.ndarray, alpha: float, beta: float) -> np.ndarray:
     out = np.empty_like(samples)
     phase = 0.0
     freq = 0.0
@@ -182,6 +185,19 @@ def costas_loop_bpsk(samples: np.ndarray, alpha: float = 0.3, beta: float = 0.00
         elif phase < -np.pi:
             phase += 2 * np.pi
     return out
+
+
+_COSTAS_LOOP_BPSK_NUMBA = (
+    _numba_njit(cache=True)(_costas_loop_bpsk_python) if _numba_njit is not None else None
+)
+
+
+def costas_loop_bpsk(samples: np.ndarray, alpha: float = 0.3, beta: float = 0.005) -> np.ndarray:
+    """Second-order Costas loop for BPSK. Stabilises carrier phase."""
+    samples = np.asarray(samples, dtype=np.complex64)
+    if _COSTAS_LOOP_BPSK_NUMBA is not None:
+        return _COSTAS_LOOP_BPSK_NUMBA(samples, alpha, beta)  # pragma: no cover
+    return _costas_loop_bpsk_python(samples, alpha, beta)
 
 
 def agc(samples: np.ndarray, eps: float = 1e-9) -> np.ndarray:

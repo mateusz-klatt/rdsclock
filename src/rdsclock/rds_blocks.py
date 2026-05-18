@@ -41,23 +41,40 @@ OFFSET_BY_NAME = {
 GROUP_BLOCKS = 4
 GROUP_BITS = BLOCK_BITS * GROUP_BLOCKS  # 104
 
+_BLOCK_WORD_MASK = (1 << CRC_BITS) - 1
+_DATA_WORD_MASK = (1 << DATA_BITS) - 1
+_CRC_TOP_BIT = 1 << CRC_BITS
+_CRC_POLY_WITH_TOP_BIT = CRC_POLY | _CRC_TOP_BIT
+_BLOCK_WEIGHTS = (1 << np.arange(BLOCK_BITS - 1, -1, -1, dtype=np.uint32)).astype(np.uint32)
+
+
+def _build_crc10_table() -> np.ndarray:
+    datawords = np.arange(1 << DATA_BITS, dtype=np.uint32)
+    reg = np.zeros_like(datawords)
+    for i in range(DATA_BITS - 1, -1, -1):
+        reg = (reg << 1) | ((datawords >> i) & 1)
+        reg = np.where((reg & _CRC_TOP_BIT) != 0, reg ^ _CRC_POLY_WITH_TOP_BIT, reg)
+    for _ in range(CRC_BITS):
+        reg <<= 1
+        reg = np.where((reg & _CRC_TOP_BIT) != 0, reg ^ _CRC_POLY_WITH_TOP_BIT, reg)
+    return (reg & _BLOCK_WORD_MASK).astype(np.uint16)
+
+
+_CRC10_TABLE = _build_crc10_table()
+
+
+def _crc10_many(datawords: np.ndarray) -> np.ndarray:
+    return _CRC10_TABLE[np.asarray(datawords, dtype=np.uint32) & _DATA_WORD_MASK]
+
 
 def crc10(dataword: int) -> int:
     """Compute the 10-bit RDS CRC of a 16-bit dataword.
 
-    Standard shift-register implementation: feed 16 data bits into
-    a 10-bit register tapped by ``CRC_POLY``, then flush 10 zero bits.
+    Table-driven equivalent of the standard shift-register implementation:
+    feed 16 data bits into a 10-bit register tapped by ``CRC_POLY``, then
+    flush 10 zero bits.
     """
-    reg = 0
-    for i in range(DATA_BITS - 1, -1, -1):
-        reg = (reg << 1) | ((dataword >> i) & 1)
-        if reg & (1 << CRC_BITS):
-            reg ^= CRC_POLY | (1 << CRC_BITS)
-    for _ in range(CRC_BITS):
-        reg <<= 1
-        if reg & (1 << CRC_BITS):
-            reg ^= CRC_POLY | (1 << CRC_BITS)
-    return reg & ((1 << CRC_BITS) - 1)
+    return int(_CRC10_TABLE[int(dataword) & _DATA_WORD_MASK])
 
 
 def encode_block(dataword: int, offset_word: int) -> int:
@@ -73,7 +90,7 @@ def block_dataword(block26: int) -> int:
 
 
 def block_checkword(block26: int) -> int:
-    return block26 & ((1 << CRC_BITS) - 1)
+    return block26 & _BLOCK_WORD_MASK
 
 
 def block_valid(block26: int, block_no: int, version_b: bool | None = None) -> bool:
@@ -120,10 +137,28 @@ def blocks_to_bits(blocks: Iterable[int]) -> np.ndarray:
 
 def bits_to_word(bits: Sequence[int]) -> int:
     """Pack a bit sequence into an int (MSB first)."""
+    bit_array = np.asarray(bits, dtype=np.uint8)
+    if bit_array.size == BLOCK_BITS:
+        return int(_bits_to_words_26(bit_array))
     word = 0
-    for b in bits:
+    for b in bit_array:
         word = (word << 1) | (int(b) & 1)
     return word
+
+
+def _bits_to_words_26(bit_windows: np.ndarray, assume_binary: bool = False) -> np.ndarray:
+    bit_windows = np.asarray(bit_windows, dtype=np.uint8)
+    if not assume_binary:
+        bit_windows = np.bitwise_and(bit_windows, 1)
+    return bit_windows @ _BLOCK_WEIGHTS
+
+
+def _coerce_bits(bits: np.ndarray) -> np.ndarray:
+    if not isinstance(bits, np.ndarray):
+        bits = np.asarray(bits, dtype=np.uint8)
+    if bits.dtype != np.uint8:
+        bits = bits.astype(np.uint8)
+    return np.bitwise_and(bits, 1)
 
 
 def find_groups_in_bitstream(bits: np.ndarray) -> list[bytearray]:
@@ -135,52 +170,57 @@ def find_groups_in_bitstream(bits: np.ndarray) -> list[bytearray]:
 
     Returns a list of 8-byte bytearrays (4 × big-endian 16-bit datawords).
     """
-    if not isinstance(bits, np.ndarray):
-        bits = np.asarray(bits, dtype=np.uint8)
-    if bits.dtype != np.uint8:
-        bits = bits.astype(np.uint8)
-
+    bits = _coerce_bits(bits)
     n = len(bits)
     groups: list[bytearray] = []
-    i = 0
-    while i + GROUP_BITS <= n:
-        # Block A
-        w0 = bits_to_word(bits[i : i + BLOCK_BITS])
-        if not block_valid(w0, 0):
-            i += 1
-            continue
-        # Block B (validated against offset B)
-        w1 = bits_to_word(bits[i + BLOCK_BITS : i + 2 * BLOCK_BITS])
-        if not block_valid(w1, 1):
-            i += 1
-            continue
-        # Derive version from block B (bit 11 of the dataword)
-        b_data = block_dataword(w1)
-        version_b = bool((b_data >> 11) & 0x1)
-        # Block C: require the matching offset (C or C')
-        w2 = bits_to_word(bits[i + 2 * BLOCK_BITS : i + 3 * BLOCK_BITS])
-        if not block_valid(w2, 2, version_b=version_b):
-            i += 1
-            continue
-        # Block D
-        w3 = bits_to_word(bits[i + 3 * BLOCK_BITS : i + 4 * BLOCK_BITS])
-        if not block_valid(w3, 3):
-            i += 1
-            continue
-        buf = bytearray(8)
-        for idx, word in enumerate((w0, w1, w2, w3)):
-            dw = block_dataword(word)
-            buf[idx * 2] = (dw >> 8) & 0xFF
-            buf[idx * 2 + 1] = dw & 0xFF
-        groups.append(buf)
-        i += GROUP_BITS
+    if n < GROUP_BITS:
+        return groups
+
+    windows = np.lib.stride_tricks.sliding_window_view(bits, BLOCK_BITS)
+    words = _bits_to_words_26(windows, assume_binary=True)
+    data = (words >> CRC_BITS) & _DATA_WORD_MASK
+    check = words & _BLOCK_WORD_MASK
+    expected = _crc10_many(data)
+
+    valid_a = (check ^ OFFSET_A) == expected
+    valid_b = (check ^ OFFSET_B) == expected
+    valid_c = (check ^ OFFSET_C) == expected
+    valid_c_prime = (check ^ OFFSET_C_PRIME) == expected
+    valid_d = (check ^ OFFSET_D) == expected
+
+    start_count = n - GROUP_BITS + 1
+    block_b_data = data[BLOCK_BITS : BLOCK_BITS + start_count]
+    version_b = ((block_b_data >> 11) & 1).astype(bool)
+    block_c_valid = np.where(
+        version_b,
+        valid_c_prime[2 * BLOCK_BITS : 2 * BLOCK_BITS + start_count],
+        valid_c[2 * BLOCK_BITS : 2 * BLOCK_BITS + start_count],
+    )
+    group_starts = np.flatnonzero(
+        valid_a[:start_count]
+        & valid_b[BLOCK_BITS : BLOCK_BITS + start_count]
+        & block_c_valid
+        & valid_d[3 * BLOCK_BITS : 3 * BLOCK_BITS + start_count]
+    )
+
+    next_scan_start = 0
+    group_offsets = np.array([0, BLOCK_BITS, 2 * BLOCK_BITS, 3 * BLOCK_BITS], dtype=np.intp)
+    for start in group_starts:
+        group_start = int(start)
+        if group_start >= next_scan_start:
+            buf = bytearray(8)
+            for idx, dw_raw in enumerate(data[group_start + group_offsets]):
+                dw = int(dw_raw)
+                buf[idx * 2] = (dw >> 8) & 0xFF
+                buf[idx * 2 + 1] = dw & 0xFF
+            groups.append(buf)
+            next_scan_start = group_start + GROUP_BITS
     return groups
 
 
 def count_valid_blocks(bits: np.ndarray) -> int:
     """Diagnostic: count 26-bit windows that pass CRC for any block position 0..3."""
-    if not isinstance(bits, np.ndarray):
-        bits = np.asarray(bits, dtype=np.uint8)
+    bits = _coerce_bits(bits)
     total = 0
     for i in range(0, len(bits) - BLOCK_BITS + 1, BLOCK_BITS):
         word = bits_to_word(bits[i : i + BLOCK_BITS])

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-05-18
+
+### Changed
+
+- Decoder hot path optimised: ~7× faster end-to-end on the baseline
+  IQ corpus. A 5-minute real-broadcast capture now decodes in
+  ~45-50 s instead of ~300-380 s — fast enough for multi-station
+  real-time consensus on a single thread. Group counts and PI codes
+  are **bit-identical** to 0.2.0; this is performance only.
+- `rds_blocks.crc10` is now table-driven (1024-entry lookup,
+  precomputed at module load) and bit-exact against the previous
+  shift-register implementation over the full `0..65535` input space.
+- `rds_blocks.bits_to_word` and `rds_blocks.find_groups_in_bitstream`
+  use NumPy vectorisation (`sliding_window_view` + batched dot
+  product) instead of per-window Python loops. The whole-stream
+  group scan is now `O(n)` numpy ops with a single Python pass to
+  pick the non-overlapping group positions.
+- `dsp.costas_loop_bpsk` accepts an optional Numba JIT fast path
+  (installed via the new `[fast]` extra). Falls back to the pure
+  Python loop when Numba is unavailable — Numba is not a hard
+  dependency.
+
+### Added
+
+- `tools/benchmark.py` — regression benchmark that decodes every
+  IQ in a baseline directory and writes machine-readable JSON.
+  Use to compare decoder changes head-to-head against a fixed
+  corpus.
+- `[fast]` optional extra in `pyproject.toml` (currently brings
+  `numba` for the JIT Costas path).
+
 ## [0.2.0] — 2026-05-17
 
 This is the first release that **actually decodes real FM broadcasts**.

@@ -229,11 +229,13 @@ the local antenna picks up.
 
 ## Status
 
-- **0.2.0** — current release. First version that decodes real FM
-  broadcasts (earlier 0.1.x worked only on synthetic IQ — see the
-  0.2.0 entry in [`CHANGELOG.md`](CHANGELOG.md)). Pre-1.0; the CLI
-  and on-disk formats may still change.
-- 236 tests including a real-IQ regression backed by a 6 s capture
+- **0.2.1** — current release. Decoder hot path is now ~7× faster
+  than 0.2.0 (5 min broadcast capture decodes in ~50 s on commodity
+  hardware — fast enough for multi-station real-time consensus on
+  a single thread). See [`CHANGELOG.md`](CHANGELOG.md) for the 0.2.0
+  biphase fix that preceded this and made the decoder actually work
+  on real FM. Pre-1.0; the CLI and on-disk formats may still change.
+- 240+ tests including a real-IQ regression backed by a 6 s capture
   of Polskie Radio Trójka 98.8 from Warsaw; line coverage **100 %**
   (tracked by SonarCloud).
 
