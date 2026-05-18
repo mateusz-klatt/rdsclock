@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta, timezone
 import numpy as np
 import pytest
 
+from rdsclock import decoder as decoder_module
+from rdsclock import dsp
 from rdsclock.decoder import decode_iq
 from rdsclock.rds_groups import encode_group_4a, encode_ps_groups
 from rdsclock.synth import DEFAULT_FS, synthesize_fm_iq
@@ -70,6 +72,34 @@ def test_pipeline_returns_diagnostics():
     result = decode_iq(iq, fs=DEFAULT_FS)
     assert result.n_bits > 0
     assert 0 <= result.symbol_offset < 16
+    assert len(result.group_bit_positions) == result.n_groups
+
+
+def test_decode_iq_attaches_rx_monotonic_when_capture_anchor_is_known():
+    expected = datetime(2026, 5, 16, 14, 30, tzinfo=UTC)
+    groups = _build_groups(expected)
+    iq = synthesize_fm_iq(groups, duration_s=2.0, snr_db=None, rng=np.random.default_rng(0))
+    result = decode_iq(iq, fs=DEFAULT_FS, capture_start_monotonic_ns=1_000_000_000)
+
+    assert result.info.clock_times
+    rx_values = [ct.rx_monotonic_ns for ct in result.info.clock_times]
+    assert all(rx is not None for rx in rx_values)
+    assert rx_values == sorted(rx_values)
+
+
+def test_decoder_position_and_timestamp_helpers():
+    assert decoder_module._positions_on_capture_axis(1000, [10, 20], False) == [10, 20]
+    assert decoder_module._positions_on_capture_axis(1000, [10], True) == [886]
+
+    drift = dsp.BitRateDrift(
+        bit_rate_hz=dsp.RDS_SYMBOL_RATE,
+        pilot_hz=19_000.0,
+        pilot_mad_hz=0.0,
+        confident=True,
+    )
+    values = decoder_module._rx_monotonic_ns_by_group(1_000, [0], drift)
+    assert values == [1_000 + int(104 / dsp.RDS_SYMBOL_RATE * 1e9) + dsp.PIPELINE_GROUP_DELAY_NS]
+    assert decoder_module._rx_monotonic_ns_by_group(None, [0], drift) is None
 
 
 @pytest.mark.slow

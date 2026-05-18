@@ -15,9 +15,11 @@ Design rationale (GPS-denied passive-RF operation):
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+
+from .rds_clock import ClockTime
 
 
 class TrustLevel(Enum):
@@ -54,6 +56,7 @@ AGREEMENT_BONUS = 0.05
 
 # Default oscillator ppm used to grow uncertainty with holdover age.
 DEFAULT_LOCAL_OSC_PPM = 50.0  # typical RTL-SDR crystal: 20–50 ppm
+MINUTE_NS = 60_000_000_000
 
 
 @dataclass
@@ -76,6 +79,16 @@ class StationObservation:
     ct_utc: datetime
     received_monotonic: float  # monotonic clock at the moment of reception (s)
     fingerprint: StationFingerprint = field(default_factory=StationFingerprint)
+    clock_time: ClockTime | None = None
+    rx_monotonic_ns: int | None = None
+    received_wall_utc: datetime | None = None
+    tx_latency_ns: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.clock_time is not None and self.rx_monotonic_ns is None:
+            self.rx_monotonic_ns = self.clock_time.rx_monotonic_ns
+        if self.received_wall_utc is not None and self.received_wall_utc.tzinfo is None:
+            self.received_wall_utc = self.received_wall_utc.replace(tzinfo=UTC)
 
 
 @dataclass
@@ -88,6 +101,7 @@ class StationTrack:
     trust_score: float = 0.5  # in [0..1], starts neutral
     consecutive_outliers: int = 0
     fingerprint_baseline: StationFingerprint | None = None
+    tx_latency_ns: int | None = None
 
     @property
     def label(self) -> str:
@@ -145,6 +159,15 @@ class ConsensusResult:
         )
 
 
+@dataclass(frozen=True)
+class SubSecondEstimate:
+    """UTC estimate built from receive timestamps and station latency phases."""
+
+    utc: datetime
+    precision_ms: float
+    station_count: int
+
+
 _UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -183,6 +206,29 @@ def _median_and_mad(epochs: list[float]) -> tuple[float, float]:
     deviations = sorted(abs(e - median_epoch) for e in epochs)
     mad = deviations[n // 2] if n > 0 else 0.0
     return median_epoch, mad
+
+
+def _median_int(values: list[int]) -> int:
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    if n % 2:
+        return sorted_values[n // 2]
+    return (sorted_values[n // 2 - 1] + sorted_values[n // 2]) // 2
+
+
+def _datetime_to_epoch_ns(dt: datetime) -> int:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.astimezone(UTC).timestamp() * 1_000_000_000)
+
+
+def _epoch_ns_to_datetime(epoch_ns: int) -> datetime:
+    seconds, nanoseconds = divmod(epoch_ns, 1_000_000_000)
+    return datetime.fromtimestamp(seconds, UTC).replace(microsecond=nanoseconds // 1000)
+
+
+def _minute_phase_ns(rx_monotonic_ns: int, declared_monotonic_ns: int) -> int:
+    return (rx_monotonic_ns - declared_monotonic_ns) % MINUTE_NS
 
 
 def _median_age_of_contributors(
@@ -227,6 +273,8 @@ class TimeConsensus:
         return (round(freq_hz / 100_000) * 100_000, pi)
 
     def record(self, obs: StationObservation) -> StationTrack:
+        if obs.received_wall_utc is None:
+            obs.received_wall_utc = datetime.now(UTC)
         key = self._key(obs.freq_hz, obs.pi)
         track = self.tracks.get(key)
         if track is None:
@@ -236,6 +284,87 @@ class TimeConsensus:
         if track.fingerprint_baseline is None:
             track.fingerprint_baseline = obs.fingerprint
         return track
+
+    def sub_second_consensus(
+        self,
+        monotonic_now_ns: int | None = None,
+        wall_now_utc: datetime | None = None,
+    ) -> SubSecondEstimate | None:
+        """Return a sub-second estimate when enough stations have RX timestamps.
+
+        This path is intentionally parallel to :meth:`consensus`: it learns a
+        per-station Group 4A transmit phase from timestamped observations and
+        only contributes stations whose phase has at least three samples.
+        """
+        if monotonic_now_ns is None:
+            monotonic_now_ns = time.monotonic_ns()
+        wall_now_epoch_ns = (
+            time.time_ns() if wall_now_utc is None else _datetime_to_epoch_ns(wall_now_utc)
+        )
+
+        self._update_station_latencies(monotonic_now_ns, wall_now_epoch_ns)
+        station_estimates = self._sub_second_station_estimates(monotonic_now_ns, wall_now_epoch_ns)
+        if len(station_estimates) < 2:
+            return None
+
+        median_epoch_ns = _median_int(station_estimates)
+        deviations = [abs(epoch_ns - median_epoch_ns) for epoch_ns in station_estimates]
+        precision_ms = float(_median_int(deviations) / 1_000_000.0)
+        return SubSecondEstimate(
+            utc=_epoch_ns_to_datetime(median_epoch_ns),
+            precision_ms=precision_ms,
+            station_count=len(station_estimates),
+        )
+
+    def _update_station_latencies(
+        self,
+        monotonic_now_ns: int,
+        wall_now_epoch_ns: int,
+    ) -> None:
+        for track in self.tracks.values():
+            phases: list[int] = []
+            for obs in track.observations:
+                if obs.rx_monotonic_ns is None:
+                    continue
+                declared_epoch_ns = _datetime_to_epoch_ns(obs.ct_utc)
+                if obs.received_wall_utc is None:
+                    declared_monotonic_ns = monotonic_now_ns + declared_epoch_ns - wall_now_epoch_ns
+                else:
+                    declared_monotonic_ns = (
+                        obs.rx_monotonic_ns
+                        + declared_epoch_ns
+                        - _datetime_to_epoch_ns(obs.received_wall_utc)
+                    )
+                phases.append(_minute_phase_ns(obs.rx_monotonic_ns, declared_monotonic_ns))
+            if len(phases) >= 3:
+                track.tx_latency_ns = _median_int(phases)
+                for obs in track.observations:
+                    obs.tx_latency_ns = track.tx_latency_ns
+                    if obs.clock_time is not None:
+                        obs.clock_time = replace(obs.clock_time, tx_latency_ns=track.tx_latency_ns)
+
+    def _sub_second_station_estimates(
+        self,
+        monotonic_now_ns: int,
+        wall_now_epoch_ns: int,
+    ) -> list[int]:
+        station_estimates: list[int] = []
+        for track in self.tracks.values():
+            if track.tx_latency_ns is None:
+                continue
+            obs = next(
+                (
+                    candidate
+                    for candidate in reversed(track.observations)
+                    if candidate.rx_monotonic_ns is not None
+                ),
+                None,
+            )
+            if obs is None:
+                continue
+            rx_wall_epoch_ns = wall_now_epoch_ns + (obs.rx_monotonic_ns - monotonic_now_ns)
+            station_estimates.append(rx_wall_epoch_ns - track.tx_latency_ns)
+        return station_estimates
 
     def active_tracks(self, monotonic_now: float) -> list[StationTrack]:
         return [

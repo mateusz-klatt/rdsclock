@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-18
+
+### Added
+
+- Decoded Clock-Time values can now carry receive timestamp metadata.
+  `ClockTime` has optional `rx_monotonic_ns` and `tx_latency_ns` fields,
+  and live/recon captures anchor Group 4A receipt on the host monotonic
+  clock when a capture start is known.
+- The block scanner now has `find_groups_in_bitstream_with_positions()`
+  for callers that need each decoded group's bitstream start position;
+  the existing `find_groups_in_bitstream()` API remains unchanged.
+- Pilot-derived bit-rate drift measurement estimates the RDS bit rate
+  from the 19 kHz stereo pilot and falls back to the nominal 1187.5 bit/s
+  rate when the pilot is unstable.
+- `TimeConsensus.sub_second_consensus()` adds a parallel sub-second path
+  that learns per-station Group 4A transmit latency and returns a
+  timestamp consensus when at least two stations have learned latencies.
+
+### Changed
+
+- The decoder threads group bit positions through `DecodeResult` and can
+  attach `rx_monotonic_ns` to decoded Clock-Time entries without changing
+  group counts, PI codes, or the 0.3.0 syndrome-correction behavior.
+- Documentation now states the precision floor honestly: roughly
+  30-80 ms in an NTP-healthy lab setup, and about 100-250 ms for a
+  field demo with 3+ stations. Hardware-grade timing still requires a
+  hardware time source.
+
 ## [0.3.0] — 2026-05-18
 
 ### Added

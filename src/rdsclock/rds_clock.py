@@ -50,6 +50,8 @@ class ClockTime:
 
     utc: datetime  # always has tzinfo=UTC
     local_offset_minutes: int  # may be negative
+    rx_monotonic_ns: int | None = None
+    tx_latency_ns: int | None = None
 
     @property
     def local(self) -> datetime:
@@ -141,7 +143,12 @@ def encode_clock_time(
     return block_b_extra & 0x1F, block_c & 0xFFFF, block_d & 0xFFFF
 
 
-def decode_clock_time(block_b: int, block_c: int, block_d: int) -> ClockTime | None:
+def decode_clock_time(
+    block_b: int,
+    block_c: int,
+    block_d: int,
+    rx_monotonic_ns: int | None = None,
+) -> ClockTime | None:
     """Decode Group 4A. Returns ``None`` if the fields fall outside
     sensible ranges (typical for stations transmitting dummy CT data).
 
@@ -172,4 +179,8 @@ def decode_clock_time(block_b: int, block_c: int, block_d: int) -> ClockTime | N
     offset_minutes = magnitude * 30
     if sign_bit:
         offset_minutes = -offset_minutes
-    return ClockTime(utc=utc_dt, local_offset_minutes=offset_minutes)
+    return ClockTime(
+        utc=utc_dt,
+        local_offset_minutes=offset_minutes,
+        rx_monotonic_ns=rx_monotonic_ns,
+    )

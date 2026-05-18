@@ -89,7 +89,11 @@ def _safe_char(byte: int) -> str:
     return " "
 
 
-def parse_group(group_bytes: Sequence[int], info: StationInfo) -> StationInfo:
+def parse_group(
+    group_bytes: Sequence[int],
+    info: StationInfo,
+    rx_monotonic_ns: int | None = None,
+) -> StationInfo:
     """Interpret one RDS group and update ``info`` in place. Returns the same
     ``info`` to enable chaining."""
     a, b, c, d = group_bytes_to_words(group_bytes)
@@ -142,18 +146,25 @@ def parse_group(group_bytes: Sequence[int], info: StationInfo) -> StationInfo:
 
     elif group_type == 4 and version == 0:
         # The two MSBs of MJD live in block B[1:0] — pass the FULL block B.
-        ct = decode_clock_time(b, c, d)
+        ct = decode_clock_time(b, c, d, rx_monotonic_ns=rx_monotonic_ns)
         if ct is not None:
             info.clock_times.append(ct)
 
     return info
 
 
-def parse_groups(groups: Iterable[Sequence[int]]) -> StationInfo:
+def parse_groups(
+    groups: Iterable[Sequence[int]],
+    rx_monotonic_ns_by_group: Sequence[int | None] | None = None,
+) -> StationInfo:
     """Parse a sequence of groups, returning the accumulated ``StationInfo``."""
     info = StationInfo()
-    for g in groups:
-        parse_group(g, info)
+    if rx_monotonic_ns_by_group is None:
+        for g in groups:
+            parse_group(g, info)
+    else:
+        for g, rx_monotonic_ns in zip(groups, rx_monotonic_ns_by_group, strict=True):
+            parse_group(g, info, rx_monotonic_ns=rx_monotonic_ns)
     return info
 
 

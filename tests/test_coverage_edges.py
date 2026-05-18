@@ -726,7 +726,7 @@ def test_recon_scan_hop_and_live_loop_branches(monkeypatch):
         fs_scan=1000,
         gain_db=7.5,
     )
-    monkeypatch.setattr(recon, "decode_iq", lambda iq, fs: _decode_result(clock=_clock()))
+    monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(clock=_clock()))
     progress: list[str] = []
     candidates = recon.quick_scan_band(client, cfg, progress=progress.append)
     assert candidates[0].has_ct
@@ -736,7 +736,7 @@ def test_recon_scan_hop_and_live_loop_branches(monkeypatch):
     station_ct = recon.StationCandidate(95.5e6, -10.0, 2, True, 0xCAFE, "TEST")
     station_no_ct = recon.StationCandidate(96.1e6, -12.0, 1, False, 0xBEEF, "NONE")
     calls = iter([_decode_result(clock=_clock()), _decode_result(clock=None, groups=3)])
-    monkeypatch.setattr(recon, "decode_iq", lambda iq, fs: next(calls))
+    monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: next(calls))
     consensus = recon.TimeConsensus()
     progress.clear()
     assert (
@@ -746,7 +746,9 @@ def test_recon_scan_hop_and_live_loop_branches(monkeypatch):
     assert any("no CT" in message for message in progress)
 
     samples = bytes([180, 128] * 256)
-    monkeypatch.setattr(recon, "decode_iq", lambda iq, fs: _decode_result(clock=None, groups=4))
+    monkeypatch.setattr(
+        recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(clock=None, groups=4)
+    )
     monkeypatch.setattr(recon.time, "sleep", lambda seconds: None)
     status: list[str] = []
     with _fake_rtl_tcp(samples) as port:

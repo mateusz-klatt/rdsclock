@@ -210,7 +210,7 @@ class TestDecoderCoverage:
         monkeypatch.setattr(
             decoder.dsp, "clock_recovery_mm", lambda data, sps: np.zeros(0, dtype=np.complex64)
         )
-        monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: ([], "normal", 0, 0))
+        monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: ([], [], "normal", 0, 0))
         monkeypatch.setattr(decoder, "parse_groups", lambda groups: StationInfo())
 
         decoder.decode_iq(np.ones(65, dtype=np.complex64), auto_carrier=False)
@@ -240,8 +240,8 @@ class TestDecoderCoverage:
         )
         variants = iter(
             [
-                ([], "bo", 0, 0),
-                ([bytearray(b"\x00" * 8)], "mm", 1, 0),
+                ([], [], "bo", 0, 0),
+                ([bytearray(b"\x00" * 8)], [7], "mm", 1, 0),
             ]
         )
         monkeypatch.setattr(decoder, "_best_variant_groups", lambda bits: next(variants))
@@ -265,6 +265,19 @@ class TestDecoderCoverage:
         monkeypatch.setattr(decoder, "decode_iq", lambda iq, fs, progress: expected)
         result = decoder.decode_file("capture.iq")
         assert result is expected
+
+    def test_decode_file_passes_capture_start_anchor(self, tmp_path, monkeypatch):
+        iq_path = tmp_path / "capture.iq"
+        np.ones(16, dtype=np.complex64).tofile(iq_path)
+        seen = {}
+
+        def fake_decode_iq(iq, fs, progress=None, capture_start_monotonic_ns=None):
+            seen["capture_start_monotonic_ns"] = capture_start_monotonic_ns
+            return _decode_result()
+
+        monkeypatch.setattr(decoder, "decode_iq", fake_decode_iq)
+        decoder.decode_file(str(iq_path), capture_start_monotonic_ns=123_456)
+        assert seen["capture_start_monotonic_ns"] == 123_456
 
     def test_decode_file_rejects_unknown_format(self, monkeypatch):
         monkeypatch.setattr(decoder.os.path, "getsize", lambda path: 0)
@@ -479,7 +492,9 @@ class TestReconCoverage:
         monkeypatch.setattr(
             recon,
             "decode_iq",
-            lambda iq, fs: _decode_result(n_groups=3, ps_name="SCAN", clock=None, pi=0x1234),
+            lambda iq, fs, **kwargs: _decode_result(
+                n_groups=3, ps_name="SCAN", clock=None, pi=0x1234
+            ),
         )
 
         candidates = recon.quick_scan_band(fake_client, cfg, progress=progress.append)
@@ -497,14 +512,16 @@ class TestReconCoverage:
                 _decode_result(
                     n_groups=4,
                     ps_name="YES",
-                    clock=ClockTime(now, 0),
+                    clock=ClockTime(now, 0, rx_monotonic_ns=1_500_000_000),
                     pi=0x1001,
                     freq_offset_hz=12.0,
                 ),
                 _decode_result(n_groups=1, ps_name="NO", clock=None, pi=0x1002),
             ]
         )
-        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs: next(results))
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: next(results))
+        mono_values = iter([1_000_000_000, 2_000_000_000])
+        monkeypatch.setattr(recon.time, "monotonic_ns", lambda: next(mono_values))
         consensus = TimeConsensus()
         watchlist = [
             StationCandidate(freq_hz=90.0e6, rssi_db=-10.0, n_groups=4, has_ct=True, pi=0x1001),
@@ -647,8 +664,23 @@ class TestCliCoverage:
         assert cli._scan_mark(_decode_result(clock=_clock_time())) == "[CT]"
         assert cli._scan_mark(_decode_result(n_groups=2, clock=None)) == "[FM]"
 
+    def test_print_station_shows_rx_monotonic(self, capsys):
+        cli._print_station(_station_info(clock=ClockTime(_clock_time().utc, 0, 12_345)))
+        assert "12_345 ns" in capsys.readouterr().out
+
+    def test_capture_start_iso_to_ns(self):
+        assert cli._capture_start_iso_to_ns(None) is None
+        assert cli._capture_start_iso_to_ns("1970-01-01T00:00:01Z") == 1_000_000_000
+        assert cli._capture_start_iso_to_ns("1970-01-01T00:00:02") == 2_000_000_000
+
     def test_cmd_decode_falls_back_to_u8_reader(self, monkeypatch):
-        args = argparse.Namespace(verbose=False, carrier_hz=57_000.0, file="capture.iq", fs=250_000)
+        args = argparse.Namespace(
+            verbose=False,
+            carrier_hz=57_000.0,
+            file="capture.iq",
+            fs=250_000,
+            capture_start_iso=None,
+        )
         monkeypatch.setattr(
             cli.dsp, "read_iq_complex64", lambda path: np.zeros(0, dtype=np.complex64)
         )
@@ -657,6 +689,43 @@ class TestCliCoverage:
             cli, "decode_iq", lambda iq, fs, carrier_hz, auto_carrier, progress: _decode_result()
         )
         assert cli.cmd_decode(args) == 0
+
+    def test_cmd_decode_passes_capture_start_to_carrier_override(self, monkeypatch):
+        args = argparse.Namespace(
+            verbose=False,
+            carrier_hz=57_000.0,
+            file="capture.iq",
+            fs=250_000,
+            capture_start_iso="1970-01-01T00:00:03Z",
+        )
+        seen = {}
+        monkeypatch.setattr(cli.dsp, "read_iq_complex64", lambda path: np.ones(8))
+
+        def fake_decode_iq(**kwargs):
+            seen.update(kwargs)
+            return _decode_result()
+
+        monkeypatch.setattr(cli, "decode_iq", lambda iq, **kwargs: fake_decode_iq(**kwargs))
+        assert cli.cmd_decode(args) == 0
+        assert seen["capture_start_monotonic_ns"] == 3_000_000_000
+
+    def test_cmd_decode_passes_capture_start_to_decode_file(self, monkeypatch):
+        args = argparse.Namespace(
+            verbose=False,
+            carrier_hz=None,
+            file="capture.iq",
+            fs=250_000,
+            capture_start_iso="1970-01-01T00:00:04Z",
+        )
+        seen = {}
+
+        def fake_decode_file(path, fs, progress=None, capture_start_monotonic_ns=None):
+            seen["capture_start_monotonic_ns"] = capture_start_monotonic_ns
+            return _decode_result()
+
+        monkeypatch.setattr(cli, "decode_file", fake_decode_file)
+        assert cli.cmd_decode(args) == 0
+        assert seen["capture_start_monotonic_ns"] == 4_000_000_000
 
     def test_cmd_scan_collects_ct_results_with_auto_gain(self, monkeypatch, capsys):
         fake_client = Mock()

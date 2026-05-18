@@ -27,6 +27,7 @@ from rdsclock.rds_blocks import (
     encode_block,
     encode_group,
     find_groups_in_bitstream,
+    find_groups_in_bitstream_with_positions,
     group_bytes_to_words,
     group_words_to_bytes,
 )
@@ -200,6 +201,10 @@ class TestBitstream:
             assert c == 0x1234
             assert d == 0x5678
 
+        groups_with_positions, positions = find_groups_in_bitstream_with_positions(noisy)
+        assert groups_with_positions == groups
+        assert positions == [50, 50 + GROUP_BITS, 50 + 2 * GROUP_BITS]
+
     def test_find_groups_skips_bit_errors(self):
         # Encode 2 groups; corrupt the middle bits - the first should be
         # rejected, while the second should still be found.
@@ -243,6 +248,11 @@ class TestBitstream:
 
         assert len(groups) == 1
         assert group_bytes_to_words(groups[0]) == words
+        groups_with_positions, positions = find_groups_in_bitstream_with_positions(
+            bits, tolerate_single_bit=True
+        )
+        assert groups_with_positions == groups
+        assert positions == [0]
 
     def test_find_groups_drops_candidates_requiring_two_corrections(self):
         bits = blocks_to_bits(encode_group((0xCAFE, 0x4000, 0x1234, 0x5678))).copy()

@@ -183,11 +183,17 @@ for environments where:
 4. **RF fingerprinting** — per-station features (CFO, RSSI, PI) are
    recorded for later analysis. Automated shift detection is on the
    roadmap.
-5. **Holdover** — between Clock-Time messages the receiver
+5. **Receive timestamping** — live captures anchor decoded Group 4A
+   receipt to the host monotonic clock and correct the bit-rate estimate
+   from the 19 kHz pilot tone. With healthy NTP this is a roughly
+   30-80 ms UTC claim; without internet, a 3+ station field demo should
+   be treated as roughly 100-250 ms. Hardware-grade timing requires a
+   hardware time source.
+6. **Holdover** — between Clock-Time messages the receiver
    extrapolates UTC from a local monotonic clock disciplined by an
    estimated ppm drift. Uncertainty grows linearly with the age of
    the most recent CT.
-6. **Operator display** — `UTC 2026-05-17 04:23:18  ±2s  N=3  trust=HIGH`.
+7. **Operator display** — `UTC 2026-05-17 04:23:18  ±2s  N=3  trust=HIGH`.
 
 ### Quick Run
 
@@ -229,12 +235,15 @@ the local antenna picks up.
 
 ## Status
 
-- **0.3.0** — current release. The decoder now uses conservative
-  single-bit RDS block syndrome correction during IQ decode, allowing
-  weak captures to recover groups that previously failed when one bit
-  in a 104-bit group was wrong. Corrected groups are reported separately
-  from clean groups; group totals are intentionally not comparable with
-  0.2.x outputs. Pre-1.0; the CLI and on-disk formats may still change.
+- **0.4.0** — current release. Decoded Clock-Time values now include
+  optional receive timestamp metadata on the host monotonic clock, using
+  group bit positions plus pilot-derived bit-rate drift correction. A
+  parallel sub-second consensus path can learn per-station Group 4A
+  transmit latency across multiple stations. Expected UTC precision is
+  about 30-80 ms with a healthy NTP-disciplined host and about
+  100-250 ms in a 3+ station field demo without internet; this is not
+  a hardware-time-source claim. Pre-1.0; the CLI and on-disk formats may
+  still change.
 - 240+ tests including a real-IQ regression backed by a 6 s capture
   of Polskie Radio Trójka 98.8 from Warsaw; line coverage **100 %**
   (tracked by SonarCloud).

@@ -61,6 +61,15 @@ class TestEncodeDecodeClockTime:
         assert decoded is not None
         assert decoded.utc == dt_local
         assert decoded.local_offset_minutes == 0
+        assert decoded.rx_monotonic_ns is None
+        assert decoded.tx_latency_ns is None
+
+    def test_decode_preserves_rx_monotonic_timestamp(self):
+        dt_local = datetime(2026, 5, 16, 14, 30, tzinfo=UTC)
+        b_extra, c, d = encode_clock_time(dt_local, local_offset_minutes=0)
+        decoded = decode_clock_time(_full_block_b(b_extra), c, d, rx_monotonic_ns=123_456)
+        assert decoded is not None
+        assert decoded.rx_monotonic_ns == 123_456
 
     def test_positive_offset(self):
         # Local time 2026-05-16 16:30 with offset +120 min = UTC 14:30

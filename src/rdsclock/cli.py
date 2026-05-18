@@ -72,12 +72,24 @@ def _print_station(info: StationInfo) -> None:
         ct = info.latest_clock
         if ct is not None:
             print(f"  ClockTime: {ct}  → local: {ct.local.strftime('%Y-%m-%d %H:%M %Z')}")
+            if ct.rx_monotonic_ns is not None:
+                print(f"  rx_monotonic: {ct.rx_monotonic_ns:_d} ns (host time at receipt)")
             print(f"  CT count:  {len(info.clock_times)}")
     else:
         print("  ClockTime: NONE (station not transmitting Group 4A or sending dummy data)")
     if info.group_counts:
         items = sorted(info.group_counts.items(), key=lambda kv: -kv[1])
         print(f"  Groups:    {dict(items)}")
+
+
+def _capture_start_iso_to_ns(value: str | None) -> int | None:
+    if value is None:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(normalized)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1_000_000_000)
 
 
 # ---------- generate ----------
@@ -132,6 +144,7 @@ def cmd_decode(args: argparse.Namespace) -> int:
             print(f"  ▸ {msg}")
 
     start = time.time()
+    capture_start_ns = _capture_start_iso_to_ns(args.capture_start_iso)
     if args.carrier_hz is not None:
         try:
             iq = dsp.read_iq_complex64(args.file)
@@ -139,15 +152,25 @@ def cmd_decode(args: argparse.Namespace) -> int:
                 iq = dsp.read_iq_u8(args.file)
         except Exception:
             iq = dsp.read_iq_u8(args.file)
-        result = decode_iq(
-            iq,
-            fs=args.fs,
-            carrier_hz=args.carrier_hz,
-            auto_carrier=False,
-            progress=progress,
-        )
+        decode_kwargs = {
+            "fs": args.fs,
+            "carrier_hz": args.carrier_hz,
+            "auto_carrier": False,
+            "progress": progress,
+        }
+        if capture_start_ns is not None:
+            decode_kwargs["capture_start_monotonic_ns"] = capture_start_ns
+        result = decode_iq(iq, **decode_kwargs)
     else:
-        result = decode_file(args.file, fs=args.fs, progress=progress)
+        if capture_start_ns is None:
+            result = decode_file(args.file, fs=args.fs, progress=progress)
+        else:
+            result = decode_file(
+                args.file,
+                fs=args.fs,
+                progress=progress,
+                capture_start_monotonic_ns=capture_start_ns,
+            )
     elapsed = time.time() - start
 
     print(f"\n=== {args.file} ===")
@@ -176,6 +199,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         _configure_gain(client, args.gain)
 
         print(f"Recording {args.duration}s @ {args.freq} MHz …")
+        capture_start_ns = time.monotonic_ns()
         iq = client.record(args.duration, args.fs)
         print(
             f"  samples: {len(iq)}  power: "
@@ -192,6 +216,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         carrier_hz=args.carrier_hz,
         auto_carrier=args.carrier_hz is None,
         progress=(lambda m: print(f"  ▸ {m}")) if args.verbose else None,
+        capture_start_monotonic_ns=capture_start_ns,
     )
     print(
         f"\n  Groups: {result.n_groups}  Bits: {result.n_bits}  Δf={result.freq_offset_hz:+.1f} Hz"
@@ -652,6 +677,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the RDS subcarrier frequency",
     )
     pd.add_argument("-v", "--verbose", action="store_true", help="Print pipeline steps")
+    pd.add_argument(
+        "--capture-start-iso",
+        default=None,
+        dest="capture_start_iso",
+        help="Optional ISO timestamp for the start of an offline capture",
+    )
     pd.set_defaults(func=cmd_decode)
 
     # live
