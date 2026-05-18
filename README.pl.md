@@ -24,16 +24,16 @@ jednego odpornego oszacowania czasu z jawną niepewnością.
 Przepływ pracy pasywnego odbiornika czasu:
 
 ```bash
-# 1. Start rtl_tcp on the host that has the dongle
+# 1. Uruchom rtl_tcp na hoście podłączonym do odbiornika
 rtl_tcp -a 127.0.0.1 -p 1234
 
-# 2. Scan the band for stations broadcasting RDS Clock-Time
+# 2. Skan pasma w poszukiwaniu stacji nadających RDS Clock-Time
 rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
 
-# 3. Continuous passive time consensus — picks up Group 4A from the scanned stations
+# 3. Ciągły pasywny konsensus czasu — zbiera Group 4A ze stacji znalezionych w skanie
 rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 30 --iterations 3
 
-# 4. (Optional) full multi-station baseline recording
+# 4. (Opcjonalnie) wielostacyjne nagranie odniesieniowe
 rdsclock multi --freqs 91.0,98.8,102.4 --mode hop --duration 300 \
   --save eter/baseline.iq
 ```
@@ -44,19 +44,19 @@ API Pythona:
 from rdsclock.decoder import decode_file
 from rdsclock.time_consensus import TimeConsensus
 
-# Offline: decode a captured IQ file
+# Offline: zdekoduj zapisany plik IQ
 result = decode_file("eter/baseline-20260518-035918/live-102.4MHz-300s.iq", fs=250_000)
 print(f"PI {result.info.pi:#06x}  PS {result.info.ps_name!r}")
-print(f"Clock times observed: {len(result.info.clock_times)}")
+print(f"Zaobserwowane zegary: {len(result.info.clock_times)}")
 for ct in result.info.clock_times:
     print(f"  {ct}  rx={ct.rx_monotonic_ns} ns")
 
-# Sub-second consensus (requires multiple stations with rx_monotonic_ns set)
+# Konsensus sub-sekundowy (wymaga wielu stacji z wypełnionym rx_monotonic_ns)
 tc = TimeConsensus()
-# … feed observations from multiple stations …
+# … podaj obserwacje z wielu stacji …
 est = tc.sub_second_consensus()
 if est is not None:
-    print(f"Consensus UTC: {est.utc} (±{est.precision_ms:.0f} ms across {est.station_count} stations)")
+    print(f"Konsensus UTC: {est.utc} (±{est.precision_ms:.0f} ms z {est.station_count} stacji)")
 ```
 
 Opcjonalne grupy zależności (instalacja przez `pip install 'rdsclock[audio]'` itd.):
@@ -135,11 +135,11 @@ Odbiornik synchronizuje się z podnośną RDS przez pilota
 odbiorników RTL-SDR. Każdy z wykresów można odtworzyć poleceniami:
 
 ```bash
-# Synthetic
+# Sygnał syntetyczny
 rdsclock generate build/test.iq --snr 30
-rdsclock plot build/test.iq --out spectrum.png      # needs the [plot] extra
+rdsclock plot build/test.iq --out spectrum.png      # wymaga rozszerzenia [plot]
 
-# From your own local capture (no broadcast content shared, plot only)
+# Z własnego nagrania lokalnego (bez udostępniania treści — sam wykres)
 rdsclock live --freq 89.0 --duration 30 --save build/local.iq
 rdsclock plot build/local.iq --out spectrum.png
 ```
