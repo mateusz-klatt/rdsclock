@@ -27,7 +27,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -96,10 +96,15 @@ def quick_scan_band(
     freq = cfg.band_start_mhz
     while freq <= cfg.band_end_mhz + 1e-6:
         client.set_frequency(int(freq * 1e6))
+        capture_start_ns = time.monotonic_ns()
         iq = client.read_iq(int(cfg.fs_scan * cfg.scan_dwell_s), settle_s=0.05)
         rssi = 10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12)
         if rssi > cfg.rssi_threshold_db:
-            result = decode_iq(iq, fs=cfg.fs_scan)
+            result = decode_iq(
+                iq,
+                fs=cfg.fs_scan,
+                capture_start_monotonic_ns=capture_start_ns,
+            )
             has_ct = result.info.latest_clock is not None
             candidates.append(
                 StationCandidate(
@@ -153,10 +158,21 @@ def hop_collect_ct(
     n_obs = 0
     for station in watchlist:
         client.set_frequency(int(station.freq_hz))
+        capture_start_wall = datetime.now(UTC)
+        capture_start_ns = time.monotonic_ns()
         iq = client.read_iq(int(cfg.sample_rate * cfg.dwell_s), settle_s=0.1)
-        result = decode_iq(iq, fs=cfg.sample_rate)
+        result = decode_iq(
+            iq,
+            fs=cfg.sample_rate,
+            capture_start_monotonic_ns=capture_start_ns,
+        )
         ct = result.info.latest_clock
         if ct is not None:
+            received_wall = None
+            if ct.rx_monotonic_ns is not None:
+                received_wall = capture_start_wall + timedelta(
+                    seconds=(ct.rx_monotonic_ns - capture_start_ns) / 1_000_000_000
+                )
             fingerprint = StationFingerprint(
                 pi_code=result.info.pi,
                 cfo_hz=result.freq_offset_hz,
@@ -168,6 +184,9 @@ def hop_collect_ct(
                 ct_utc=ct.utc,
                 received_monotonic=time.monotonic(),
                 fingerprint=fingerprint,
+                clock_time=ct,
+                rx_monotonic_ns=ct.rx_monotonic_ns,
+                received_wall_utc=received_wall,
             )
             consensus.record(obs)
             n_obs += 1

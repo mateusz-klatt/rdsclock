@@ -228,22 +228,24 @@ def _drop_corrected_starts_overlapping_clean(
     return np.sort(np.concatenate((clean_starts, corrected_without_clean_overlap)))
 
 
-def _find_groups_in_bitstream_with_counts(
+def _find_groups_in_bitstream_with_counts_and_positions(
     bits: np.ndarray, tolerate_single_bit: bool = False
-) -> tuple[list[bytearray], int, int]:
+) -> tuple[list[bytearray], list[int], int, int]:
     """Slide over a bitstream and extract groups of 4 consecutively valid blocks.
 
     Enforces version consistency: if block B advertises Version A,
     block C must use offset C; for Version B, block 3 must use offset C'.
     This significantly reduces false-positive group matches on weak streams.
 
-    Returns 8-byte bytearrays plus clean/corrected group counters.
+    Returns 8-byte bytearrays, their bitstream start positions, and
+    clean/corrected group counters.
     """
     bits = _coerce_bits(bits)
     n = len(bits)
     groups: list[bytearray] = []
+    positions: list[int] = []
     if n < GROUP_BITS:
-        return groups, 0, 0
+        return groups, positions, 0, 0
 
     windows = np.lib.stride_tricks.sliding_window_view(bits, BLOCK_BITS)
     words = _bits_to_words_26(windows, assume_binary=True)
@@ -349,8 +351,30 @@ def _find_groups_in_bitstream_with_counts(
                 buf[idx * 2] = (dw >> 8) & 0xFF
                 buf[idx * 2 + 1] = dw & 0xFF
             groups.append(buf)
+            positions.append(group_start)
             next_scan_start = group_start + GROUP_BITS
+    return groups, positions, n_groups_clean, n_groups_corrected
+
+
+def _find_groups_in_bitstream_with_counts(
+    bits: np.ndarray, tolerate_single_bit: bool = False
+) -> tuple[list[bytearray], int, int]:
+    groups, _, n_groups_clean, n_groups_corrected = (
+        _find_groups_in_bitstream_with_counts_and_positions(bits, tolerate_single_bit)
+    )
     return groups, n_groups_clean, n_groups_corrected
+
+
+def find_groups_in_bitstream_with_positions(
+    bits: np.ndarray,
+    *,
+    tolerate_single_bit: bool = False,
+) -> tuple[list[bytearray], list[int]]:
+    """Like :func:`find_groups_in_bitstream`, also returning group start bit indexes."""
+    groups, positions, _, _ = _find_groups_in_bitstream_with_counts_and_positions(
+        bits, tolerate_single_bit
+    )
+    return groups, positions
 
 
 def find_groups_in_bitstream(

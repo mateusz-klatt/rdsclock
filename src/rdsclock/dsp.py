@@ -5,6 +5,8 @@ NumPy ndarrays (typically ``complex64`` for IQ samples and ``float32``
 for FM-demodulated baseband).
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.signal import filtfilt, firwin, lfilter, resample_poly
 
@@ -23,6 +25,17 @@ SYMBOL_LPF_HZ = 4_000  # LPF in the symbol-rate domain (after decimation)
 
 DEFAULT_INPUT_FS = 250_000  # rtl_sdr -s 250000
 DEFAULT_RDS_FS = 19_000  # after decimation; ~16 samples/symbol
+PIPELINE_GROUP_DELAY_NS = -2_528_000
+
+
+@dataclass(frozen=True)
+class BitRateDrift:
+    """Pilot-derived RDS bit-rate estimate and stability flag."""
+
+    bit_rate_hz: float
+    pilot_hz: float
+    pilot_mad_hz: float
+    confident: bool
 
 
 def read_iq_u8(path: str) -> np.ndarray:
@@ -107,6 +120,48 @@ def estimate_pilot_19khz(baseband: np.ndarray, fs: float, search_span_hz: float 
     sub_spec = spec[mask]
     sub_freqs = freqs[mask]
     return float(sub_freqs[int(np.argmax(sub_spec))])
+
+
+def measure_bit_rate_drift(
+    baseband: np.ndarray,
+    fs: float,
+    n_windows: int = 4,
+    pilot_mad_threshold_hz: float = 50.0,
+) -> BitRateDrift:
+    """Estimate RDS bit-rate drift from the 19 kHz stereo pilot.
+
+    The RDS subcarrier is locked to the third pilot harmonic, so the
+    bit rate follows the same ppm drift. If the pilot estimate is
+    unstable across windows, return the nominal 1187.5 bit/s rate and
+    mark the estimate as not confident.
+    """
+    if n_windows <= 0:
+        raise ValueError("n_windows must be positive")
+
+    samples = np.asarray(baseband)
+    if len(samples) < n_windows * 1024:
+        return BitRateDrift(
+            bit_rate_hz=RDS_SYMBOL_RATE,
+            pilot_hz=19_000.0,
+            pilot_mad_hz=float("inf"),
+            confident=False,
+        )
+
+    window_len = len(samples) // n_windows
+    estimates = [
+        estimate_pilot_19khz(samples[i * window_len : (i + 1) * window_len], fs)
+        for i in range(n_windows)
+    ]
+    pilot_hz = float(np.median(estimates))
+    pilot_mad_hz = float(np.median(np.abs(np.asarray(estimates) - pilot_hz)))
+    confident = pilot_mad_hz <= pilot_mad_threshold_hz
+    bit_rate_hz = RDS_SYMBOL_RATE * pilot_hz / 19_000.0 if confident else RDS_SYMBOL_RATE
+    return BitRateDrift(
+        bit_rate_hz=float(bit_rate_hz),
+        pilot_hz=pilot_hz,
+        pilot_mad_hz=pilot_mad_hz,
+        confident=confident,
+    )
 
 
 def estimate_rds_carrier(

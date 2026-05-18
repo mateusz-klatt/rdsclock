@@ -116,6 +116,14 @@ class TestCtParsing:
         assert ct.local_offset_minutes == 120
         assert ct.local == dt_local
 
+    def test_rx_monotonic_timestamp_is_attached_to_clock_time(self):
+        dt = datetime(2026, 5, 16, 14, 30, tzinfo=UTC)
+        g = encode_group_4a(pi=0xCAFE, clock_time_local=dt)
+        info = parse_groups([g], rx_monotonic_ns_by_group=[987_654_321])
+        ct = info.latest_clock
+        assert ct is not None
+        assert ct.rx_monotonic_ns == 987_654_321
+
     def test_multiple_cts_accumulated(self):
         base = datetime(2026, 5, 16, 14, 0, tzinfo=UTC)
         groups = [

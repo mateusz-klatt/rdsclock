@@ -2,9 +2,11 @@
 
 from datetime import UTC, datetime, timedelta
 
+from rdsclock.rds_clock import ClockTime
 from rdsclock.time_consensus import (
     StationObservation,
     StationTrack,
+    SubSecondEstimate,
     TimeConsensus,
     TrustLevel,
 )
@@ -16,6 +18,27 @@ def _obs(freq_mhz: float, pi: int, utc: datetime, mono: float) -> StationObserva
         pi=pi,
         ct_utc=utc,
         received_monotonic=mono,
+    )
+
+
+def _timestamped_obs(
+    freq_mhz: float,
+    pi: int,
+    utc: datetime,
+    latency_ns: int,
+    mono_origin_ns: int,
+    base_utc: datetime,
+) -> StationObservation:
+    declared_offset_ns = int((utc - base_utc).total_seconds() * 1_000_000_000)
+    rx_monotonic_ns = mono_origin_ns + declared_offset_ns + latency_ns
+    ct = ClockTime(utc=utc, local_offset_minutes=0, rx_monotonic_ns=rx_monotonic_ns)
+    return StationObservation(
+        freq_hz=freq_mhz * 1e6,
+        pi=pi,
+        ct_utc=utc,
+        received_monotonic=rx_monotonic_ns / 1_000_000_000,
+        clock_time=ct,
+        received_wall_utc=utc + timedelta(seconds=latency_ns / 1_000_000_000),
     )
 
 
@@ -122,6 +145,126 @@ class TestConsensus:
         t.add_observation(_obs(92.0, 0x3201, utc, mono=100.0))
         est_at_105 = t.estimated_utc_now(monotonic_now=105.0)
         assert est_at_105 == utc + timedelta(seconds=5)
+
+    def test_sub_second_consensus_learns_station_latency_and_back_propagates(self):
+        c = TimeConsensus()
+        base = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
+        mono_origin_ns = 10_000_000_000
+        station_latencies = {
+            (92.0, 0x3201): 5_000_000_000,
+            (98.3, 0x4321): 8_000_000_000,
+            (106.8, 0x5555): 11_000_000_000,
+        }
+        for minute in range(3):
+            for (freq, pi), latency_ns in station_latencies.items():
+                c.record(
+                    _timestamped_obs(
+                        freq,
+                        pi,
+                        base + timedelta(minutes=minute),
+                        latency_ns,
+                        mono_origin_ns,
+                        base,
+                    )
+                )
+
+        estimate = c.sub_second_consensus(
+            monotonic_now_ns=mono_origin_ns + 180_000_000_000,
+            wall_now_utc=base + timedelta(minutes=3),
+        )
+
+        assert isinstance(estimate, SubSecondEstimate)
+        assert estimate.utc == base + timedelta(minutes=2)
+        assert estimate.precision_ms == 0.0
+        assert estimate.station_count == 3
+        for track in c.tracks.values():
+            assert track.tx_latency_ns in station_latencies.values()
+            assert all(obs.tx_latency_ns == track.tx_latency_ns for obs in track.observations)
+            assert all(
+                obs.clock_time is not None and obs.clock_time.tx_latency_ns == track.tx_latency_ns
+                for obs in track.observations
+            )
+
+    def test_sub_second_consensus_requires_two_estimated_station_latencies(self):
+        c = TimeConsensus()
+        base = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
+        for minute in range(3):
+            c.record(
+                _timestamped_obs(
+                    92.0,
+                    0x3201,
+                    base + timedelta(minutes=minute),
+                    5_000_000_000,
+                    10_000_000_000,
+                    base,
+                )
+            )
+        assert (
+            c.sub_second_consensus(
+                monotonic_now_ns=190_000_000_000,
+                wall_now_utc=base + timedelta(minutes=3),
+            )
+            is None
+        )
+
+    def test_sub_second_consensus_default_clock_and_edge_branches(self, monkeypatch):
+        c = TimeConsensus()
+        base = datetime(2026, 5, 17, 12, 0)
+        mono_origin_ns = 20_000_000_000
+        wall_now = base + timedelta(minutes=2)
+        monkeypatch.setattr("rdsclock.time_consensus.time.monotonic_ns", lambda: mono_origin_ns)
+        monkeypatch.setattr(
+            "rdsclock.time_consensus.time.time_ns",
+            lambda: int(wall_now.replace(tzinfo=UTC).timestamp() * 1_000_000_000),
+        )
+
+        # One incomplete track covers the "no learned latency yet" branch.
+        c.record(
+            StationObservation(
+                freq_hz=88.0e6,
+                pi=0x1111,
+                ct_utc=base.replace(tzinfo=UTC),
+                received_monotonic=20.0,
+            )
+        )
+        for minute in range(3):
+            for freq, pi, latency_ns in [
+                (92.0, 0x3201, 5_000_000_000),
+                (98.3, 0x4321, 7_000_000_000),
+            ]:
+                declared = base + timedelta(minutes=minute)
+                rx_monotonic_ns = mono_origin_ns + minute * 60_000_000_000 + latency_ns
+                obs = StationObservation(
+                    freq_hz=freq * 1e6,
+                    pi=pi,
+                    ct_utc=declared,
+                    received_monotonic=rx_monotonic_ns / 1_000_000_000,
+                    rx_monotonic_ns=rx_monotonic_ns,
+                )
+                c.record(obs)
+                obs.received_wall_utc = None
+
+        estimate = c.sub_second_consensus()
+
+        assert estimate is not None
+        assert estimate.station_count == 2
+
+        empty_rx_track = StationTrack(freq_hz=99.9e6, pi=0x9999, tx_latency_ns=1)
+        empty_rx_track.add_observation(_obs(99.9, 0x9999, base.replace(tzinfo=UTC), mono=1.0))
+        c.tracks[(99_900_000, 0x9999)] = empty_rx_track
+        estimates = c._sub_second_station_estimates(mono_origin_ns, 0)
+        assert len(estimates) == 2
+
+    def test_station_observation_normalizes_naive_received_wall(self):
+        obs = StationObservation(
+            freq_hz=92e6,
+            pi=0x3201,
+            ct_utc=datetime(2026, 5, 17, 12, 0, tzinfo=UTC),
+            received_monotonic=1.0,
+            received_wall_utc=datetime(2026, 5, 17, 12, 0),
+        )
+        assert obs.received_wall_utc is not None
+        assert obs.received_wall_utc.tzinfo is UTC
 
 
 class TestTrackBookkeeping:

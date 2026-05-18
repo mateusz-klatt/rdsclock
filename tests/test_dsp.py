@@ -2,6 +2,7 @@
 synthetic inputs."""
 
 import numpy as np
+import pytest
 
 from rdsclock import dsp
 
@@ -139,3 +140,34 @@ class TestBitsFromSymbols:
         data = dsp.bits_from_symbols_diff(symbols)
         # tx[n]^tx[n-1]: (1^0)=1, (0^1)=1, (0^0)=0, (1^0)=1
         np.testing.assert_array_equal(data, [1, 1, 0, 1])
+
+
+class TestBitRateDrift:
+    def test_measures_stable_pilot(self):
+        fs = 76_000
+        pilot = 19_010.0
+        n = np.arange(fs * 4)
+        baseband = np.cos(2 * np.pi * pilot * n / fs).astype(np.float32)
+
+        drift = dsp.measure_bit_rate_drift(baseband, fs=fs)
+
+        assert drift.confident
+        assert abs(drift.pilot_hz - pilot) < 1.0
+        assert drift.pilot_mad_hz == 0.0
+        assert drift.bit_rate_hz > dsp.RDS_SYMBOL_RATE
+
+    def test_short_or_unstable_pilot_falls_back(self, monkeypatch):
+        short = dsp.measure_bit_rate_drift(np.ones(100, dtype=np.float32), fs=76_000)
+        assert not short.confident
+        assert short.bit_rate_hz == dsp.RDS_SYMBOL_RATE
+
+        estimates = iter([19_000.0, 19_200.0, 19_000.0, 19_200.0])
+        monkeypatch.setattr(dsp, "estimate_pilot_19khz", lambda baseband, fs: next(estimates))
+        unstable = dsp.measure_bit_rate_drift(np.ones(4096, dtype=np.float32), fs=76_000)
+        assert not unstable.confident
+        assert unstable.pilot_mad_hz == 100.0
+        assert unstable.bit_rate_hz == dsp.RDS_SYMBOL_RATE
+
+    def test_rejects_non_positive_window_count(self):
+        with pytest.raises(ValueError, match="n_windows"):
+            dsp.measure_bit_rate_drift(np.ones(4096, dtype=np.float32), fs=76_000, n_windows=0)
