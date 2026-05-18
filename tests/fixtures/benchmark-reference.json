@@ -1,0 +1,106 @@
+{
+  "rdsclock_version": "0.4.0",
+  "baseline_dir": "eter/baseline-20260518-035918",
+  "fs": 250000,
+  "results": [
+    {
+      "file": "live-101.0MHz-300s.iq",
+      "groups": 0,
+      "groups_clean": 0,
+      "groups_corrected": 0,
+      "bits": 356249,
+      "pi": null,
+      "pty": null,
+      "ps": "",
+      "rt": "",
+      "ct_count": 0,
+      "latest_ct": null,
+      "group_counts": {},
+      "decode_seconds": 72.06,
+      "station": "101.0 MHz"
+    },
+    {
+      "file": "live-102.4MHz-300s.iq",
+      "groups": 2607,
+      "groups_clean": 2592,
+      "groups_corrected": 15,
+      "bits": 356248,
+      "pi": "0x3211",
+      "pty": 3,
+      "ps": "JEDYNKA",
+      "rt": "Tak to Bywalo",
+      "ct_count": 3,
+      "latest_ct": "2026-05-18 04:44Z (LTO +00:00)",
+      "group_counts": {
+        "0A": 2232,
+        "2A": 372,
+        "4A": 3
+      },
+      "decode_seconds": 58.44,
+      "station": "102.4 MHz"
+    },
+    {
+      "file": "live-91.0MHz-300s.iq",
+      "groups": 189,
+      "groups_clean": 114,
+      "groups_corrected": 75,
+      "bits": 356248,
+      "pi": "0x3F44",
+      "pty": 1,
+      "ps": " RMF FM",
+      "rt": "        my n            ne:",
+      "ct_count": 1,
+      "latest_ct": "2026-05-18 04:03Z (LTO +00:00)",
+      "group_counts": {
+        "0A": 133,
+        "2A": 54,
+        "4A": 1,
+        "6A": 1
+      },
+      "decode_seconds": 61.71,
+      "station": "91.0 MHz"
+    },
+    {
+      "file": "live-96.5MHz-300s.iq",
+      "groups": 1003,
+      "groups_clean": 550,
+      "groups_corrected": 453,
+      "bits": 356248,
+      "pi": "0x321C",
+      "pty": 10,
+      "ps": " 96.5FM",
+      "rt": "+ www.radioplus.pl +",
+      "ct_count": 3,
+      "latest_ct": "2026-05-18 04:13Z (LTO +00:00)",
+      "group_counts": {
+        "2A": 339,
+        "0A": 660,
+        "4A": 3,
+        "3A": 1
+      },
+      "decode_seconds": 59.36,
+      "station": "96.5 MHz"
+    },
+    {
+      "file": "live-98.8MHz-300s.iq",
+      "groups": 1242,
+      "groups_clean": 828,
+      "groups_corrected": 414,
+      "bits": 356248,
+      "pi": "0x3233",
+      "pty": 10,
+      "ps": " TROJKA",
+      "rt": "            o    Polskie Rad     Polskie                    dio",
+      "ct_count": 2,
+      "latest_ct": "2026-05-18 04:24Z (LTO +00:00)",
+      "group_counts": {
+        "0A": 991,
+        "2A": 248,
+        "12A": 1,
+        "4A": 2
+      },
+      "decode_seconds": 57.21,
+      "station": "98.8 MHz"
+    }
+  ]
+}
