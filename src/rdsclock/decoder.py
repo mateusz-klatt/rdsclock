@@ -41,6 +41,94 @@ class DecodeResult:
         return self.info.clock_times
 
 
+@dataclass
+class _DecodeAttempt:
+    """Result of one bitstream-recovery attempt."""
+
+    groups: list[bytearray]
+    positions: list[int]
+    n_clean: int
+    n_corrected: int
+    bits: np.ndarray
+    variant_used: str
+    sym_offset: int
+
+
+def _resolve_carrier(
+    fm: np.ndarray,
+    fs: float,
+    carrier_hz: float | None,
+    auto_carrier: bool,
+    emit: Callable[[str], None],
+) -> float:
+    if carrier_hz is not None:
+        return carrier_hz
+    if not auto_carrier:
+        return dsp.RDS_CARRIER_HZ
+    carrier_hz = dsp.estimate_rds_carrier(fm, fs)
+    emit(f"auto carrier: {carrier_hz:.1f} Hz (drift {carrier_hz - dsp.RDS_CARRIER_HZ:+.1f})")
+    return carrier_hz
+
+
+def _decode_with_offset_sweep(matched: np.ndarray, sps: int) -> _DecodeAttempt | None:
+    best: _DecodeAttempt | None = None
+    for offset in range(sps):
+        sampled = matched[offset::sps]
+        if len(sampled) < 100:
+            continue
+        bits_candidate = dsp.bits_from_symbols_diff(sampled)
+        groups_candidate, positions_candidate, variant_candidate, n_clean, n_corrected = (
+            _best_variant_groups(bits_candidate)
+        )
+        candidate_score = _group_score(groups_candidate, n_clean, n_corrected)
+        if best is not None and candidate_score <= _group_score(
+            best.groups, best.n_clean, best.n_corrected
+        ):
+            continue
+        best = _DecodeAttempt(
+            groups=groups_candidate,
+            positions=positions_candidate,
+            n_clean=n_clean,
+            n_corrected=n_corrected,
+            bits=bits_candidate,
+            variant_used=f"biphase/off{offset}/{variant_candidate}",
+            sym_offset=offset,
+        )
+    return best
+
+
+def _decode_fallback(rds_sync: np.ndarray, sps: int) -> _DecodeAttempt:
+    bo_symbols, bo_sym_off = dsp.best_symbol_offset(rds_sync, sps=sps)
+    bo_bits = dsp.bits_from_symbols_diff(bo_symbols)
+    bo_groups, bo_positions, bo_variant, bo_clean, bo_corrected = _best_variant_groups(bo_bits)
+
+    mm_symbols = dsp.clock_recovery_mm(rds_sync, sps=sps)
+    mm_bits = dsp.bits_from_symbols_diff(mm_symbols)
+    mm_groups, mm_positions, mm_variant, mm_clean, mm_corrected = _best_variant_groups(mm_bits)
+
+    if _group_score(mm_groups, mm_clean, mm_corrected) > _group_score(
+        bo_groups, bo_clean, bo_corrected
+    ):
+        return _DecodeAttempt(
+            groups=mm_groups,
+            positions=mm_positions,
+            n_clean=mm_clean,
+            n_corrected=mm_corrected,
+            bits=mm_bits,
+            variant_used=f"mm/{mm_variant}",
+            sym_offset=-1,  # MM has no fixed offset, only its mu state
+        )
+    return _DecodeAttempt(
+        groups=bo_groups,
+        positions=bo_positions,
+        n_clean=bo_clean,
+        n_corrected=bo_corrected,
+        bits=bo_bits,
+        variant_used=f"bo/{bo_variant}",
+        sym_offset=bo_sym_off,
+    )
+
+
 def decode_iq(
     iq: np.ndarray,
     fs: float = dsp.DEFAULT_INPUT_FS,
@@ -72,14 +160,7 @@ def decode_iq(
         dsp.measure_bit_rate_drift(fm, fs) if capture_start_monotonic_ns is not None else None
     )
 
-    if carrier_hz is None:
-        if auto_carrier:
-            carrier_hz = dsp.estimate_rds_carrier(fm, fs)
-            emit(
-                f"auto carrier: {carrier_hz:.1f} Hz (drift {carrier_hz - dsp.RDS_CARRIER_HZ:+.1f})"
-            )
-        else:
-            carrier_hz = dsp.RDS_CARRIER_HZ
+    carrier_hz = _resolve_carrier(fm, fs, carrier_hz, auto_carrier, emit)
 
     emit(f"shift_and_filter @ {carrier_hz:.1f} Hz")
     rds_complex = dsp.shift_and_filter(fm, fs, carrier=carrier_hz)
@@ -106,100 +187,37 @@ def decode_iq(
     sps = int(round(dsp.DEFAULT_RDS_FS / dsp.RDS_SYMBOL_RATE))
     emit(f"biphase matched filter + offset search (sps {sps})")
     matched = dsp.biphase_matched_filter(rds_sync, sps_bit=sps)
-    best_groups: list[bytearray] | None = None
-    best_positions: list[int] | None = None
-    best_groups_clean = 0
-    best_groups_corrected = 0
-    best_bits: np.ndarray | None = None
-    variant_used = "biphase/none"
-    sym_offset = 0
-    for offset in range(sps):
-        sampled = matched[offset::sps]
-        if len(sampled) < 100:
-            continue
-        bits_candidate = dsp.bits_from_symbols_diff(sampled)
-        (
-            groups_candidate,
-            positions_candidate,
-            variant_candidate,
-            groups_clean_candidate,
-            groups_corrected_candidate,
-        ) = _best_variant_groups(bits_candidate)
-        if best_groups is None or _group_score(
-            groups_candidate, groups_clean_candidate, groups_corrected_candidate
-        ) > _group_score(best_groups, best_groups_clean, best_groups_corrected):
-            best_groups = groups_candidate
-            best_positions = positions_candidate
-            best_groups_clean = groups_clean_candidate
-            best_groups_corrected = groups_corrected_candidate
-            best_bits = bits_candidate
-            variant_used = f"biphase/off{offset}/{variant_candidate}"
-            sym_offset = offset
-
-    if best_groups is None or best_positions is None or best_bits is None:
+    attempt = _decode_with_offset_sweep(matched, sps)
+    if attempt is None:
         # Very short streams may not have enough biphase samples for the
         # offset sweep. Preserve the legacy paths for those callers.
         emit(f"clock recovery fallback: best_offset + mueller_muller (sps {sps})")
-        bo_symbols, bo_sym_off = dsp.best_symbol_offset(rds_sync, sps=sps)
-        bo_bits = dsp.bits_from_symbols_diff(bo_symbols)
-        bo_groups, bo_positions, bo_variant, bo_groups_clean, bo_groups_corrected = (
-            _best_variant_groups(bo_bits)
-        )
-
-        mm_symbols = dsp.clock_recovery_mm(rds_sync, sps=sps)
-        mm_bits = dsp.bits_from_symbols_diff(mm_symbols)
-        mm_groups, mm_positions, mm_variant, mm_groups_clean, mm_groups_corrected = (
-            _best_variant_groups(mm_bits)
-        )
-
-        if _group_score(mm_groups, mm_groups_clean, mm_groups_corrected) > _group_score(
-            bo_groups, bo_groups_clean, bo_groups_corrected
-        ):
-            groups = mm_groups
-            group_positions = mm_positions
-            groups_clean = mm_groups_clean
-            groups_corrected = mm_groups_corrected
-            variant_used = f"mm/{mm_variant}"
-            bits = mm_bits
-            sym_offset = -1  # MM has no fixed offset, only its mu state
-        else:
-            groups = bo_groups
-            group_positions = bo_positions
-            groups_clean = bo_groups_clean
-            groups_corrected = bo_groups_corrected
-            variant_used = f"bo/{bo_variant}"
-            bits = bo_bits
-            sym_offset = bo_sym_off
-    else:
-        groups = best_groups
-        group_positions = best_positions
-        groups_clean = best_groups_clean
-        groups_corrected = best_groups_corrected
-        bits = best_bits
+        attempt = _decode_fallback(rds_sync, sps)
 
     rx_monotonic_ns_by_group = _rx_monotonic_ns_by_group(
         capture_start_monotonic_ns,
-        group_positions,
+        attempt.positions,
         bit_rate_drift,
     )
     if rx_monotonic_ns_by_group is None:
-        info = parse_groups(groups)
+        info = parse_groups(attempt.groups)
     else:
-        info = parse_groups(groups, rx_monotonic_ns_by_group=rx_monotonic_ns_by_group)
+        info = parse_groups(attempt.groups, rx_monotonic_ns_by_group=rx_monotonic_ns_by_group)
     emit(
-        f"groups={len(groups)} clean={groups_clean} corrected={groups_corrected} "
-        f"variant={variant_used} freq_off={freq_off:+.1f} Hz"
+        f"groups={len(attempt.groups)} clean={attempt.n_clean} "
+        f"corrected={attempt.n_corrected} variant={attempt.variant_used} "
+        f"freq_off={freq_off:+.1f} Hz"
     )
 
     return DecodeResult(
         info=info,
-        n_groups=len(groups),
-        n_bits=len(bits),
+        n_groups=len(attempt.groups),
+        n_bits=len(attempt.bits),
         freq_offset_hz=float(freq_off),
-        symbol_offset=sym_offset,
-        n_groups_clean=groups_clean,
-        n_groups_corrected=groups_corrected,
-        group_bit_positions=group_positions,
+        symbol_offset=attempt.sym_offset,
+        n_groups_clean=attempt.n_clean,
+        n_groups_corrected=attempt.n_corrected,
+        group_bit_positions=attempt.positions,
     )
 
 

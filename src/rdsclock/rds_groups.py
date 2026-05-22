@@ -109,6 +109,53 @@ def _safe_char(byte: int) -> str:
     return " "
 
 
+def _update_ps(b: int, d: int, info: StationInfo) -> None:
+    seg = b & 0x3  # 2-bit segment address (0..3)
+    bit = 1 << seg
+    if not info._ps_segments_seen & bit:
+        info._ps_candidate[seg * 2] = _safe_char((d >> 8) & 0xFF)
+        info._ps_candidate[seg * 2 + 1] = _safe_char(d & 0xFF)
+        info._ps_segments_seen |= bit
+    if info._ps_segments_seen != 0b1111:
+        return
+    candidate = "".join(info._ps_candidate)
+    previous = info._ps_history[-1] if info._ps_history else None
+    info._ps_history.append(candidate)
+    if candidate == previous:
+        info._ps_stable_count += 1
+    else:
+        info._ps_stable_count = 1
+    if info._ps_stable_count >= 2:
+        info.ps_chars[:] = list(candidate)
+    info._ps_candidate = [" "] * PS_LEN
+    info._ps_segments_seen = 0
+
+
+def _update_rt(b: int, c: int, d: int, version: int, info: StationInfo) -> None:
+    ab_flag = (b >> 4) & 0x1
+    if info.rt_ab_flag is not None and info.rt_ab_flag != ab_flag:
+        info.rt_chars = [" "] * RT_LEN
+    info.rt_ab_flag = ab_flag
+    addr = b & 0xF
+    if version == 0:
+        # Group 2A: 4 RT chars in C + D
+        info.rt_chars[addr * 4] = _safe_char((c >> 8) & 0xFF)
+        info.rt_chars[addr * 4 + 1] = _safe_char(c & 0xFF)
+        info.rt_chars[addr * 4 + 2] = _safe_char((d >> 8) & 0xFF)
+        info.rt_chars[addr * 4 + 3] = _safe_char(d & 0xFF)
+    else:
+        # Group 2B: 2 RT chars in D
+        info.rt_chars[addr * 2] = _safe_char((d >> 8) & 0xFF)
+        info.rt_chars[addr * 2 + 1] = _safe_char(d & 0xFF)
+
+
+def _update_clock(b: int, c: int, d: int, rx_monotonic_ns: int | None, info: StationInfo) -> None:
+    # The two MSBs of MJD live in block B[1:0] — pass the FULL block B.
+    ct = decode_clock_time(b, c, d, rx_monotonic_ns=rx_monotonic_ns)
+    if ct is not None:
+        info.clock_times.append(ct)
+
+
 def parse_group(
     group_bytes: Sequence[int],
     info: StationInfo,
@@ -129,48 +176,11 @@ def parse_group(
     info.group_counts[label] = info.group_counts.get(label, 0) + 1
 
     if group_type == 0:
-        seg = b & 0x3  # 2-bit segment address (0..3)
-        # Block D carries two PS characters
-        bit = 1 << seg
-        if not info._ps_segments_seen & bit:
-            info._ps_candidate[seg * 2] = _safe_char((d >> 8) & 0xFF)
-            info._ps_candidate[seg * 2 + 1] = _safe_char(d & 0xFF)
-            info._ps_segments_seen |= bit
-        if info._ps_segments_seen == 0b1111:
-            candidate = "".join(info._ps_candidate)
-            previous = info._ps_history[-1] if info._ps_history else None
-            info._ps_history.append(candidate)
-            if candidate == previous:
-                info._ps_stable_count += 1
-            else:
-                info._ps_stable_count = 1
-            if info._ps_stable_count >= 2:
-                info.ps_chars[:] = list(candidate)
-            info._ps_candidate = [" "] * PS_LEN
-            info._ps_segments_seen = 0
-
+        _update_ps(b, d, info)
     elif group_type == 2:
-        ab_flag = (b >> 4) & 0x1
-        if info.rt_ab_flag is not None and info.rt_ab_flag != ab_flag:
-            info.rt_chars = [" "] * RT_LEN
-        info.rt_ab_flag = ab_flag
-        addr = b & 0xF
-        if version == 0:
-            # Group 2A: 4 RT chars in C + D
-            info.rt_chars[addr * 4] = _safe_char((c >> 8) & 0xFF)
-            info.rt_chars[addr * 4 + 1] = _safe_char(c & 0xFF)
-            info.rt_chars[addr * 4 + 2] = _safe_char((d >> 8) & 0xFF)
-            info.rt_chars[addr * 4 + 3] = _safe_char(d & 0xFF)
-        else:
-            # Group 2B: 2 RT chars in D
-            info.rt_chars[addr * 2] = _safe_char((d >> 8) & 0xFF)
-            info.rt_chars[addr * 2 + 1] = _safe_char(d & 0xFF)
-
+        _update_rt(b, c, d, version, info)
     elif group_type == 4 and version == 0:
-        # The two MSBs of MJD live in block B[1:0] — pass the FULL block B.
-        ct = decode_clock_time(b, c, d, rx_monotonic_ns=rx_monotonic_ns)
-        if ct is not None:
-            info.clock_times.append(ct)
+        _update_clock(b, c, d, rx_monotonic_ns, info)
 
     return info
 
