@@ -123,14 +123,14 @@ def _single_bit_error_position(block26: int, offset_word: int) -> int:
     return _SINGLE_BIT_SYNDROME_TABLE.get(_block_syndrome(block26, offset_word), -1)
 
 
-def _offset_words_for_block(block_no: int, version_b: bool | None) -> tuple[int, ...]:
+def _offset_words_for_block(block_no: int, version_b: bool | None) -> list[int]:
     if block_no != 2:
-        return (OFFSETS[block_no],)
+        return [OFFSETS[block_no]]
     if version_b is True:
-        return (OFFSET_C_PRIME,)
+        return [OFFSET_C_PRIME]
     if version_b is False:
-        return (OFFSET_C,)
-    return (OFFSET_C, OFFSET_C_PRIME)
+        return [OFFSET_C]
+    return [OFFSET_C, OFFSET_C_PRIME]
 
 
 def block_valid(
