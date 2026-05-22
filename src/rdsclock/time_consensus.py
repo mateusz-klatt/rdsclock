@@ -231,6 +231,31 @@ def _minute_phase_ns(rx_monotonic_ns: int, declared_monotonic_ns: int) -> int:
     return (rx_monotonic_ns - declared_monotonic_ns) % MINUTE_NS
 
 
+def _observation_phase_ns(
+    obs: "StationObservation",
+    monotonic_now_ns: int,
+    wall_now_epoch_ns: int,
+) -> int | None:
+    if obs.rx_monotonic_ns is None:
+        return None
+    declared_epoch_ns = _datetime_to_epoch_ns(obs.ct_utc)
+    if obs.received_wall_utc is None:
+        declared_monotonic_ns = monotonic_now_ns + declared_epoch_ns - wall_now_epoch_ns
+    else:
+        declared_monotonic_ns = (
+            obs.rx_monotonic_ns + declared_epoch_ns - _datetime_to_epoch_ns(obs.received_wall_utc)
+        )
+    return _minute_phase_ns(obs.rx_monotonic_ns, declared_monotonic_ns)
+
+
+def _apply_tx_latency(track: "StationTrack", tx_latency_ns: int) -> None:
+    track.tx_latency_ns = tx_latency_ns
+    for obs in track.observations:
+        obs.tx_latency_ns = tx_latency_ns
+        if obs.clock_time is not None:
+            obs.clock_time = replace(obs.clock_time, tx_latency_ns=tx_latency_ns)
+
+
 def _median_age_of_contributors(
     estimates: list[tuple["StationTrack", datetime]],
     epochs: list[float],
@@ -324,24 +349,11 @@ class TimeConsensus:
         for track in self.tracks.values():
             phases: list[int] = []
             for obs in track.observations:
-                if obs.rx_monotonic_ns is None:
-                    continue
-                declared_epoch_ns = _datetime_to_epoch_ns(obs.ct_utc)
-                if obs.received_wall_utc is None:
-                    declared_monotonic_ns = monotonic_now_ns + declared_epoch_ns - wall_now_epoch_ns
-                else:
-                    declared_monotonic_ns = (
-                        obs.rx_monotonic_ns
-                        + declared_epoch_ns
-                        - _datetime_to_epoch_ns(obs.received_wall_utc)
-                    )
-                phases.append(_minute_phase_ns(obs.rx_monotonic_ns, declared_monotonic_ns))
+                phase = _observation_phase_ns(obs, monotonic_now_ns, wall_now_epoch_ns)
+                if phase is not None:
+                    phases.append(phase)
             if len(phases) >= 3:
-                track.tx_latency_ns = _median_int(phases)
-                for obs in track.observations:
-                    obs.tx_latency_ns = track.tx_latency_ns
-                    if obs.clock_time is not None:
-                        obs.clock_time = replace(obs.clock_time, tx_latency_ns=track.tx_latency_ns)
+                _apply_tx_latency(track, _median_int(phases))
 
     def _sub_second_station_estimates(
         self,

@@ -123,6 +123,16 @@ def _single_bit_error_position(block26: int, offset_word: int) -> int:
     return _SINGLE_BIT_SYNDROME_TABLE.get(_block_syndrome(block26, offset_word), -1)
 
 
+def _offset_words_for_block(block_no: int, version_b: bool | None) -> tuple[int, ...]:
+    if block_no != 2:
+        return (OFFSETS[block_no],)
+    if version_b is True:
+        return (OFFSET_C_PRIME,)
+    if version_b is False:
+        return (OFFSET_C,)
+    return (OFFSET_C, OFFSET_C_PRIME)
+
+
 def block_valid(
     block26: int,
     block_no: int,
@@ -139,25 +149,11 @@ def block_valid(
     """
     if not 0 <= block_no < GROUP_BLOCKS:
         raise ValueError(f"block_no out of [0..3]: {block_no}")
-    if block_no == 2:
-        if version_b is True:
-            offset_words = (OFFSET_C_PRIME,)
-        elif version_b is False:
-            offset_words = (OFFSET_C,)
-        else:
-            offset_words = (OFFSET_C, OFFSET_C_PRIME)
-    else:
-        offset_words = (OFFSETS[block_no],)
-
-    for offset_word in offset_words:
-        if _block_syndrome(block26, offset_word) == 0:
-            return True
-
+    offset_words = _offset_words_for_block(block_no, version_b)
+    if any(_block_syndrome(block26, ow) == 0 for ow in offset_words):
+        return True
     if correct_single_bit:
-        for offset_word in offset_words:
-            if _single_bit_error_position(block26, offset_word) >= 0:
-                return True
-
+        return any(_single_bit_error_position(block26, ow) >= 0 for ow in offset_words)
     return False
 
 
@@ -228,6 +224,114 @@ def _drop_corrected_starts_overlapping_clean(
     return np.sort(np.concatenate((clean_starts, corrected_without_clean_overlap)))
 
 
+def _compute_validity_masks(
+    check: np.ndarray, expected: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    return (
+        (check ^ OFFSET_A) == expected,
+        (check ^ OFFSET_B) == expected,
+        (check ^ OFFSET_C) == expected,
+        (check ^ OFFSET_C_PRIME) == expected,
+        (check ^ OFFSET_D) == expected,
+    )
+
+
+def _single_bit_error_positions(
+    check: np.ndarray, expected: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    return (
+        _SINGLE_BIT_SYNDROME_LOOKUP[check ^ OFFSET_A ^ expected],
+        _SINGLE_BIT_SYNDROME_LOOKUP[check ^ OFFSET_B ^ expected],
+        _SINGLE_BIT_SYNDROME_LOOKUP[check ^ OFFSET_C ^ expected],
+        _SINGLE_BIT_SYNDROME_LOOKUP[check ^ OFFSET_C_PRIME ^ expected],
+        _SINGLE_BIT_SYNDROME_LOOKUP[check ^ OFFSET_D ^ expected],
+    )
+
+
+def _group_starts_with_correction(
+    valid_masks: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    block_c_valid: np.ndarray,
+    error_positions: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    start_count: int,
+    block_b_slice: slice,
+) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, ...]]:
+    valid_a, valid_b, _, _, valid_d = valid_masks
+    error_pos_a, error_pos_b, error_pos_c, error_pos_d = error_positions
+    block_a_clean = valid_a[:start_count]
+    block_b_clean = valid_b[block_b_slice]
+    block_d_clean = valid_d[3 * BLOCK_BITS : 3 * BLOCK_BITS + start_count]
+    block_a_corrected = error_pos_a >= 0
+    block_b_corrected = error_pos_b >= 0
+    block_c_corrected = error_pos_c >= 0
+    block_d_corrected = error_pos_d >= 0
+    correction_counts = (
+        block_a_corrected.astype(np.uint8)
+        + block_b_corrected.astype(np.uint8)
+        + block_c_corrected.astype(np.uint8)
+        + block_d_corrected.astype(np.uint8)
+    )
+    group_starts = np.flatnonzero(
+        (block_a_clean | block_a_corrected)
+        & (block_b_clean | block_b_corrected)
+        & (block_c_valid | block_c_corrected)
+        & (block_d_clean | block_d_corrected)
+        & (correction_counts <= 1)
+    )
+    group_starts = _drop_corrected_starts_overlapping_clean(group_starts, correction_counts)
+    return group_starts, correction_counts, error_positions
+
+
+def _materialize_group(
+    data: np.ndarray,
+    group_offsets: np.ndarray,
+    group_start: int,
+    correction_counts: np.ndarray,
+    error_positions_by_block: tuple[np.ndarray, ...],
+) -> tuple[bytearray, int]:
+    datawords = data[group_start + group_offsets].astype(np.uint32, copy=True)
+    corrected_count = int(correction_counts[group_start])
+    if corrected_count:
+        for idx, error_positions in enumerate(error_positions_by_block):
+            error_pos = int(error_positions[group_start])
+            if 0 <= error_pos < DATA_BITS:
+                datawords[idx] ^= _DATA_BIT_CORRECTION_MASKS[error_pos]
+    buf = bytearray(8)
+    for idx, dw_raw in enumerate(datawords):
+        dw = int(dw_raw)
+        buf[idx * 2] = (dw >> 8) & 0xFF
+        buf[idx * 2 + 1] = dw & 0xFF
+    return buf, corrected_count
+
+
+def _emit_groups_from_starts(
+    data: np.ndarray,
+    group_starts: np.ndarray,
+    correction_counts: np.ndarray,
+    error_positions_by_block: tuple[np.ndarray, ...],
+) -> tuple[list[bytearray], list[int], int, int]:
+    groups: list[bytearray] = []
+    positions: list[int] = []
+    n_groups_clean = 0
+    n_groups_corrected = 0
+    next_scan_start = 0
+    group_offsets = np.array([0, BLOCK_BITS, 2 * BLOCK_BITS, 3 * BLOCK_BITS], dtype=np.intp)
+    for start in group_starts:
+        group_start = int(start)
+        if group_start < next_scan_start:
+            continue
+        buf, corrected_count = _materialize_group(
+            data, group_offsets, group_start, correction_counts, error_positions_by_block
+        )
+        if corrected_count:
+            n_groups_corrected += 1
+        else:
+            n_groups_clean += 1
+        groups.append(buf)
+        positions.append(group_start)
+        next_scan_start = group_start + GROUP_BITS
+    return groups, positions, n_groups_clean, n_groups_corrected
+
+
 def _find_groups_in_bitstream_with_counts_and_positions(
     bits: np.ndarray, tolerate_single_bit: bool = False
 ) -> tuple[list[bytearray], list[int], int, int]:
@@ -242,10 +346,8 @@ def _find_groups_in_bitstream_with_counts_and_positions(
     """
     bits = _coerce_bits(bits)
     n = len(bits)
-    groups: list[bytearray] = []
-    positions: list[int] = []
     if n < GROUP_BITS:
-        return groups, positions, 0, 0
+        return [], [], 0, 0
 
     windows = np.lib.stride_tricks.sliding_window_view(bits, BLOCK_BITS)
     words = _bits_to_words_26(windows, assume_binary=True)
@@ -253,11 +355,8 @@ def _find_groups_in_bitstream_with_counts_and_positions(
     check = words & _BLOCK_WORD_MASK
     expected = _crc10_many(data)
 
-    valid_a = (check ^ OFFSET_A) == expected
-    valid_b = (check ^ OFFSET_B) == expected
-    valid_c = (check ^ OFFSET_C) == expected
-    valid_c_prime = (check ^ OFFSET_C_PRIME) == expected
-    valid_d = (check ^ OFFSET_D) == expected
+    valid_masks = _compute_validity_masks(check, expected)
+    valid_a, valid_b, valid_c, valid_c_prime, valid_d = valid_masks
 
     start_count = n - GROUP_BITS + 1
     block_b_slice = slice(BLOCK_BITS, BLOCK_BITS + start_count)
@@ -266,24 +365,12 @@ def _find_groups_in_bitstream_with_counts_and_positions(
     error_positions_by_block: tuple[np.ndarray, ...] = ()
 
     if tolerate_single_bit:
-        syndrome_a = check ^ OFFSET_A ^ expected
-        syndrome_b = check ^ OFFSET_B ^ expected
-        syndrome_c = check ^ OFFSET_C ^ expected
-        syndrome_c_prime = check ^ OFFSET_C_PRIME ^ expected
-        syndrome_d = check ^ OFFSET_D ^ expected
-
-        error_pos_a_all = _SINGLE_BIT_SYNDROME_LOOKUP[syndrome_a]
-        error_pos_b_all = _SINGLE_BIT_SYNDROME_LOOKUP[syndrome_b]
-        error_pos_c_all = _SINGLE_BIT_SYNDROME_LOOKUP[syndrome_c]
-        error_pos_c_prime_all = _SINGLE_BIT_SYNDROME_LOOKUP[syndrome_c_prime]
-        error_pos_d_all = _SINGLE_BIT_SYNDROME_LOOKUP[syndrome_d]
-
-        error_pos_a = error_pos_a_all[:start_count]
-        error_pos_b = error_pos_b_all[block_b_slice]
+        err_a_all, err_b_all, err_c_all, err_c_prime_all, err_d_all = _single_bit_error_positions(
+            check, expected
+        )
+        error_pos_a = err_a_all[:start_count]
+        error_pos_b = err_b_all[block_b_slice]
         block_b_data = _correct_datawords(block_b_data, error_pos_b)
-    else:
-        error_pos_a = np.empty(0, dtype=np.int8)
-        error_pos_b = np.empty(0, dtype=np.int8)
 
     version_b = ((block_b_data >> 11) & 1).astype(bool)
     block_c_valid = np.where(
@@ -294,32 +381,17 @@ def _find_groups_in_bitstream_with_counts_and_positions(
     if tolerate_single_bit:
         error_pos_c = np.where(
             version_b,
-            error_pos_c_prime_all[2 * BLOCK_BITS : 2 * BLOCK_BITS + start_count],
-            error_pos_c_all[2 * BLOCK_BITS : 2 * BLOCK_BITS + start_count],
+            err_c_prime_all[2 * BLOCK_BITS : 2 * BLOCK_BITS + start_count],
+            err_c_all[2 * BLOCK_BITS : 2 * BLOCK_BITS + start_count],
         )
-        error_pos_d = error_pos_d_all[3 * BLOCK_BITS : 3 * BLOCK_BITS + start_count]
-        block_a_clean = valid_a[:start_count]
-        block_b_clean = valid_b[block_b_slice]
-        block_d_clean = valid_d[3 * BLOCK_BITS : 3 * BLOCK_BITS + start_count]
-        block_a_corrected = error_pos_a >= 0
-        block_b_corrected = error_pos_b >= 0
-        block_c_corrected = error_pos_c >= 0
-        block_d_corrected = error_pos_d >= 0
-        correction_counts = (
-            block_a_corrected.astype(np.uint8)
-            + block_b_corrected.astype(np.uint8)
-            + block_c_corrected.astype(np.uint8)
-            + block_d_corrected.astype(np.uint8)
+        error_pos_d = err_d_all[3 * BLOCK_BITS : 3 * BLOCK_BITS + start_count]
+        group_starts, correction_counts, error_positions_by_block = _group_starts_with_correction(
+            valid_masks,
+            block_c_valid,
+            (error_pos_a, error_pos_b, error_pos_c, error_pos_d),
+            start_count,
+            block_b_slice,
         )
-        group_starts = np.flatnonzero(
-            (block_a_clean | block_a_corrected)
-            & (block_b_clean | block_b_corrected)
-            & (block_c_valid | block_c_corrected)
-            & (block_d_clean | block_d_corrected)
-            & (correction_counts <= 1)
-        )
-        group_starts = _drop_corrected_starts_overlapping_clean(group_starts, correction_counts)
-        error_positions_by_block = (error_pos_a, error_pos_b, error_pos_c, error_pos_d)
     else:
         group_starts = np.flatnonzero(
             valid_a[:start_count]
@@ -328,32 +400,7 @@ def _find_groups_in_bitstream_with_counts_and_positions(
             & valid_d[3 * BLOCK_BITS : 3 * BLOCK_BITS + start_count]
         )
 
-    next_scan_start = 0
-    n_groups_clean = 0
-    n_groups_corrected = 0
-    group_offsets = np.array([0, BLOCK_BITS, 2 * BLOCK_BITS, 3 * BLOCK_BITS], dtype=np.intp)
-    for start in group_starts:
-        group_start = int(start)
-        if group_start >= next_scan_start:
-            datawords = data[group_start + group_offsets].astype(np.uint32, copy=True)
-            corrected_count = int(correction_counts[group_start])
-            if corrected_count:
-                for idx, error_positions in enumerate(error_positions_by_block):
-                    error_pos = int(error_positions[group_start])
-                    if 0 <= error_pos < DATA_BITS:
-                        datawords[idx] ^= _DATA_BIT_CORRECTION_MASKS[error_pos]
-                n_groups_corrected += 1
-            else:
-                n_groups_clean += 1
-            buf = bytearray(8)
-            for idx, dw_raw in enumerate(datawords):
-                dw = int(dw_raw)
-                buf[idx * 2] = (dw >> 8) & 0xFF
-                buf[idx * 2 + 1] = dw & 0xFF
-            groups.append(buf)
-            positions.append(group_start)
-            next_scan_start = group_start + GROUP_BITS
-    return groups, positions, n_groups_clean, n_groups_corrected
+    return _emit_groups_from_starts(data, group_starts, correction_counts, error_positions_by_block)
 
 
 def _find_groups_in_bitstream_with_counts(
