@@ -590,8 +590,9 @@ def test_rds_clock_invalid_inputs(monkeypatch):
     b_extra, c, d = encode_clock_time(naive)
     assert decode_clock_time((4 << 12) | b_extra, c, d).utc == naive.replace(tzinfo=UTC)
 
+    out_of_range_date = datetime(2300, 1, 1, tzinfo=UTC)
     with pytest.raises(ValueError, match="MJD out of 17-bit range"):
-        encode_clock_time(datetime(2300, 1, 1, tzinfo=UTC))
+        encode_clock_time(out_of_range_date)
 
     class FakeDateTime:
         tzinfo = UTC
@@ -605,8 +606,9 @@ def test_rds_clock_invalid_inputs(monkeypatch):
             return self
 
     monkeypatch.setattr("rdsclock.rds_clock.datetime_to_mjd", lambda dt: 60_000)
+    invalid_time = FakeDateTime()
     with pytest.raises(ValueError, match="hour/minute out of range"):
-        encode_clock_time(FakeDateTime())
+        encode_clock_time(invalid_time)
 
     assert decode_clock_time(-1, 0, 0) is None
 
@@ -859,8 +861,9 @@ def test_rtl_tcp_error_and_reconnect_branches():
         def recv(self, n):
             return b""
 
+    closing_socket = ClosingSocket()
     with pytest.raises(OSError, match="socket closed"):
-        RtlTcpClient._recv_exact(ClosingSocket(), 1)
+        RtlTcpClient._recv_exact(closing_socket, 1)
 
     client = RtlTcpClient()
     with pytest.raises(RuntimeError, match="not connected"):
@@ -881,8 +884,9 @@ def test_rtl_tcp_error_and_reconnect_branches():
 
     thread = threading.Thread(target=serve_bad_magic, daemon=True)
     thread.start()
+    bad_client = RtlTcpClient(host="127.0.0.1", port=port)
     with pytest.raises(OSError, match="unexpected magic"):
-        RtlTcpClient(host="127.0.0.1", port=port).connect()
+        bad_client.connect()
     thread.join(timeout=0.5)
 
     good_client = RtlTcpClient()

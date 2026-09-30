@@ -381,8 +381,9 @@ class TestRdsClockCoverage:
         assert restored is not None
         assert restored.local_offset_minutes == 0
 
+        out_of_range_date = datetime(2500, 1, 1, 0, 0, tzinfo=UTC)
         with pytest.raises(ValueError, match="MJD out of 17-bit range"):
-            encode_clock_time(datetime(2500, 1, 1, 0, 0, tzinfo=UTC), local_offset_minutes=0)
+            encode_clock_time(out_of_range_date, local_offset_minutes=0)
 
     def test_decode_clock_time_rejects_out_of_range_block_values(self):
         from rdsclock.rds_clock import decode_clock_time
@@ -500,7 +501,8 @@ class TestReconCoverage:
         candidates = recon.quick_scan_band(fake_client, cfg, progress=progress.append)
         assert len(candidates) == 1
         getattr(fake_client, expected_method).assert_called()
-        assert progress and "scan  90.00 MHz" in progress[0]
+        assert progress
+        assert "scan  90.00 MHz" in progress[0]
 
     def test_hop_collect_ct_covers_ct_and_no_ct_paths(self, monkeypatch):
         fake_client = Mock()
@@ -970,16 +972,18 @@ class TestRtlTcpCoverage:
         monkeypatch.setattr(
             RtlTcpClient, "_recv_exact", staticmethod(lambda sock, n: b"BAD!" + b"\x00" * 8)
         )
+        bad_client = RtlTcpClient(host="127.0.0.1", port=1)
         with pytest.raises(OSError, match="unexpected magic"):
-            RtlTcpClient(host="127.0.0.1", port=1).connect()
+            bad_client.connect()
 
     def test_recv_exact_and_send_cmd_require_connection(self):
         class ClosedSocket:
             def recv(self, n):
                 return b""
 
+        closed_socket = ClosedSocket()
         with pytest.raises(OSError, match="socket closed"):
-            RtlTcpClient._recv_exact(ClosedSocket(), 4)
+            RtlTcpClient._recv_exact(closed_socket, 4)
 
         client = RtlTcpClient()
         with pytest.raises(RuntimeError, match="not connected"):
