@@ -209,11 +209,12 @@ def render_status(
     if system_now is None:
         system_now = datetime.now(UTC)
     result = consensus.consensus()
-    lines: list[str] = []
-    lines.append("=" * 78)
-    lines.append("  rdsclock recon — passive RDS time receiver")
-    lines.append("=" * 78)
-    lines.append(f"  CONSENSUS: {result.format_display()}")
+    lines: list[str] = [
+        "=" * 78,
+        "  rdsclock recon — passive RDS time receiver",
+        "=" * 78,
+        f"  CONSENSUS: {result.format_display()}",
+    ]
     if result.utc is not None:
         delta_s = (system_now - result.utc).total_seconds()
         lines.append(f"  SYSTEM:    {system_now.strftime('%Y-%m-%d %H:%M:%S')}Z  Δ={delta_s:+.1f}s")
@@ -223,8 +224,7 @@ def render_status(
         lines.append(
             "  OUTLIERS:  " + ", ".join(f"{f:.2f}" for f in result.outlier_freqs_mhz) + " MHz"
         )
-    lines.append("")
-    lines.append(f"  Watchlist ({len(watchlist)}):")
+    lines.extend(["", f"  Watchlist ({len(watchlist)}):"])
     if watchlist:
         lines.append(f"    {'freq':<10} {'PS':<10} {'PI':<8} {'RSSI':<7} {'grp':<5} {'CT?'}")
         for s in watchlist:
@@ -236,11 +236,15 @@ def render_status(
             )
     else:
         lines.append("    (empty — acquisition in progress)")
-    lines.append("")
-    lines.append(consensus.summary())
-    lines.append("")
-    lines.append(f"  Next rescan in: {next_rescan_in_s:.0f}s")
-    lines.append("=" * 78)
+    lines.extend(
+        [
+            "",
+            consensus.summary(),
+            "",
+            f"  Next rescan in: {next_rescan_in_s:.0f}s",
+            "=" * 78,
+        ]
+    )
     return "\n".join(lines)
 
 

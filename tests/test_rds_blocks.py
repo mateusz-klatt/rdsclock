@@ -50,9 +50,9 @@ class TestCrc10:
     def test_zero_input(self):
         assert crc10(0) == 0
 
-    def test_idempotent(self):
-        # CRC should be deterministic.
-        assert crc10(0x1234) == crc10(0x1234)
+    def test_known_remainder(self):
+        # Polynomial division of 0x1234 << 10 by 0x5B9 leaves 0x096.
+        assert crc10(0x1234) == 0x096
 
     def test_range(self):
         # CRC fits in 10 bits.

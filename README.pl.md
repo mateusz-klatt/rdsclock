@@ -49,8 +49,8 @@ rdsclock multi --freqs 102.4,103.0,103.7 --mode wide --fs 2400000 \
 # obserwacji służy tryb recon.
 
 # 5. Tryb HOP — wielostacyjny pomiar bazowy na rozproszonych częstotliwościach.
-#    Sześć stacji wysokiej mocy z CT, deterministycznie dekodowanych
-#    z różnych dzielnic Warszawy na standardowym odbiorniku RTL2838.
+#    Sześć stacji dużej mocy nadających CT, niezawodnie dekodowanych
+#    w różnych częściach Warszawy na standardowym odbiorniku RTL2838.
 #    Całkowity czas: 6 × 90 s ≈ 9 min.
 #    Pierwsze 3.0 s po każdym przestrojeniu jest domyślnie ucinane
 #    (--settle-seconds 3.0), aby pominąć stabilizację PLL/AGC/Costasa.
