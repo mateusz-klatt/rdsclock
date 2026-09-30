@@ -27,8 +27,9 @@ Passive receiver workflow:
 # 1. Start rtl_tcp on the host that has the dongle
 rtl_tcp -a 127.0.0.1 -p 1234
 
-# 2. Scan the band for stations broadcasting RDS Clock-Time (~17 min for the
-#    full FM band at 30 s per channel — long enough to catch most PS rotations).
+# 2. Scan the band for stations broadcasting RDS Clock-Time.
+#    206 channels × 30 s = 103 min of recording, plus decoding time.
+#    A 30 s dwell is long enough to catch most PS rotations.
 rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
 
 # 3. Continuous passive time consensus across an explicit set of known

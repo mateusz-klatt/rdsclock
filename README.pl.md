@@ -28,8 +28,8 @@ Przepływ pracy pasywnego odbiornika czasu:
 rtl_tcp -a 127.0.0.1 -p 1234
 
 # 2. Skan pasma w poszukiwaniu stacji nadających RDS Clock-Time
-#    (~17 min dla całego pasma FM przy 30 s na kanał — wystarcza,
-#    by uchwycić większość rotacji PS).
+#    206 kanałów × 30 s = 103 min nagrywania, plus czas dekodowania.
+#    30 s na kanał wystarcza, by uchwycić większość rotacji PS.
 rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
 
 # 3. Ciągły pasywny konsensus czasu z jawnej listy stacji nadających CT.
@@ -37,7 +37,7 @@ rdsclock scan --start 87.5 --end 108.0 --step 0.1 --duration 30
 #    publicznych stacji FM w jednym mieście).
 rdsclock recon --start 87.5 --end 108.0 --step 0.1 --dwell 60 --iterations 3
 
-# 4. Tryb WIDE — trzy stacje dekodowane synchronicznie z jednej kapsuły.
+# 4. Tryb WIDE — trzy stacje dekodowane synchronicznie z jednego nagrania.
 #    Wymaga, by wszystkie częstotliwości mieściły się w fs (domyślnie
 #    2.4 MS/s → ~2 MHz spread). W Warszawie pasują: Polskie Radio Jedynka
 #    102.4 + Radio Kolor 103.0 + Rock Radio 103.7 (centrum 103.05 MHz,
@@ -48,7 +48,7 @@ rdsclock multi --freqs 102.4,103.0,103.7 --mode wide --fs 2400000 \
 # krótki czas trwania jeśli host ma ograniczoną pamięć — do długotrwałych
 # obserwacji służy tryb recon.
 
-# 5. Tryb HOP — wielostacyjna baseline na rozproszonych częstotliwościach.
+# 5. Tryb HOP — wielostacyjny pomiar bazowy na rozproszonych częstotliwościach.
 #    Sześć stacji wysokiej mocy z CT, deterministycznie dekodowanych
 #    z różnych dzielnic Warszawy na standardowym odbiorniku RTL2838.
 #    Całkowity czas: 6 × 90 s ≈ 9 min.
