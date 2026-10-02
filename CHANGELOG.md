@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Replace the archived SonarCloud action with the pinned SonarQube Scan action
+  v8.3.0, removing its dependency on the vulnerable v5.0.0 scanner action.
+
 ## [1.0.1] — 2026-05-18
 
 ### Fixed
