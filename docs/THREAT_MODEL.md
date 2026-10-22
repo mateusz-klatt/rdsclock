@@ -81,9 +81,9 @@ The receiver does **not**:
 ## Operational Controls
 
 1. Run `rtl_tcp` on `127.0.0.1` only.
-   The settling measurement helper enforces `127.0.0.1` or `::1` with a valid
-   TCP port; `localhost` maps directly to `127.0.0.1` without DNS. Access a
-   remote receiver through an SSH tunnel terminating on loopback.
+   The settling measurement helper enforces `127.0.0.1` or `::1` on port 1234;
+   `localhost` maps directly to `127.0.0.1` without DNS. Forward remote or
+   custom-port receivers through an SSH tunnel terminating on that endpoint.
 2. Treat IQ recordings as classified at the same level as the
    operational context that produced them.
 3. Periodically refresh the trusted-station allowlist offline; do

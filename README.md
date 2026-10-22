@@ -271,7 +271,8 @@ working directory, including through symlinks. The baseline directory may
 be elsewhere. To keep reports outside the checkout, change into that report
 directory and invoke `tools/benchmark.py` by its absolute path.
 `tools/measure_settle.py` accepts only loopback receivers (`127.0.0.1`, `::1`
-or `localhost`); use a local SSH tunnel for a remote receiver.
+or `localhost`) on port 1234. Forward remote or custom-port receivers to that
+local endpoint through an SSH tunnel.
 
 ```bash
 make test           # all tests, including real-recording validation
@@ -301,8 +302,8 @@ the local antenna picks up.
 - Precision claims are intentionally bounded: see the
   [0.4.0 changelog entry](CHANGELOG.md#040--2026-05-18) for the receive
   timestamping model and expected UTC precision ranges.
-- 240+ tests including real-IQ regression coverage; line coverage
-  **100 %** (tracked by SonarCloud).
+- 240+ tests including real-IQ regression coverage; package and helper-tool
+  line coverage tracked by SonarCloud.
 
 ## Legal Note
 

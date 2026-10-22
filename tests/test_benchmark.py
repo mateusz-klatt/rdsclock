@@ -107,3 +107,16 @@ def test_benchmark_rejects_symlinked_output_directory(
 
     assert error.value.code == 2
     assert not (outside / "result.json").exists()
+
+
+def test_reference_loader_validates_non_cli_callers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    reference = tmp_path / "outside.json"
+    reference.write_text('{"results": []}', encoding="utf-8")
+    monkeypatch.chdir(work_dir)
+
+    with pytest.raises(ValueError, match="working directory"):
+        benchmark._load_reference(reference)

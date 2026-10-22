@@ -76,19 +76,23 @@ def _rows_by_station(rows: list[dict]) -> dict[str, dict]:
     return {key: row for row in rows if (key := _row_key(row))}
 
 
-def _report_path(value: str) -> Path:
+def _safe_report_path(path: Path) -> Path:
     work_dir = Path.cwd().resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(work_dir):
+        raise ValueError("report path must stay within the working directory")
+    return resolved
+
+
+def _report_path(value: str) -> Path:
     try:
-        path = Path(value).resolve()
-    except (OSError, RuntimeError) as exc:
-        raise argparse.ArgumentTypeError(f"cannot resolve report path: {value}") from exc
-    if not path.is_relative_to(work_dir):
-        raise argparse.ArgumentTypeError("report path must stay within the working directory")
-    return path
+        return _safe_report_path(Path(value))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"cannot use report path: {exc}") from exc
 
 
 def _load_reference(path: Path) -> list[dict]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(_safe_report_path(path).read_text(encoding="utf-8"))
     results = payload.get("results")
     if not isinstance(results, list):
         raise ValueError(f"reference JSON has no results list: {path}")

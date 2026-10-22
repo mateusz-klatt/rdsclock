@@ -1,6 +1,5 @@
 """Safety boundaries for the local receiver measurement tool."""
 
-import argparse
 import csv
 from pathlib import Path
 from unittest.mock import Mock
@@ -10,20 +9,18 @@ import pytest
 from tools import measure_settle
 
 
-@pytest.mark.parametrize("port", ["1", "1234", "65535"])
-def test_tcp_port_accepts_valid_range(port: str) -> None:
-    assert measure_settle._tcp_port(port) == int(port)
-
-
-@pytest.mark.parametrize("port", ["0", "-1", "65536", "1.5", "invalid"])
-def test_tcp_port_rejects_invalid_values(port: str) -> None:
-    with pytest.raises(argparse.ArgumentTypeError, match="1 to 65535"):
-        measure_settle._tcp_port(port)
-
-
 @pytest.mark.parametrize(
     "arguments",
-    [["--host", "example.com"], ["--host", "169.254.169.254"], ["--port", "65536"]],
+    [
+        ["--host", "example.com"],
+        ["--host", "169.254.169.254"],
+        ["--port", "0"],
+        ["--port", "1"],
+        ["--port", "1235"],
+        ["--port", "65535"],
+        ["--port", "65536"],
+        ["--port", "invalid"],
+    ],
 )
 def test_measurement_rejects_unapproved_endpoint_before_side_effects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, arguments: list[str]
@@ -55,7 +52,18 @@ def test_measurement_uses_numeric_loopback_without_dns(
 
     assert (
         measure_settle.main(
-            ["--strong", "91", "--empty", "89.5", "--phase-seconds", "0.2", "--host", host]
+            [
+                "--strong",
+                "91",
+                "--empty",
+                "89.5",
+                "--phase-seconds",
+                "0.2",
+                "--host",
+                host,
+                "--port",
+                "1234",
+            ]
         )
         == 0
     )

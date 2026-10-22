@@ -9,8 +9,8 @@ a retune is a direct measurement of PLL + AGC + RDS-pipeline settling.
 Usage:
     .venv/bin/python tools/measure_settle.py --strong 91.0 --empty 89.5
 
-The rtl_tcp endpoint must be local (127.0.0.1, ::1 or localhost). Use an
-SSH tunnel terminating on loopback to measure a remote receiver.
+The rtl_tcp endpoint must be local (127.0.0.1, ::1 or localhost), on port 1234.
+Use an SSH tunnel terminating there for a remote or custom-port receiver.
 
 Output:
     eter/settle-measure-YYYYMMDD-HHMMSS/
@@ -75,22 +75,12 @@ def read_iq(sock: socket.socket, n_samples: int) -> np.ndarray:
     return ((i + 1j * q) / 127.5).astype(np.complex64)
 
 
-def _tcp_port(value: str) -> int:
-    try:
-        port = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535") from exc
-    if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535")
-    return port
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strong", type=float, required=True, help="Strong-station freq MHz")
     p.add_argument("--empty", type=float, required=True, help="Empty-channel freq MHz")
     p.add_argument("--host", choices=("127.0.0.1", "::1", "localhost"), default="127.0.0.1")
-    p.add_argument("--port", type=_tcp_port, default=1234)
+    p.add_argument("--port", type=int, choices=(1234,), default=1234)
     p.add_argument(
         "--phase-seconds",
         type=float,
@@ -104,8 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     host = "::1" if args.host == "::1" else "127.0.0.1"
-    sock = socket.create_connection((host, args.port), timeout=10.0)
-    print(f"connected to rtl_tcp {host}:{args.port}")
+    sock = socket.create_connection((host, 1234), timeout=10.0)
+    print(f"connected to rtl_tcp {host}:1234")
     # Skip rtl_tcp dongle-info header (12 bytes)
     sock.recv(12)
     set_sample_rate(sock, FS)

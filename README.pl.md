@@ -270,8 +270,9 @@ roboczym, również po rozwiązaniu dowiązań symbolicznych. Katalog nagrań
 bazowych może znajdować się gdzie indziej. Aby trzymać raporty poza repozytorium,
 przejdź do katalogu raportów i uruchom `tools/benchmark.py` przez ścieżkę
 bezwzględną. `tools/measure_settle.py` przyjmuje wyłącznie odbiorniki na pętli
-zwrotnej (`127.0.0.1`, `::1` lub `localhost`); dla odbiornika zdalnego użyj
-lokalnego tunelu SSH.
+zwrotnej (`127.0.0.1`, `::1` lub `localhost`) na porcie 1234. Odbiornik zdalny
+lub działający na innym porcie przekieruj do tego lokalnego punktu przez
+tunel SSH.
 
 ```bash
 make test           # all tests, including real-recording validation
@@ -304,7 +305,7 @@ potoku przetwarzania na sygnale odbieranym przez lokalną antenę.
   [0.4.0 w changelogu](CHANGELOG.md#040--2026-05-18) opisuje model
   znaczników odbioru i oczekiwane przedziały dokładności UTC.
 - Ponad 240 testów, w tym pokrycie regresją na rzeczywistym IQ; pokrycie
-  linii **100 %** (śledzone przez SonarCloud).
+  linii pakietu i narzędzi pomocniczych jest śledzone przez SonarCloud.
 
 ## Nota prawna
 

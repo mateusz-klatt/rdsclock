@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep benchmark JSON references and reports within the invocation's working
   directory after canonical path resolution, while preserving external baselines.
 - Restrict the settling measurement helper to numeric loopback endpoints and
-  valid TCP ports, mapping `localhost` without a DNS lookup.
+  standard port 1234, mapping `localhost` without a DNS lookup.
 
 ### Fixed
 
