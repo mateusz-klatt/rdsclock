@@ -9,6 +9,9 @@ a retune is a direct measurement of PLL + AGC + RDS-pipeline settling.
 Usage:
     .venv/bin/python tools/measure_settle.py --strong 91.0 --empty 89.5
 
+The rtl_tcp endpoint must be local (127.0.0.1, ::1 or localhost), on port 1234.
+Use an SSH tunnel terminating there for a remote or custom-port receiver.
+
 Output:
     eter/settle-measure-YYYYMMDD-HHMMSS/
         capture.iq                  continuous IQ (interleaved tunes)
@@ -72,26 +75,27 @@ def read_iq(sock: socket.socket, n_samples: int) -> np.ndarray:
     return ((i + 1j * q) / 127.5).astype(np.complex64)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strong", type=float, required=True, help="Strong-station freq MHz")
     p.add_argument("--empty", type=float, required=True, help="Empty-channel freq MHz")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=1234)
+    p.add_argument("--host", choices=("127.0.0.1", "::1", "localhost"), default="127.0.0.1")
+    p.add_argument("--port", type=int, choices=(1234,), default=1234)
     p.add_argument(
         "--phase-seconds",
         type=float,
         default=30.0,
         help="Capture seconds per phase (3 phases: strong → empty → strong)",
     )
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
-    ts = _dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    ts = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d-%H%M%S")
     out_dir = ROOT / "eter" / f"settle-measure-{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sock = socket.create_connection((args.host, args.port))
-    print(f"connected to rtl_tcp {args.host}:{args.port}")
+    host = "::1" if args.host == "::1" else "127.0.0.1"
+    sock = socket.create_connection((host, 1234), timeout=10.0)
+    print(f"connected to rtl_tcp {host}:1234")
     # Skip rtl_tcp dongle-info header (12 bytes)
     sock.recv(12)
     set_sample_rate(sock, FS)
@@ -151,8 +155,11 @@ def main() -> int:
         w = csv.writer(fp)
         w.writerow(["time_seconds", "pilot_rms", "pilot_rel_db", "phase"])
         # Convert sample-offset phase boundaries to window indices.
-        phase_window = {win_idx: lbl for lbl, sample_idx in phase_starts
-                        for win_idx in [sample_idx // n_per_window]}
+        phase_window = {
+            win_idx: lbl
+            for lbl, sample_idx in phase_starts
+            for win_idx in [sample_idx // n_per_window]
+        }
         active_phase = phases[0][0]
         for i in range(n_windows):
             if i in phase_window:

@@ -253,6 +253,27 @@ and `docs/THREAT_MODEL.md` for the security threat model.
 
 ## Testing
 
+CI uses the checked-in `uv.lock` with uv 0.11.2, frozen resolution and
+binary-only dependency installation. To reproduce it locally:
+
+```bash
+uv sync --frozen --extra audio --extra plot --extra dev --no-install-project --no-build
+uv run --no-sync --no-build python -m pytest tests/ -m "not slow and not real_sdr"
+```
+
+Run `uv lock --default-index https://pypi.org/simple` when intentionally
+updating dependencies, and commit the resulting lock file. Release builds
+use the locked `release` dependency group and `python -m build --no-isolation`,
+so building this package does not download unpinned build dependencies.
+
+The benchmark's `--check` and `--json` paths must stay inside the current
+working directory, including through symlinks. The baseline directory may
+be elsewhere. To keep reports outside the checkout, change into that report
+directory and invoke `tools/benchmark.py` by its absolute path.
+`tools/measure_settle.py` accepts only loopback receivers (`127.0.0.1`, `::1`
+or `localhost`) on port 1234. Forward remote or custom-port receivers to that
+local endpoint through an SSH tunnel.
+
 ```bash
 make test           # all tests, including real-recording validation
 make test-fast      # skip 'slow' and 'real_sdr' tests
@@ -281,8 +302,8 @@ the local antenna picks up.
 - Precision claims are intentionally bounded: see the
   [0.4.0 changelog entry](CHANGELOG.md#040--2026-05-18) for the receive
   timestamping model and expected UTC precision ranges.
-- 240+ tests including real-IQ regression coverage; line coverage
-  **100 %** (tracked by SonarCloud).
+- 240+ tests including real-IQ regression coverage; package and helper-tool
+  line coverage tracked by SonarCloud.
 
 ## Legal Note
 
