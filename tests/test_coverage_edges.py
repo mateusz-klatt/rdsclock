@@ -512,6 +512,7 @@ def test_main_module_entrypoint(monkeypatch):
 
 def test_cli_module_entrypoint_help(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["rdsclock", "--help"])
+    monkeypatch.delitem(sys.modules, "rdsclock.cli")
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("rdsclock.cli", run_name="__main__")
     assert exc.value.code == 0
@@ -699,6 +700,8 @@ def _fake_rtl_tcp(samples: bytes):
                             break
                     except TimeoutError:
                         continue
+            except ConnectionError:
+                pass
             finally:
                 with contextlib.suppress(OSError):
                     conn.close()
@@ -714,6 +717,7 @@ def _fake_rtl_tcp(samples: bytes):
         with contextlib.suppress(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=0.1).close()
         thread.join(timeout=0.5)
+        assert not thread.is_alive()
 
 
 def test_recon_scan_hop_and_live_loop_branches(monkeypatch):

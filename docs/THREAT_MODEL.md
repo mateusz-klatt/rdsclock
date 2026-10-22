@@ -53,6 +53,7 @@ The receiver does **not**:
 | FM broadcast signal                | **Untrusted**; can be jammed, spoofed, or absent.|
 | Recorded IQ files                  | Sensitive (capture metadata leaks operational data). |
 | `consensus.summary()` output       | Sensitive (frequencies, PI codes, timing).       |
+| Benchmark JSON paths               | Confined to the invocation's working directory after symlink resolution; baseline recordings may be elsewhere. |
 
 ## Threat → Mitigation Matrix
 
@@ -80,6 +81,9 @@ The receiver does **not**:
 ## Operational Controls
 
 1. Run `rtl_tcp` on `127.0.0.1` only.
+   The settling measurement helper enforces `127.0.0.1` or `::1` with a valid
+   TCP port; `localhost` maps directly to `127.0.0.1` without DNS. Access a
+   remote receiver through an SSH tunnel terminating on loopback.
 2. Treat IQ recordings as classified at the same level as the
    operational context that produced them.
 3. Periodically refresh the trusted-station allowlist offline; do

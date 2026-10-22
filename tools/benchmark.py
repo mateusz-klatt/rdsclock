@@ -11,6 +11,10 @@ Use this to compare any algorithm tweak against a fixed corpus of IQ samples:
     .venv/bin/python tools/benchmark.py eter/baseline-20260518-... # specific
     .venv/bin/python tools/benchmark.py --json results.json        # machine-readable
     .venv/bin/python tools/benchmark.py --check reference.json      # regression gate
+
+JSON output and reference paths must stay within the invocation's working
+directory, including after symlink resolution. To use another report
+directory, change into it and invoke this script by its absolute path.
 """
 
 from __future__ import annotations
@@ -72,8 +76,19 @@ def _rows_by_station(rows: list[dict]) -> dict[str, dict]:
     return {key: row for row in rows if (key := _row_key(row))}
 
 
+def _report_path(value: str) -> Path:
+    work_dir = Path.cwd().resolve()
+    try:
+        path = Path(value).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise argparse.ArgumentTypeError(f"cannot resolve report path: {value}") from exc
+    if not path.is_relative_to(work_dir):
+        raise argparse.ArgumentTypeError("report path must stay within the working directory")
+    return path
+
+
 def _load_reference(path: Path) -> list[dict]:
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     results = payload.get("results")
     if not isinstance(results, list):
         raise ValueError(f"reference JSON has no results list: {path}")
@@ -124,11 +139,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Baseline directory (default: latest under eter/baseline-*)",
     )
     parser.add_argument("--fs", type=int, default=250_000, help="IQ sample rate")
-    parser.add_argument("--json", metavar="PATH", help="Also write JSON output here")
+    parser.add_argument(
+        "--json", type=_report_path, metavar="PATH", help="Write JSON within the working directory"
+    )
     parser.add_argument(
         "--check",
+        type=_report_path,
         metavar="PATH",
-        help="Compare against reference JSON and exit 2 on regression",
+        help="Compare with reference JSON within the working directory; exit 2 on regression",
     )
     args = parser.parse_args(argv)
 
@@ -167,23 +185,24 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.json:
-        Path(args.json).write_text(
+        args.json.write_text(
             json.dumps(
                 {
                     "rdsclock_version": rdsclock_version,
-                    "baseline_dir": str(base.relative_to(ROOT)),
+                    "baseline_dir": str(base.resolve()),
                     "fs": args.fs,
                     "results": rows,
                 },
                 indent=2,
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
         )
         print(f"\njson: {args.json}")
 
     if args.check:
         try:
-            reference_rows = _load_reference(Path(args.check))
+            reference_rows = _load_reference(args.check)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"\ncheck: failed to load reference: {exc}", file=sys.stderr)
             return 2

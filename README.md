@@ -253,6 +253,26 @@ and `docs/THREAT_MODEL.md` for the security threat model.
 
 ## Testing
 
+CI uses the checked-in `uv.lock` with uv 0.11.2, frozen resolution and
+binary-only dependency installation. To reproduce it locally:
+
+```bash
+uv sync --frozen --extra audio --extra plot --extra dev --no-install-project --no-build
+uv run --no-sync --no-build python -m pytest tests/ -m "not slow and not real_sdr"
+```
+
+Run `uv lock --default-index https://pypi.org/simple` when intentionally
+updating dependencies, and commit the resulting lock file. Release builds
+use the locked `release` dependency group and `python -m build --no-isolation`,
+so building this package does not download unpinned build dependencies.
+
+The benchmark's `--check` and `--json` paths must stay inside the current
+working directory, including through symlinks. The baseline directory may
+be elsewhere. To keep reports outside the checkout, change into that report
+directory and invoke `tools/benchmark.py` by its absolute path.
+`tools/measure_settle.py` accepts only loopback receivers (`127.0.0.1`, `::1`
+or `localhost`); use a local SSH tunnel for a remote receiver.
+
 ```bash
 make test           # all tests, including real-recording validation
 make test-fast      # skip 'slow' and 'real_sdr' tests

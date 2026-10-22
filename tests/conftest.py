@@ -6,7 +6,6 @@ import socket
 import struct
 import sys
 import threading
-import time
 
 import numpy as np
 import pytest
@@ -46,6 +45,8 @@ def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
                         continue
                     if not chunk:
                         break
+            except ConnectionError:
+                pass
             finally:
                 with contextlib.suppress(OSError):
                     conn.close()
@@ -54,7 +55,7 @@ def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    return port, stop
+    return port, stop, thread
 
 
 def _white_noise_samples(n_samples: int = 2_000_000) -> bytes:
@@ -66,7 +67,10 @@ def _white_noise_samples(n_samples: int = 2_000_000) -> bytes:
 
 @pytest.fixture
 def fake_rtl_tcp():
-    port, stop = _make_fake_rtl_tcp(_white_noise_samples())
-    yield port
-    stop.set()
-    time.sleep(0.1)
+    port, stop, thread = _make_fake_rtl_tcp(_white_noise_samples())
+    try:
+        yield port
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        assert not thread.is_alive()

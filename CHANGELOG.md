@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Replace the archived SonarCloud action with the pinned SonarQube Scan action
   v8.3.0, removing its dependency on the vulnerable v5.0.0 scanner action.
+- Freeze CI and release dependencies in `uv.lock`, install third-party wheels
+  only, scope publication permissions to their jobs, and pin workflow actions.
+- Keep benchmark JSON references and reports within the invocation's working
+  directory after canonical path resolution, while preserving external baselines.
+- Restrict the settling measurement helper to numeric loopback endpoints and
+  valid TCP ports, mapping `localhost` without a DNS lookup.
+
+### Fixed
+
+- Use a timezone-aware UTC timestamp for settling measurement filenames.
+- Close fake receiver sockets and join their threads during test cleanup;
+  execute the CLI entrypoint without reusing an imported module. CI now treats
+  test warnings as errors.
 
 ## [1.0.1] — 2026-05-18
 

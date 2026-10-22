@@ -251,6 +251,28 @@ Zobacz `docs/operator-quickstart.md` dla instrukcji operatorskiej oraz
 
 ## Testowanie
 
+CI korzysta z pliku `uv.lock`, uv 0.11.2, zamrożonego zestawu wersji oraz
+wyłącznie binarnych dystrybucji zależności. Aby odtworzyć ten zestaw lokalnie:
+
+```bash
+uv sync --frozen --extra audio --extra plot --extra dev --no-install-project --no-build
+uv run --no-sync --no-build python -m pytest tests/ -m "not slow and not real_sdr"
+```
+
+Przy celowej aktualizacji zależności uruchom
+`uv lock --default-index https://pypi.org/simple` i dołącz nowy plik blokady
+do commita. Wydania korzystają z zamrożonej grupy `release` oraz
+`python -m build --no-isolation`, aby budowanie pakietu nie pobierało
+zależności w nieustalonych wersjach.
+
+Ścieżki `--check` i `--json` benchmarku muszą pozostać w bieżącym katalogu
+roboczym, również po rozwiązaniu dowiązań symbolicznych. Katalog nagrań
+bazowych może znajdować się gdzie indziej. Aby trzymać raporty poza repozytorium,
+przejdź do katalogu raportów i uruchom `tools/benchmark.py` przez ścieżkę
+bezwzględną. `tools/measure_settle.py` przyjmuje wyłącznie odbiorniki na pętli
+zwrotnej (`127.0.0.1`, `::1` lub `localhost`); dla odbiornika zdalnego użyj
+lokalnego tunelu SSH.
+
 ```bash
 make test           # all tests, including real-recording validation
 make test-fast      # skip 'slow' and 'real_sdr' tests
