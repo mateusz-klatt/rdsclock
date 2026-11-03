@@ -175,6 +175,8 @@ class TestWideOptions:
             (["--wide", "102.0,-1"], "--wide: frequencies must be positive"),
             (["--wide", "102.0,102.00"], "--wide: list each station once"),
             (["--wide", "102.0", "--fs", "100000"], "--fs must be at least 250000 S/s"),
+            (["--wide", "102.0", "--center", "nan"], "--center must be a positive frequency"),
+            (["--wide", "102.0", "--center", "-102"], "--center must be a positive frequency"),
             (["--wide", "90,103"], "need 13.40 MS/s with guard bands"),
             (["--wide", "102.0,103.0", "--center", "104"], "102.00 MHz is too close to the edge"),
         ],

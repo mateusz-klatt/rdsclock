@@ -1,5 +1,6 @@
 """Test of the digital channelizer + multi-station decode (synthetic)."""
 
+import threading
 from datetime import UTC, datetime
 
 import numpy as np
@@ -97,6 +98,29 @@ class TestExtractChannel:
         assert int(np.argmax(np.abs(chan) >= 0.5)) == pytest.approx(
             onset * 250_000 / fs_wide, abs=1
         )
+
+    @pytest.mark.parametrize(("fs_wide", "fs_out"), [(250_000, 250_000), (400_000, 100_000)])
+    def test_out_of_band_tones_are_removed_at_any_rate_ratio(self, fs_wide, fs_out):
+        # At equal rates resample_poly would skip its filter; below 2 * half_bw
+        # the output Nyquist frequency must bound the passband instead.
+        n = np.arange(fs_wide)
+        tone_hz = 0.3 * fs_out if fs_wide == fs_out else 75_000
+        tone = np.exp(2j * np.pi * tone_hz * n / fs_wide).astype(np.complex64)
+        chan = extract_channel(tone, fs_wide, 100e6, 100e6, fs_out=fs_out, half_bw=0.15 * fs_out)
+        assert chan.dtype == np.complex64
+        assert float(np.mean(np.abs(chan[100:-100]))) < 0.05
+
+    def test_a_single_worker_decodes_in_the_calling_thread(self, monkeypatch):
+        threads = []
+
+        def decode(iq, fs, capture_start_monotonic_ns=None):
+            threads.append(threading.current_thread())
+            return "decoded"
+
+        monkeypatch.setattr(channelizer, "decode_iq", decode)
+        wide = np.ones(48_000, dtype=np.complex64)
+        decode_channels(wide, 2_400_000, 100e6, [ChannelSpec(100e6)] * 2, max_workers=1)
+        assert threads == [threading.main_thread()] * 2
 
     def test_decode_channels_measures_power_and_passes_the_capture_start(self, monkeypatch):
         starts = []

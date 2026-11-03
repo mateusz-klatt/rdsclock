@@ -874,6 +874,8 @@ def _recon_wide_error(args: argparse.Namespace) -> str | None:
         freqs_hz = _wide_freqs_hz(args.wide)
     except ValueError as exc:
         return f"--wide: {exc}"
+    if args.center is not None and not (math.isfinite(args.center) and args.center > 0):
+        return "--center must be a positive frequency in MHz"
     fs = WIDE_SAMPLE_RATE if args.fs is None else args.fs
     if fs < dsp.DEFAULT_INPUT_FS:
         return f"--fs must be at least {dsp.DEFAULT_INPUT_FS} S/s"
