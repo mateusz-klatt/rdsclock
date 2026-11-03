@@ -72,6 +72,7 @@ The receiver does **not**:
 | **T8.** Operational metadata leaks via logs / IQ.   | `SECURITY.md` lists sensitive artefacts. The default install does not write any log to disk.              |
 | **T9.** Stations stop broadcasting CT.              | Holdover with explicit uncertainty growth; consensus enters `STALE` once `mission_precision_s` is exceeded. |
 | **T10.** Broadcast text carries terminal control sequences or markup. | The decoder maps bytes outside printable ASCII to spaces, except the RadioText end marker (CR); JSON Lines output escapes control characters. The dashboard replaces any remaining non-printable character and renders station names as plain text, never as markup. |
+| **T11.** A web page or network host abuses the browser dashboard (DNS rebinding, cross-site requests, script injection). | `--web` binds to `127.0.0.1` by default and warns when told to bind elsewhere, because it has no authentication. Requests naming an unknown `Host` are refused. The only action, a rescan, needs a custom header, a same-origin `Origin` and a loopback client. Responses carry a strict Content-Security-Policy, and the page inserts every value as text. |
 
 ## Out of Scope
 

@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `p` pauses the view. Station names are displayed as plain printable text.
 - Live `recon` starts an acquisition scan after the current cycle when it
   receives `SIGUSR1`; `run_recon` accepts a matching `rescan_requested` callback.
+- `rdsclock recon --web` serves the same dashboard to a browser using only the
+  standard library: Server-Sent Events, a static page and a *Rescan* button.
+  It listens on 127.0.0.1 by default and refuses unknown `Host` names. A rescan
+  needs a custom header, the same origin and a loopback client, and a strict
+  Content-Security-Policy applies.
 
 ### Fixed
 

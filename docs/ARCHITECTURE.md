@@ -20,8 +20,13 @@ flowchart TD
     rds_groups[rds_groups.py<br/>PS / RT / CT parser+encoder]
     rtl_tcp[rtl_tcp.py<br/>TCP client]
     tui[tui.py<br/>Textual dashboard<br/>reads recon --jsonl]
+    web[web.py<br/>browser dashboard<br/>reads recon --jsonl]
+    dashboard[dashboard.py<br/>shared view model]
 
     cli --> tui
+    cli --> web
+    tui --> dashboard
+    web --> dashboard
     cli --> synth
     cli --> decoder
     cli --> recon
@@ -179,6 +184,30 @@ survives hops without CT until another confirmed PI answers there, and an
 unconfirmed hop PI is shown as unknown rather than borrowed from the scan.
 Strings from broadcasts or the child process are reduced to printable
 characters and rendered as plain text, never as Rich markup.
+
+## Browser Dashboard
+
+`web.py` serves `rdsclock recon --web` with the standard library only: a
+`ThreadingHTTPServer` and the static page in `webui/`. A `ReceiverProcess`
+reads the `recon --jsonl` child on background threads and applies every line to
+one `DashboardState` under a condition variable. Each browser keeps a
+Server-Sent Events stream open (`/events`). It receives the current `view()`
+after every change and at least once a second, so the page clock advances
+between cycles. `/api/state` returns the same snapshot.
+
+Any page that the operator opens in the browser can send requests to a loopback
+server, so the server checks every request:
+
+- `Host` must be `localhost`, an IP address or the configured host name; other
+  names are refused with 421, which defeats DNS rebinding.
+- `POST /api/rescan` needs an `X-Requested-By` header. That header forces a CORS
+  preflight, which the server never grants to another site. It also needs a
+  same-origin `Origin` when one is sent, and a loopback client.
+- Responses carry a Content-Security-Policy that allows only same-origin scripts
+  and styles and no framing. The page inserts every value with `textContent`.
+
+The server binds to 127.0.0.1 unless `--web-host` names another address, and
+then warns that the page has no authentication.
 
 ## File-format Conventions
 

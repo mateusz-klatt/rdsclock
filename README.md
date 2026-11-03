@@ -156,8 +156,10 @@ captures take longer than the short demos. See the
 
 For a live terminal dashboard, add `--extra tui` to `uv sync` and `--tui` to the
 `recon` command. It shows the consensus, the stations and a log; `q` quits, `r`
-requests a new scan and `p` pauses the view. With `--jsonl`, `recon` instead
-writes one JSON event per line for other programs.
+requests a new scan and `p` pauses the view. `--web` serves the same view to a
+browser at <http://127.0.0.1:8080/> without extra dependencies; it has no
+authentication, so reach a remote receiver through an SSH tunnel. With
+`--jsonl`, `recon` instead writes one JSON event per line for other programs.
 
 ## How it works
 

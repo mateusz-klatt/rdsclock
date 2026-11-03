@@ -71,7 +71,7 @@ Changelog = "https://github.com/mateusz-klatt/rdsclock/blob/master/CHANGELOG.md"
 where = ["src"]
 
 [tool.setuptools.package-data]
-rdsclock = ["py.typed"]
+rdsclock = ["py.typed", "webui/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

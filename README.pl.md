@@ -160,9 +160,12 @@ Szczegóły opisuje [przewodnik operatora](docs/operator-quickstart.md).
 
 Aby śledzić odbiór w terminalu, dodaj `--extra tui` do `uv sync` i `--tui` do
 polecenia `recon`. Panel pokazuje konsensus, stacje i dziennik zdarzeń; `q`
-kończy pracę, `r` zleca nowy skan, a `p` wstrzymuje widok. Z opcją `--jsonl`
-polecenie `recon` wypisuje zamiast tego po jednym zdarzeniu JSON w wierszu,
-na potrzeby innych programów.
+kończy pracę, `r` zleca nowy skan, a `p` wstrzymuje widok. `--web` udostępnia
+ten sam widok w przeglądarce pod adresem <http://127.0.0.1:8080/>, bez
+dodatkowych zależności. Panel nie ma uwierzytelniania, więc do zdalnego
+odbiornika łącz się przez tunel SSH. Z opcją `--jsonl` polecenie `recon`
+wypisuje zamiast tego po jednym zdarzeniu JSON w wierszu, na potrzeby innych
+programów.
 
 ## Jak to działa
 
