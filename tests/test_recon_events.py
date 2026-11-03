@@ -88,6 +88,7 @@ def test_tracks_report_the_tuning_of_their_latest_observation():
     assert len(consensus.tracks) == 1
     assert consensus.consensus(now).contributing_freqs_mhz == [pytest.approx(102.42)]
     assert recon._track_snapshots(consensus, now)[0].freq_hz == 102.42e6
+    assert "102.42MHz PI=0xCAFE" in consensus.summary(now)
 
 
 class TestEventToJson:
