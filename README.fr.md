@@ -167,15 +167,53 @@ consensus avec maintien autonome entre les observations. Son balayage initial et
 de temps que les courtes démonstrations. Consultez le
 [guide opérateur](docs/operator-quickstart.md) pour les détails.
 
-Pour suivre la réception dans le terminal, ajoutez `--extra tui` à `uv sync` et
-`--tui` à la commande `recon`. Le tableau de bord affiche le consensus, les
-stations et un journal ; `q` quitte, `r` demande un nouveau balayage et `p` fige
-l'affichage. `--web` sert la même vue dans un navigateur à l'adresse
-<http://127.0.0.1:8080/>, sans dépendance supplémentaire. Le tableau de bord n'a
-pas d'authentification : pour un récepteur distant, passez par un tunnel SSH. `--gui` l'ouvre dans
-une fenêtre de bureau, avec le module tkinter de Python.
-Avec `--jsonl`, `recon` écrit plutôt un événement JSON par ligne pour d'autres
-programmes.
+### Tableaux de bord
+
+`recon` peut afficher sa progression en direct dans un terminal, un navigateur
+ou une fenêtre de bureau. Ajoutez l'une de ces options à la commande `recon`
+ci-dessus et retirez `--iterations` pour que l'observation continue jusqu'à ce
+que vous quittiez :
+
+- `--tui` : un tableau de bord dans le terminal ; ajoutez d'abord
+  `--extra tui` à `uv sync`.
+- `--web` : une page à l'adresse <http://127.0.0.1:8080/>, sans dépendance
+  supplémentaire ; `--web-port` change le port.
+- `--gui` : une fenêtre de bureau, avec le module tkinter de Python.
+
+```bash
+uv sync --frozen --extra dev --extra plot --extra tui --no-install-project --no-build
+
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --start 98.0 --end 108.0 --step 0.1 --scan-dwell 2 --dwell 75 \
+  --max-stations 3 --gain 19.7 --rssi-threshold -35 --settle-seconds 1 --tui
+```
+
+Chaque tableau de bord lance `recon --jsonl` comme processus enfant avec les
+mêmes réglages du récepteur et affiche le consensus, les stations et un journal.
+*Rescan* (`r`) demande un balayage d'acquisition après le cycle en cours et
+*Pause view* (`p`) fige l'affichage pendant que la réception continue ; la page
+propose les deux sous forme de boutons. `q` ferme le tableau de bord du
+terminal et la fenêtre, et `Ctrl+C` arrête le tableau de bord web. La page n'a
+pas d'authentification et n'écoute que sur l'interface de bouclage : pour
+suivre un `recon` lancé sur une autre machine, redirigez le port avec
+`ssh -N -L 8080:127.0.0.1:8080 SDR_HOST`. Le Python système de Debian ou Ubuntu
+obtient tkinter avec `apt install python3-tk`. Avec `--jsonl`, `recon` écrit
+plutôt un événement JSON par ligne pour d'autres programmes ; le
+[guide opérateur](docs/operator-quickstart.md) décrit tous ces modes.
+
+**Terminal** (`--tui`)
+
+![Tableau de bord en terminal : heure du consensus, niveau de confiance et valeur aberrante au-dessus d'un tableau de quatre stations et d'un journal](docs/images/dashboard-tui.png)
+
+**Navigateur** (`--web`)
+
+![Tableau de bord web avec le même consensus, le tableau des stations, le journal et les boutons Rescan et Pause view](docs/images/dashboard-web.png)
+
+**Fenêtre de bureau** (`--gui`)
+
+![Fenêtre de bureau avec la même vue et les boutons Rescan, Pause view et Quit](docs/images/dashboard-gui.png)
+
+*Captures d'une session d'exemple avec des stations DEMO fictives, et non d'une réception réelle.*
 
 ## Fonctionnement
 
