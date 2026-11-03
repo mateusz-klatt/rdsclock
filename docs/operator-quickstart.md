@@ -105,6 +105,21 @@ verify absolute UTC. The displayed uncertainty is a model estimate, not a
 calibrated error bound. Receipt timestamps are host estimates, and their
 accuracy includes uncharacterized receiver and network delays.
 
+### HOP: a fixed list of stations
+
+`--hop` skips the band scan and hops between the stations you list, for
+example three stations known to broadcast Clock-Time:
+
+```bash
+rdsclock recon --hop 98.8,102.4,107.5 --gain 28 --dwell 75
+```
+
+An acquisition then checks only these stations, for `--scan-dwell` seconds
+each, and the watchlist keeps every one with RDS, with or without Clock-Time in
+that short check; `--rssi-threshold` does not apply. HOP reaches stations
+anywhere in the band but records them one after another: a cycle of three
+stations takes three dwells.
+
 ### WIDE: several stations at once
 
 When the stations fit inside the receiver bandwidth, `--wide` records them
@@ -226,9 +241,11 @@ unavailable values such as an infinite uncertainty are `null`. A stream that
 ends without `recon_stopped` was stopped by an error; check stderr and the
 exit status. `--jsonl` covers live reception only, not `--from-dir`.
 
-With `--wide`, `acquisition_started` and `maintenance_started` also carry
-`wide_center_hz` and `wide_sample_rate`, which are `null` for band scans and
-hops. A WIDE acquisition reports the span of the listed stations with a
+With `--hop`, `acquisition_started` reports the span of the listed stations
+with a `scan_step_mhz` of 0, and `n_points` counts them (`null` for a band
+scan). With `--wide`, `acquisition_started` and `maintenance_started` also
+carry `wide_center_hz` and `wide_sample_rate`, which are `null` for band scans
+and hops. A WIDE acquisition reports the span of the listed stations with a
 `scan_step_mhz` of 0, followed by one `scan_step` per station, and every
 station of a WIDE capture produces a `hop_result`.
 

@@ -144,7 +144,9 @@ an additional independent attribution check.
 - **Acquisition** when the watchlist is empty or `rescan_min`
   minutes have elapsed: `quick_scan_band` records short captures,
   attempts a decode, and ranks candidates by `(has_ct, n_groups,
-  rssi_db)`. The top `max_watchlist` enter the watchlist.
+  rssi_db)`. The top `max_watchlist` enter the watchlist. With
+  `hop_freqs_hz` (CLI `--hop`) only the listed stations are checked, the RSSI
+  threshold does not apply, and every one with RDS enters the watchlist.
 - **Maintenance**: `hop_collect_ct` hops through the watchlist,
   recording `dwell_s` seconds per station and feeding decoded CT
   into the consensus engine. After every cycle the operator-facing

@@ -766,6 +766,7 @@ _RECON_CHILD_OPTIONS = (
     ("--port", "port"),
     ("--gain", "gain"),
     ("--settle-seconds", "settle_seconds"),
+    ("--hop", "hop"),
     ("--wide", "wide"),
     ("--center", "center"),
     ("--fs", "fs"),
@@ -846,14 +847,15 @@ def _recon_config(args: argparse.Namespace) -> ReconConfig:
         host=args.host,
         port=args.port,
         iterations=args.iterations,
-        wide_freqs_hz=() if args.wide is None else _wide_freqs_hz(args.wide),
+        hop_freqs_hz=() if args.hop is None else _station_freqs_hz(args.hop),
+        wide_freqs_hz=() if args.wide is None else _station_freqs_hz(args.wide),
         wide_center_hz=None if args.center is None else args.center * 1e6,
         wide_sample_rate=WIDE_SAMPLE_RATE if args.fs is None else args.fs,
     )
 
 
-def _wide_freqs_hz(text: str) -> tuple[float, ...]:
-    """The stations of ``--wide`` in Hz; ``ValueError`` for an unusable list."""
+def _station_freqs_hz(text: str) -> tuple[float, ...]:
+    """The stations of ``--hop`` or ``--wide`` in Hz; ``ValueError`` for an unusable list."""
     freqs_hz = tuple(float(part) * 1e6 for part in text.split(","))
     if not all(math.isfinite(freq_hz) and freq_hz > 0 for freq_hz in freqs_hz):
         raise ValueError("frequencies must be positive numbers in MHz")
@@ -862,8 +864,17 @@ def _wide_freqs_hz(text: str) -> tuple[float, ...]:
     return freqs_hz
 
 
-def _recon_wide_error(args: argparse.Namespace) -> str | None:
-    """Why the WIDE options cannot be used, or ``None`` when they can."""
+def _recon_list_error(args: argparse.Namespace) -> str | None:
+    """Why the HOP or WIDE station options cannot be used, or ``None`` when they can."""
+    if args.hop is not None:
+        if args.wide is not None:
+            return "choose either --hop or --wide"
+        if args.from_dir:
+            return "--hop applies to live reception, not --from-dir"
+        try:
+            _station_freqs_hz(args.hop)
+        except ValueError as exc:
+            return f"--hop: {exc}"
     if args.wide is None:
         if args.center is not None or args.fs is not None:
             return "--center and --fs apply only to --wide"
@@ -871,7 +882,7 @@ def _recon_wide_error(args: argparse.Namespace) -> str | None:
     if args.from_dir:
         return "--wide applies to live reception, not --from-dir"
     try:
-        freqs_hz = _wide_freqs_hz(args.wide)
+        freqs_hz = _station_freqs_hz(args.wide)
     except ValueError as exc:
         return f"--wide: {exc}"
     if args.center is not None and not (math.isfinite(args.center) and args.center > 0):
@@ -897,7 +908,7 @@ def _recon_wide_error(args: argparse.Namespace) -> str | None:
 
 def cmd_recon(args: argparse.Namespace) -> int:
     """Continuous passive time receiver: scan → hop (or one WIDE capture) → consensus."""
-    error = _recon_wide_error(args)
+    error = _recon_list_error(args)
     if error is not None:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -1096,6 +1107,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--gain", type=float, default=None)
     pr.add_argument(
         "--settle-seconds", type=float, default=0.3, help="Discard incoming IQ after retuning (s)"
+    )
+    pr.add_argument(
+        "--hop",
+        default=None,
+        metavar="FREQS",
+        help="Hop between these stations (MHz, comma-separated) instead of scanning the band",
     )
     pr.add_argument(
         "--wide",
