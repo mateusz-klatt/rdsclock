@@ -321,7 +321,7 @@ class DashboardState:
         self.phase, self.iteration, self.band = "ACQUISITION", iteration, band
         self.scan_points, self.scan_freq_hz = 0, None
         return [
-            f"Acquisition #{iteration}: scanning {band[0]:.2f}–{band[1]:.2f} MHz "
+            f"Acquisition #{iteration}: scanning {band[0]:.2f}-{band[1]:.2f} MHz "
             f"in {band[2]:.2f} MHz steps."
         ]
 

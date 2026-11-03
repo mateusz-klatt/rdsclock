@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It listens on 127.0.0.1 by default and refuses unknown `Host` names. A rescan
   needs a custom header, the same origin and a loopback client, and a strict
   Content-Security-Policy applies.
+- `rdsclock recon --gui` shows the same dashboard in a desktop window built with
+  tkinter, with Rescan, Pause view and Quit (also `r`, `p`, `q`). Closing the
+  window or `Ctrl+C` stops the receiver, and the window forwards `SIGUSR1`. CI
+  runs the window tests under a virtual X display.
 
 ### Fixed
 

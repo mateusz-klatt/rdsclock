@@ -161,6 +161,21 @@ receiver's own machine. It refuses requests that name an unknown host, which
 blocks DNS rebinding. A rescan needs a request from the page itself, so other
 web pages cannot trigger one.
 
+### Desktop window
+
+`--gui` shows the same view in a desktop window, using the tkinter module that
+ships with most Python builds (on Debian/Ubuntu: `apt install python3-tk`):
+
+```bash
+rdsclock recon --start 87.5 --end 108 --max-stations 5 --gui
+```
+
+The window has *Rescan*, *Pause view* and *Quit* buttons, also on the keys `r`,
+`p` and `q`. Closing the window or pressing `Ctrl+C` in the terminal stops the
+receiver as `Ctrl+C` would, and a `SIGUSR1` sent to the window's process requests
+a rescan. Without a display (for example over plain SSH) the command explains
+that it cannot open a window; use `--tui` or `--web` there.
+
 ### Machine-readable output
 
 Add `--jsonl` to write one JSON object per line to stdout, for another
