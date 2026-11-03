@@ -26,7 +26,7 @@ from rdsclock.rds_blocks import (
 from rdsclock.rds_clock import ClockTime, encode_clock_time
 from rdsclock.rds_groups import StationInfo, parse_group
 from rdsclock.recon import ReconConfig, StationCandidate
-from rdsclock.rtl_tcp import DongleInfo, RtlTcpClient
+from rdsclock.rtl_tcp import DongleInfo, FreshCapture, RtlTcpClient
 from rdsclock.time_consensus import StationTrack, TimeConsensus
 
 
@@ -480,7 +480,9 @@ class TestReconCoverage:
         self, monkeypatch, gain_db, expected_method
     ):
         fake_client = Mock()
-        fake_client.read_iq.return_value = np.ones(64, dtype=np.complex64)
+        fake_client.capture_fresh.return_value = FreshCapture(
+            np.ones(64, dtype=np.complex64), 1_000_000_000, 0
+        )
         progress = []
         cfg = ReconConfig(
             band_start_mhz=90.0,
@@ -500,13 +502,16 @@ class TestReconCoverage:
 
         candidates = recon.quick_scan_band(fake_client, cfg, progress=progress.append)
         assert len(candidates) == 1
-        getattr(fake_client, expected_method).assert_called()
+        fake_client.configure_fm.assert_called_once_with(cfg.fs_scan, gain_db=gain_db)
         assert progress
         assert "scan  90.00 MHz" in progress[0]
 
     def test_hop_collect_ct_covers_ct_and_no_ct_paths(self, monkeypatch):
         fake_client = Mock()
-        fake_client.read_iq.return_value = np.ones(64, dtype=np.complex64)
+        fake_client.capture_fresh.side_effect = [
+            FreshCapture(np.ones(64, dtype=np.complex64), 1_000_000_000, 0),
+            FreshCapture(np.ones(64, dtype=np.complex64), 2_000_000_000, 0),
+        ]
         progress = []
         now = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
         results = iter(
@@ -772,7 +777,7 @@ class TestCliCoverage:
         )
         assert cli.cmd_scan(args) == 0
         out = capsys.readouterr().out
-        fake_client.set_gain_mode_auto.assert_called_once()
+        fake_client.configure_fm.assert_called_once_with(args.fs, gain_db=None, ppm=0)
         assert "Stations with Clock-Time" in out
         assert "[CT] 90.00 MHz" in out
 
@@ -793,15 +798,12 @@ class TestCliCoverage:
             gain=1.0,
         )
         assert cli.cmd_scan(args) == 0
-        assert (
-            "No station in the scanned band transmitted a valid Clock-Time."
-            in capsys.readouterr().out
-        )
+        assert "No valid Clock-Time observed during this scan" in capsys.readouterr().out
 
     def test_multi_wide_saves_capture(self, monkeypatch):
         fake_client = Mock()
         fake_client.info = SimpleNamespace(tuner_type=5, gain_count=29)
-        fake_client.record.return_value = np.ones(8, dtype=np.complex64)
+        fake_client.capture_fresh.return_value = FreshCapture(np.ones(8, dtype=np.complex64), 0, 0)
         client_cm = MagicMock()
         client_cm.__enter__.return_value = fake_client
         client_cm.__exit__.return_value = False

@@ -91,9 +91,12 @@ flowchart LR
 (`StationTrack`) keyed by `(rounded_freq, PI)`. For each consensus
 call:
 
-1. The active tracks (younger than `stale_age_s`) are listed.
+1. Active tracks with nonnegative ages younger than `stale_age_s` are listed.
+   One latest observation per channel and one per confirmed PI are selected;
+   all tracks remain available for diagnostics. Unconfirmed PIs cannot raise
+   trust above LOW by themselves. Distinct PIs do not prove independent clocks.
 2. Each track produces an "estimated UTC right now" using its last
-   observation plus elapsed monotonic time.
+   observation plus elapsed monotonic time from its RX timestamp when present.
 3. The median epoch and the MAD (median absolute deviation) are
    computed.
 4. Tracks whose estimate diverges by more than
@@ -104,6 +107,22 @@ call:
    term grows linearly with the age of the median.
 6. The trust level (HIGH / MEDIUM / LOW / STALE) is derived from
    the number of contributing sources and the median age.
+
+This uncertainty describes model dispersion and holdover, not a calibrated
+absolute error bound. Multiple agreeing services can share the wrong clock.
+
+`StationInfo` maintains separate payload state for each observed PI. Its public
+PS/RT/CT and `group_counts` describe only the selected leading PI, while
+`DecodeResult.n_groups` counts all valid groups across the capture. Those totals
+can differ when multiple PIs are present; source identity takes precedence over
+combining payloads.
+
+Live clients apply explicit FM settings and use `capture_fresh` after a retune.
+It actively discards data while settling, then requires a brief empty client
+socket within a deadline. Errors close the connection, including partial IQ
+pairs. RTL-TCP has no tune acknowledgement or hardware timestamps, so remote
+queue freshness and physical reception time remain estimates; PI checks are
+an additional independent attribution check.
 
 ## Recon Loop
 

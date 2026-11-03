@@ -29,6 +29,8 @@ def test_trojka_98p8_real_iq_decodes_groups_and_polskie_radio_pi():
 @pytest.mark.integration
 @pytest.mark.slow
 def test_jedynka_baseline_rx_monotonic_timestamps_increase_by_about_a_minute():
+    if not JEDYNKA_BASELINE.exists():
+        pytest.skip("optional local 300-second IQ baseline is not installed")
     iq = dsp.read_iq_complex64(str(JEDYNKA_BASELINE))
     result = decode_iq(iq, fs=250_000, capture_start_monotonic_ns=1_000_000_000)
 

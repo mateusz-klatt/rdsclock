@@ -42,14 +42,32 @@ from .synth import DEFAULT_FS, synthesize_fm_iq
 _GAIN_AGC_LINE = "  Gain: AGC"
 
 
-def _configure_gain(client: RtlTcpClient, gain_db: float | None) -> None:
-    """Apply manual gain in dB or fall back to AGC and print one banner line."""
+def _configure_receiver(
+    client: RtlTcpClient, sample_rate: int, gain_db: float | None, ppm: int = 0
+) -> None:
+    """Start each FM session from explicit receiver settings."""
+    client.configure_fm(sample_rate, gain_db=gain_db, ppm=ppm)
     if gain_db is None:
-        client.set_gain_mode_auto()
         print(_GAIN_AGC_LINE)
     else:
-        client.set_gain_mode_manual(int(gain_db * 10))
         print(f"  Gain: manual {gain_db} dB")
+
+
+def _full_scale_fraction(iq: np.ndarray) -> float:
+    """Fraction of raw I/Q components at the uint8 converter's end codes."""
+    if not len(iq):
+        return 0.0
+    return float(
+        (np.count_nonzero(np.abs(iq.real) >= 1) + np.count_nonzero(np.abs(iq.imag) >= 1))
+        / (2 * len(iq))
+    )
+
+
+def _print_capture_quality(iq: np.ndarray) -> None:
+    rails = _full_scale_fraction(iq)
+    print(f"  Full-scale I/Q: {rails:.2%}")
+    if rails > 0.01:
+        print("  Many I/Q values reach full scale; compare a lower manual --gain.")
 
 
 def _scan_mark(decoded) -> str:
@@ -76,7 +94,7 @@ def _print_station(info: StationInfo) -> None:
                 print(f"  rx_monotonic: {ct.rx_monotonic_ns:_d} ns (host time at receipt)")
             print(f"  CT count:  {len(info.clock_times)}")
     else:
-        print("  ClockTime: NONE (station not transmitting Group 4A or sending dummy data)")
+        print("  ClockTime: NONE (no valid Group 4A in this capture; try 70–130 seconds)")
     if info.group_counts:
         items = sorted(info.group_counts.items(), key=lambda kv: -kv[1])
         print(f"  Groups:    {dict(items)}")
@@ -184,7 +202,7 @@ def cmd_decode(args: argparse.Namespace) -> int:
     print(f"\n=== {args.file} ===")
     print(f"  Bits:       {result.n_bits}")
     print(f"  Groups:     {result.n_groups}")
-    print(f"  Δf offset:  {result.freq_offset_hz:+.1f} Hz")
+    print(f"  CRC:        {result.n_groups_clean} clean, {result.n_groups_corrected} corrected")
     print(f"  Sym off:    {result.symbol_offset}")
     print(f"  Time:       {elapsed:.1f}s")
     _print_station(result.info)
@@ -199,40 +217,46 @@ def cmd_live(args: argparse.Namespace) -> int:
     with RtlTcpClient(host=args.host, port=args.port) as client:
         info = client.info
         print(f"  Tuner: {info.tuner_type}, gain count: {info.gain_count}")
-        client.set_sample_rate(args.fs)
+        _configure_receiver(client, args.fs, args.gain, args.ppm)
         if args.ppm:
-            client.set_ppm(args.ppm)
             print(f"  PPM correction: {args.ppm}")
         client.set_frequency(int(args.freq * 1e6))
-        _configure_gain(client, args.gain)
 
         print(f"Recording {args.duration}s @ {args.freq} MHz …")
-        capture_start_ns = time.monotonic_ns()
-        iq = client.record(args.duration, args.fs)
+        capture = client.capture_fresh(args.duration, args.fs, settle_s=args.settle_seconds)
+        iq = capture.iq
         print(
             f"  samples: {len(iq)}  power: "
             f"{10 * np.log10(np.mean(np.abs(iq) ** 2) + 1e-12):.1f} dBFS"
         )
+        _print_capture_quality(iq)
+        if args.verbose:
+            print(f"  discarded before capture: {capture.discarded_samples} samples")
 
     if args.save:
         dsp.write_iq_complex64(iq, args.save)
         print(f"  saved: {args.save}")
 
-    iq_decode, n_trimmed = _trim_settle_iq(iq, args.fs, args.settle_seconds)
-    capture_decode_start_ns = capture_start_ns + int(round(n_trimmed * 1_000_000_000 / args.fs))
-
     result = decode_iq(
-        iq_decode,
+        iq,
         fs=args.fs,
         carrier_hz=args.carrier_hz,
         auto_carrier=args.carrier_hz is None,
         progress=(lambda m: print(f"  ▸ {m}")) if args.verbose else None,
-        capture_start_monotonic_ns=capture_decode_start_ns,
+        capture_start_monotonic_ns=capture.capture_start_monotonic_ns,
     )
     print(
-        f"\n  Groups: {result.n_groups}  Bits: {result.n_bits}  Δf={result.freq_offset_hz:+.1f} Hz"
+        f"\n  Groups: {result.n_groups} ({result.n_groups_clean} clean, "
+        f"{result.n_groups_corrected} corrected)  Bits: {result.n_bits}"
     )
     _print_station(result.info)
+    ct = result.info.latest_clock
+    if ct is not None and ct.rx_monotonic_ns is not None:
+        estimated_now = ct.utc + timedelta(seconds=(time.monotonic_ns() - ct.rx_monotonic_ns) / 1e9)
+        difference = (estimated_now - datetime.now(UTC)).total_seconds()
+        print(
+            f"  CT versus host UTC: approximately {difference:+.1f}s (host is a comparison, not ground truth)"
+        )
     return 0
 
 
@@ -242,14 +266,18 @@ def cmd_live(args: argparse.Namespace) -> int:
 def _scan_one_frequency(client: RtlTcpClient, freq_mhz: float, args: argparse.Namespace) -> str:
     """Capture, decode and pretty-print a single scan line. Returns the line."""
     client.set_frequency(int(freq_mhz * 1e6))
-    iq = client.record(args.duration, args.fs)
+    capture = client.capture_fresh(
+        args.duration, args.fs, settle_s=getattr(args, "settle_seconds", 0.3)
+    )
+    iq = capture.iq
     power_db = 10 * np.log10(np.mean(np.abs(iq) ** 2) + 1e-12)
     decoded = decode_iq(iq, fs=args.fs)
     mark = _scan_mark(decoded)
     has_ct = "YES" if decoded.info.latest_clock is not None else "—"
     line = (
         f"{mark} {freq_mhz:6.2f} MHz  {power_db:+6.1f} dBFS  "
-        f"groups={decoded.n_groups:4d}  PS='{decoded.info.ps_name:<8}'  "
+        f"groups={decoded.n_groups:4d}  PI={f'{decoded.info.pi:04X}' if decoded.info.pi is not None else '----'}  "
+        f"rails={_full_scale_fraction(iq):.1%}  PS='{decoded.info.ps_name:<8}'  "
         f"CT={has_ct}"
     )
     print(line)
@@ -259,11 +287,7 @@ def _scan_one_frequency(client: RtlTcpClient, freq_mhz: float, args: argparse.Na
 def cmd_scan(args: argparse.Namespace) -> int:
     print(f"Scanning {args.start}-{args.end} MHz, step {args.step} MHz @ {args.fs} S/s…")
     with RtlTcpClient(host=args.host, port=args.port) as client:
-        client.set_sample_rate(args.fs)
-        if args.gain is None:
-            client.set_gain_mode_auto()
-        else:
-            client.set_gain_mode_manual(int(args.gain * 10))
+        _configure_receiver(client, args.fs, args.gain)
 
         results: list[str] = []
         freq_mhz = args.start
@@ -278,7 +302,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         for line in results:
             print(line)
     else:
-        print("\nNo station in the scanned band transmitted a valid Clock-Time.")
+        print("\nNo valid Clock-Time observed during this scan; short captures may miss Group 4A.")
     return 0
 
 
@@ -317,16 +341,18 @@ def _multi_wide(freqs_mhz: list[float], center_hz: float, args: argparse.Namespa
     with RtlTcpClient(host=args.host, port=args.port) as client:
         info = client.info
         print(f"  Tuner: {info.tuner_type}, gain count: {info.gain_count}")
-        client.set_sample_rate(args.fs)
+        _configure_receiver(client, args.fs, args.gain)
         client.set_frequency(int(center_hz))
-        _configure_gain(client, args.gain)
 
         recv_t0 = time.time()
         print(f"\nRecording {args.duration}s @ {center_hz / 1e6:.3f} MHz wide…")
-        iq_wide = client.record(args.duration, args.fs)
+        iq_wide = client.capture_fresh(
+            args.duration, args.fs, settle_s=getattr(args, "settle_seconds", 0.3)
+        ).iq
         recv_dt = time.time() - recv_t0
         power = 10 * np.log10(np.mean(np.abs(iq_wide) ** 2) + 1e-12)
         print(f"  samples: {len(iq_wide):,}  power: {power:+.1f} dBFS  ({recv_dt:.1f}s)")
+        _print_capture_quality(iq_wide)
 
     if args.save:
         dsp.write_iq_complex64(iq_wide, args.save)
@@ -361,10 +387,10 @@ def _hop_one_station(
     """
     t0 = time.time()
     client.set_frequency(int(freq_mhz * 1e6))
-    iq = client.record(args.duration, fs)
+    capture = client.capture_fresh(args.duration, fs, settle_s=args.settle_seconds)
+    iq = capture.iq
     power = 10 * np.log10(np.mean(np.abs(iq) ** 2) + 1e-12)
-    iq_decode, _ = _trim_settle_iq(iq, fs, args.settle_seconds)
-    res = decode_iq(iq_decode, fs=fs)
+    res = decode_iq(iq, fs=fs, capture_start_monotonic_ns=capture.capture_start_monotonic_ns)
     elapsed = time.time() - t0
     snapshot = datetime.now(UTC).strftime("%H:%M:%S")
     print(
@@ -372,7 +398,7 @@ def _hop_one_station(
         f"power={power:+5.1f} dBFS  groups={res.n_groups:4d}  "
         f"PS='{res.info.ps_name}'  ({elapsed:.1f}s)"
     )
-    return res, len(iq_decode), snapshot
+    return res, len(iq), snapshot
 
 
 def _multi_hop(freqs_mhz: list[float], args: argparse.Namespace) -> int:
@@ -386,8 +412,10 @@ def _multi_hop(freqs_mhz: list[float], args: argparse.Namespace) -> int:
     print(f"  Stations:       {', '.join(f'{f:.2f} MHz' for f in freqs_mhz)}")
     print(f"  Per-station fs: {fs} S/s")
     print(f"  Duration/stn:   {args.duration}s")
-    print(f"  Settle trim:    {args.settle_seconds}s")
-    print(f"  Total time:     ~{args.duration * len(freqs_mhz):.0f}s")
+    print(f"  Settle discard: {args.settle_seconds}s before each capture")
+    print(
+        f"  Capture time:   at least {(args.duration + args.settle_seconds) * len(freqs_mhz):.0f}s"
+    )
     print()
 
     print(f"Connecting to rtl_tcp {args.host}:{args.port}…")
@@ -396,8 +424,7 @@ def _multi_hop(freqs_mhz: list[float], args: argparse.Namespace) -> int:
     with RtlTcpClient(host=args.host, port=args.port) as client:
         info = client.info
         print(f"  Tuner: {info.tuner_type}, gain count: {info.gain_count}")
-        client.set_sample_rate(fs)
-        _configure_gain(client, args.gain)
+        _configure_receiver(client, fs, args.gain)
 
         for i, freq in enumerate(freqs_mhz, 1):
             res, iq_len, snapshot = _hop_one_station(client, freq, fs, args, i, len(freqs_mhz))
@@ -636,6 +663,7 @@ def cmd_recon(args: argparse.Namespace) -> int:
         rescan_min=args.rescan_min,
         mission_precision_s=args.precision,
         gain_db=args.gain,
+        settle_s=args.settle_seconds,
         host=args.host,
         port=args.port,
         iterations=args.iterations,
@@ -712,7 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         dest="settle_seconds",
-        help="Trim this many seconds from the start of every retune to skip RTL-SDR PLL/AGC/Costas settling",
+        help="Receive and discard IQ for this long after retuning, before the full recording duration",
     )
     pl.add_argument(
         "--carrier-hz",
@@ -764,7 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         dest="settle_seconds",
-        help="HOP mode: trim this many seconds from each retune to skip RTL-SDR PLL/AGC/Costas settling",
+        help="Receive and discard IQ after tuning, before each full recording duration",
     )
     pm.add_argument("--save", default=None, help="Save wide IQ to file (WIDE only)")
     pm.add_argument("-v", "--verbose", action="store_true")
@@ -823,6 +851,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--host", default="localhost")
     pr.add_argument("--port", type=int, default=1234)
     pr.add_argument("--gain", type=float, default=None)
+    pr.add_argument(
+        "--settle-seconds", type=float, default=0.3, help="Discard incoming IQ after retuning (s)"
+    )
     pr.add_argument(
         "--from-dir",
         default=None,
@@ -893,6 +924,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--host", default="localhost")
     ps.add_argument("--port", type=int, default=1234)
     ps.add_argument("--gain", type=float, default=None)
+    ps.add_argument(
+        "--settle-seconds", type=float, default=0.3, help="Discard incoming IQ after retuning (s)"
+    )
     ps.set_defaults(func=cmd_scan)
 
     return p
@@ -903,7 +937,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if getattr(args, "no_noise", False):
         args.snr = None
-    return args.func(args)
+    try:
+        return args.func(args)
+    except OSError as exc:
+        print(f"rdsclock: {exc}", file=sys.stderr)
+        if args.command in {"live", "scan", "multi", "recon", "play"}:
+            print(
+                "Check rtl_tcp availability and whether another client is using the receiver.",
+                file=sys.stderr,
+            )
+        return 1
 
 
 if __name__ == "__main__":

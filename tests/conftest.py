@@ -2,10 +2,12 @@
 
 import contextlib
 import os
+import select
 import socket
 import struct
 import sys
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -18,7 +20,7 @@ if SRC not in sys.path:
 
 
 def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
-    """Start a fake rtl_tcp listener for CLI and recon tests."""
+    """Continuously stream IQ in timed bursts, including between captures."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.bind(("127.0.0.1", 0))
     srv.listen(max_sessions)
@@ -34,18 +36,35 @@ def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
                 continue
             try:
                 conn.sendall(b"RTL0" + struct.pack(">II", 5, 29))
-                conn.settimeout(0.5)
-                data = samples_per_session * 4
-                with contextlib.suppress(BrokenPipeError, OSError):
-                    conn.sendall(data)
+                conn.settimeout(0.2)
+                sample_rate = 250_000
+                commands = bytearray()
+                offset = 0
+                next_send = time.monotonic()
                 while not stop.is_set():
-                    try:
+                    readable, _, _ = select.select(
+                        [conn], [], [], max(0, next_send - time.monotonic())
+                    )
+                    if readable:
                         chunk = conn.recv(4096)
-                    except TimeoutError:
-                        continue
-                    if not chunk:
-                        break
-            except ConnectionError:
+                        if not chunk:
+                            break
+                        commands.extend(chunk)
+                        while len(commands) >= 5:
+                            command, value = struct.unpack(">BI", commands[:5])
+                            del commands[:5]
+                            if command == 2:
+                                sample_rate = value
+                    if time.monotonic() >= next_send:
+                        count = max(2, int(sample_rate * 0.1) * 2)
+                        repeats = (offset + count + len(samples_per_session) - 1) // len(
+                            samples_per_session
+                        )
+                        data = (samples_per_session * repeats)[offset : offset + count]
+                        conn.sendall(data)
+                        offset = (offset + count) % len(samples_per_session)
+                        next_send = time.monotonic() + 0.1
+            except OSError:
                 pass
             finally:
                 with contextlib.suppress(OSError):
@@ -66,11 +85,21 @@ def _white_noise_samples(n_samples: int = 2_000_000) -> bytes:
 
 
 @pytest.fixture
-def fake_rtl_tcp():
-    port, stop, thread = _make_fake_rtl_tcp(_white_noise_samples())
-    try:
+def rtl_tcp_factory():
+    @contextlib.contextmanager
+    def receiver(samples):
+        port, stop, thread = _make_fake_rtl_tcp(samples)
+        try:
+            yield port
+        finally:
+            stop.set()
+            thread.join(timeout=1.0)
+            assert not thread.is_alive()
+
+    return receiver
+
+
+@pytest.fixture
+def fake_rtl_tcp(rtl_tcp_factory):
+    with rtl_tcp_factory(_white_noise_samples()) as port:
         yield port
-    finally:
-        stop.set()
-        thread.join(timeout=1.0)
-        assert not thread.is_alive()

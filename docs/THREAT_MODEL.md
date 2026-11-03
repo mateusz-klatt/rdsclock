@@ -10,14 +10,15 @@ environments where GPS or NTP are unavailable or untrustworthy. Typical
 use cases:
 
 - Time-keeping where a GPS signal is degraded or absent.
-- Air-gapped systems that must not initiate outbound network traffic.
+- Air-gapped systems using a local receiver without external time services.
 - Forensic time-stamping where a non-GPS reference is required to
   cross-check.
 
 The product is **not** a substitute for accurate time-keeping in
-safety-critical or hard-real-time systems. It targets ±1 minute
-accuracy on a station with GPS-disciplined CT, ±seconds with
-multi-source consensus across several such stations.
+safety-critical or hard-real-time systems. Absolute accuracy depends on the
+broadcast time source and receive path and has not been calibrated. Agreement
+between services can preserve a shared clock error. The displayed uncertainty
+models source dispersion and holdover, rather than bounding absolute UTC error.
 
 ## System Boundary
 
@@ -32,17 +33,19 @@ flowchart LR
 
 The receiver:
 
-- Reads IQ samples from a local `rtl_tcp` socket.
+- Opens a TCP connection to the configured `rtl_tcp` receiver (local by default).
+  Remote receivers require a trusted network or authenticated tunnel.
 - Performs DSP, RDS decoding and time consensus entirely in-process.
 - Optionally writes IQ recordings, scan logs and a structured
   consensus output.
 
 The receiver does **not**:
 
-- Open outbound network connections.
 - Transmit any RF.
-- Use the system clock as a source of truth (the system clock is
-  only displayed alongside the consensus for comparison).
+- Contact external time services. The normal consensus extrapolates received
+  CT against the monotonic clock. Host UTC is a comparison; the experimental
+  subsecond phase estimator additionally uses host wall time for calibration
+  and therefore cannot independently validate that reference.
 
 ## Trust Boundaries
 
@@ -60,11 +63,11 @@ The receiver does **not**:
 | Threat                                              | Mitigation                                                                                                 |
 |-----------------------------------------------------|------------------------------------------------------------------------------------------------------------|
 | **T1.** Single station broadcasts incorrect CT.     | Multi-source median. A station diverging from the median by more than `OUTLIER_THRESHOLD_S` is penalised. |
-| **T2.** Attacker forges RDS on a captured carrier.  | An RF fingerprint per station (CFO, RSSI, PI) is recorded for analysis; programmatic shift detection is planned for a future release. |
-| **T3.** Attacker takes over multiple weak stations. | Trust accrues over time; new stations enter with neutral 0.5 trust and must converge with existing ones.  |
+| **T2.** Attacker forges RDS on a captured carrier.  | CRC and PI are not authentication. PI and relative power are recorded for analysis; measured CFO and programmatic shift detection remain future work. |
+| **T3.** Multiple services share an incorrect or forged clock. | Channels and confirmed PI codes are deduplicated before voting, but different PIs do not prove independent clocks. HIGH reports agreement, not authenticity. |
 | **T4.** Attacker jams the FM band.                  | The receiver enters **holdover**: continues estimating UTC from the local oscillator and announces growing uncertainty until manual intervention. |
 | **T5.** Tuner drift moves the RDS subcarrier.       | The pilot-based carrier estimator (`estimate_pilot_19khz × 3`) tracks the actual subcarrier even with ±10 ppm drift. |
-| **T6.** Sample-timing drift across long captures.   | Two parallel clock-recovery paths (best-symbol-offset + Mueller–Müller). The one yielding more groups wins. |
+| **T6.** Sample-timing drift across long captures.   | Pilot-based drift estimation and biphase offset search recover symbols; fallback recovery paths handle short signals. These do not remove transport timestamp uncertainty. |
 | **T7.** Network attacker reaches `rtl_tcp`.         | The daemon binds to `127.0.0.1` by default; the documentation explicitly warns against `0.0.0.0`.         |
 | **T8.** Operational metadata leaks via logs / IQ.   | `SECURITY.md` lists sensitive artefacts. The default install does not write any log to disk.              |
 | **T9.** Stations stop broadcasting CT.              | Holdover with explicit uncertainty growth; consensus enters `STALE` once `mission_precision_s` is exceeded. |

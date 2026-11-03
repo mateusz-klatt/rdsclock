@@ -12,7 +12,7 @@ from rdsclock.time_consensus import (
 )
 
 
-def _obs(freq_mhz: float, pi: int, utc: datetime, mono: float) -> StationObservation:
+def _obs(freq_mhz: float, pi: int | None, utc: datetime, mono: float) -> StationObservation:
     return StationObservation(
         freq_hz=freq_mhz * 1e6,
         pi=pi,
@@ -146,6 +146,144 @@ class TestConsensus:
         est_at_105 = t.estimated_utc_now(monotonic_now=105.0)
         assert est_at_105 == utc + timedelta(seconds=5)
 
+    def test_receive_timestamp_excludes_capture_and_decode_delay(self):
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        c = TimeConsensus()
+        track = c.record(
+            StationObservation(
+                freq_hz=102.4e6,
+                pi=0x3211,
+                ct_utc=utc,
+                received_monotonic=110.0,
+                clock_time=ClockTime(utc, 0, rx_monotonic_ns=101_000_000_000),
+            )
+        )
+
+        assert track.age_s(110.0) == 9.0
+        assert c.consensus(monotonic_now=110.0).utc == utc + timedelta(seconds=9)
+
+    def test_staleness_uses_receipt_even_when_decoded_recently(self):
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        c = TimeConsensus(stale_age_s=30.0)
+        c.record(StationObservation(102.4e6, 0x3211, utc, 150.0, rx_monotonic_ns=100_000_000_000))
+        assert c.consensus(monotonic_now=150.0).utc is None
+
+    def test_future_observation_does_not_contribute(self):
+        c = TimeConsensus()
+        c.record(_obs(102.4, 0x3211, datetime(2026, 10, 31, 9, 6, tzinfo=UTC), mono=110.0))
+        assert c.consensus(monotonic_now=100.0).utc is None
+
+    def test_repeated_pi_does_not_inflate_confidence(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        for freq in (102.3, 102.4, 102.5):
+            c.record(_obs(freq, 0x3211, utc, mono=100.0))
+        result = c.consensus(monotonic_now=101.0)
+        assert len(c.tracks) == 3  # Keep all captures available for diagnostics.
+        assert result.n_sources == 1
+        assert result.trust_level == TrustLevel.LOW
+
+    def test_repeated_pi_does_not_outvote_two_other_programmes(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        for freq in (102.2, 102.3, 102.4, 102.5):
+            c.record(_obs(freq, 0x3211, utc + timedelta(hours=1), mono=100.0))
+        c.record(_obs(98.8, 0x3233, utc, mono=100.0))
+        c.record(_obs(94.0, 0x3333, utc, mono=100.0))
+        result = c.consensus(monotonic_now=101.0)
+        assert result.utc == utc + timedelta(seconds=1)
+        assert result.n_sources == 2
+        assert result.trust_level == TrustLevel.MEDIUM
+
+    def test_repeated_pi_uses_freshest_observation(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        c.record(_obs(102.3, 0x3211, utc, mono=100.0))
+        c.record(_obs(102.4, 0x3211, utc + timedelta(minutes=1), mono=160.0))
+        result = c.consensus(monotonic_now=161.0)
+        assert result.utc == utc + timedelta(seconds=61)
+        assert result.contributing_freqs_mhz == [102.4]
+
+    def test_changed_pi_on_one_channel_does_not_create_multiple_sources(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+        for second, pi in enumerate((0x1111, 0x2222, 0x3333)):
+            c.record(_obs(102.4, pi, utc + timedelta(seconds=second), mono=100.0 + second))
+        result = c.consensus(monotonic_now=103.0)
+        assert len(c.tracks) == 3
+        assert result.utc == utc + timedelta(seconds=3)
+        assert result.n_sources == 1
+        assert result.trust_level == TrustLevel.LOW
+
+    def test_confirming_pi_replaces_unconfirmed_vote_in_the_same_channel_bin(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+        c.record(_obs(102.38, None, utc + timedelta(hours=1), mono=100.0))
+        c.record(_obs(102.42, 0x3211, utc + timedelta(seconds=1), mono=101.0))
+        result = c.consensus(monotonic_now=102.0)
+        assert len(c.tracks) == 2
+        assert result.utc == utc + timedelta(seconds=2)
+        assert result.n_sources == 1
+        assert result.contributing_freqs_mhz == [102.42]
+
+    def test_fresher_unconfirmed_pi_replaces_old_confirmed_clock(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+        c.record(_obs(102.4, 0x3211, utc + timedelta(hours=1), mono=100.0))
+        c.record(_obs(102.4, None, utc + timedelta(seconds=1), mono=101.0))
+        result = c.consensus(monotonic_now=102.0)
+        assert result.utc == utc + timedelta(seconds=2)
+        assert result.n_sources == 1
+        assert result.trust_level == TrustLevel.LOW
+
+    def test_channel_representative_uses_receipt_instead_of_decode_completion(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+        c.record(
+            StationObservation(
+                102.4e6,
+                0x1111,
+                utc + timedelta(hours=1),
+                150.0,
+                rx_monotonic_ns=100_000_000_000,
+            )
+        )
+        c.record(_obs(102.4, 0x2222, utc + timedelta(seconds=20), mono=120.0))
+        result = c.consensus(monotonic_now=151.0)
+        assert result.utc == utc + timedelta(seconds=51)
+        assert result.n_sources == 1
+
+    def test_channel_deduplication_precedes_programme_deduplication(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+        c.record(_obs(102.4, 0x1111, utc + timedelta(hours=1), mono=100.0))
+        c.record(_obs(102.4, 0x2222, utc + timedelta(seconds=10), mono=110.0))
+        c.record(_obs(98.8, 0x2222, utc + timedelta(seconds=20), mono=120.0))
+        result = c.consensus(monotonic_now=121.0)
+        assert len(c.tracks) == 3
+        assert result.utc == utc + timedelta(seconds=21)
+        assert result.n_sources == 1
+        assert result.contributing_freqs_mhz == [98.8]
+
+    def test_unconfirmed_pi_cannot_raise_trust(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        for freq in (92.0, 98.8, 102.4):
+            c.record(_obs(freq, None, utc, mono=100.0))
+        result = c.consensus(monotonic_now=101.0)
+        assert result.n_sources == 3
+        assert result.trust_level == TrustLevel.LOW
+
+    def test_high_trust_requires_three_confirmed_pi(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        c.record(_obs(92.0, 0x1111, utc, mono=100.0))
+        c.record(_obs(98.8, 0x2222, utc, mono=100.0))
+        c.record(_obs(102.4, None, utc, mono=100.0))
+        result = c.consensus(monotonic_now=101.0)
+        assert result.n_sources == 3
+        assert result.trust_level == TrustLevel.MEDIUM
+
     def test_sub_second_consensus_learns_station_latency_and_back_propagates(self):
         c = TimeConsensus()
         base = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
@@ -211,8 +349,9 @@ class TestConsensus:
         c = TimeConsensus()
         base = datetime(2026, 5, 17, 12, 0)
         mono_origin_ns = 20_000_000_000
-        wall_now = base + timedelta(minutes=2)
-        monkeypatch.setattr("rdsclock.time_consensus.time.monotonic_ns", lambda: mono_origin_ns)
+        mono_now_ns = mono_origin_ns + 180_000_000_000
+        wall_now = base + timedelta(minutes=3)
+        monkeypatch.setattr("rdsclock.time_consensus.time.monotonic_ns", lambda: mono_now_ns)
         monkeypatch.setattr(
             "rdsclock.time_consensus.time.time_ns",
             lambda: int(wall_now.replace(tzinfo=UTC).timestamp() * 1_000_000_000),
@@ -252,8 +391,35 @@ class TestConsensus:
         empty_rx_track = StationTrack(freq_hz=99.9e6, pi=0x9999, tx_latency_ns=1)
         empty_rx_track.add_observation(_obs(99.9, 0x9999, base.replace(tzinfo=UTC), mono=1.0))
         c.tracks[(99_900_000, 0x9999)] = empty_rx_track
-        estimates = c._sub_second_station_estimates(mono_origin_ns, 0)
+        estimates = c._sub_second_station_estimates(mono_now_ns, 0)
         assert len(estimates) == 2
+
+    def test_sub_second_consensus_rejects_stale_or_duplicate_sources(self):
+        base = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        origin = 10_000_000_000
+        c = TimeConsensus()
+        for minute in range(3):
+            for freq in (102.3, 102.4, 102.5):
+                c.record(
+                    _timestamped_obs(
+                        freq, 0x3211, base + timedelta(minutes=minute), 5_000_000_000, origin, base
+                    )
+                )
+        assert c.sub_second_consensus(origin + 180_000_000_000, base + timedelta(minutes=3)) is None
+
+        for minute in range(3):
+            c.record(
+                _timestamped_obs(
+                    98.8, 0x3233, base + timedelta(minutes=minute), 5_000_000_000, origin, base
+                )
+            )
+        assert (
+            c.sub_second_consensus(origin + 180_000_000_000, base + timedelta(minutes=3))
+            is not None
+        )
+        assert (
+            c.sub_second_consensus(origin + 600_000_000_000, base + timedelta(minutes=10)) is None
+        )
 
     def test_station_observation_normalizes_naive_received_wall(self):
         obs = StationObservation(
