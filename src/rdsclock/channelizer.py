@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from math import gcd
 
 import numpy as np
-from scipy.signal import firwin, resample_poly
+from scipy.signal import firwin, oaconvolve, resample_poly
 
 from . import dsp
 from .decoder import DecodeResult, decode_iq
@@ -62,11 +62,16 @@ def extract_channel(
         phasor = (np.exp(1j * step * start) * ramp[: stop - start]).astype(np.complex64)
         np.multiply(iq_wide[start:stop], phasor, out=mixed[start:stop])
 
-    # resample_poly's own filter design, with the cutoff at half_bw instead of
-    # the output Nyquist frequency. float32 taps keep the result in complex64.
-    half_len = 10 * max(up, down)
-    taps = firwin(2 * half_len + 1, half_bw, window=("kaiser", 5.0), fs=fs_wide * up)
-    return resample_poly(mixed, up, down, window=taps.astype(np.float32))
+    # resample_poly's own filter design, with the cutoff at half_bw unless the
+    # output Nyquist frequency is lower. float32 taps keep the result complex64.
+    cutoff = min(half_bw, fs_out / 2)
+    half_len = max(10 * max(up, down), 128)
+    taps = firwin(2 * half_len + 1, cutoff, window=("kaiser", 5.0), fs=fs_wide * up)
+    taps = taps.astype(np.float32)
+    if up == down == 1:
+        # resample_poly would return an unfiltered copy: filter here, centred.
+        return oaconvolve(mixed, taps, mode="same")
+    return resample_poly(mixed, up, down, window=taps)
 
 
 @dataclass
@@ -107,6 +112,9 @@ def decode_channels(
         res = decode_iq(iq_chan, fs=fs_out, capture_start_monotonic_ns=capture_start_monotonic_ns)
         return ChannelDecodeResult(spec=spec, iq_samples=len(iq_chan), result=res, rssi_db=rssi_db)
 
+    if max_workers == 1:
+        # In the calling thread, so that Ctrl+C does not wait for a long decode.
+        return [worker(spec) for spec in channels]
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = list(pool.map(worker, channels))
     return results
