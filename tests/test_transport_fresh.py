@@ -213,9 +213,12 @@ def test_high_rate_capture_uses_short_gaps_in_a_continuous_stream(socket_client)
         assert not worker.is_alive()
 
 
-def _capture_half_a_second(monkeypatch, client, sender, *bursts):
+def _capture(monkeypatch, client, sender, duration_s, *bursts):
+    """Capture at 1 kS/s; a backlog needs 0.1 s, catching up 0.4 s at real time."""
     worker = _send_on_capture(monkeypatch, client, sender, *bursts)
-    capture = client.capture_fresh(0.5, 1000, settle_s=0, quiet_s=0.01, backlog_threshold_s=0.1)
+    capture = client.capture_fresh(
+        duration_s, 1000, settle_s=0, quiet_s=0.01, backlog_threshold_s=0.1
+    )
     worker.join(1)
     assert not worker.is_alive()
     return capture, (capture.capture_end_monotonic_ns - capture.capture_start_monotonic_ns) / 1e9
@@ -223,22 +226,36 @@ def _capture_half_a_second(monkeypatch, client, sender, *bursts):
 
 def test_samples_that_arrive_together_are_dated_by_their_duration(socket_client, monkeypatch):
     # 500 samples at 1 kS/s arrive at once only if they had queued: the last
-    # one exists 0.5 s after the first.
+    # one exists 0.5 s after the first. The stream never showed real time, so
+    # the samples may be older still.
     client, sender = socket_client
-    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, (0.0, FRESH_PAIR * 500))
+    capture, span_s = _capture(monkeypatch, client, sender, 0.5, (0.0, FRESH_PAIR * 500))
     assert 0.4 <= capture.queued_s <= 0.5
     assert capture.backlogged
+    assert not capture.caught_up
     assert span_s >= 0.5
     assert np.allclose(capture.iq.real, (200 - 127.5) / 127.5)
     assert np.allclose(capture.iq.imag, (130 - 127.5) / 127.5)
 
 
+def test_a_capture_that_ends_ahead_of_real_time_has_not_caught_up(socket_client, monkeypatch):
+    # A backlog longer than the capture: 0.5 s of samples arrive in 0.1 s, so
+    # every read moves the start back and the true start stays unknown.
+    client, sender = socket_client
+    bursts = [((first + 50) / 5000, FRESH_PAIR * 50) for first in range(0, 500, 50)]
+    capture, _ = _capture(monkeypatch, client, sender, 0.5, *bursts)
+    assert capture.backlogged
+    assert not capture.caught_up
+    assert capture.queued_s <= 0.4 + 1e-3  # only a lower bound on the queue
+
+
 def test_a_stream_that_keeps_up_is_dated_from_the_read(socket_client, monkeypatch):
     client, sender = socket_client
     before = time.monotonic_ns()
-    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, *_real_time(500, 1000))
+    capture, span_s = _capture(monkeypatch, client, sender, 0.5, *_real_time(500, 1000))
     assert capture.queued_s < 0.005
     assert not capture.backlogged
+    assert capture.caught_up
     assert before <= capture.capture_start_monotonic_ns
     assert span_s >= 0.5
 
@@ -248,8 +265,9 @@ def test_samples_lost_mid_capture_do_not_move_the_start(socket_client, monkeypat
     # 250 samples before the gap 0.3 s late.
     client, sender = socket_client
     bursts = _real_time(250, 1000) + _real_time(250, 1000, after_s=0.55)
-    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, *bursts)
+    capture, span_s = _capture(monkeypatch, client, sender, 0.5, *bursts)
     assert capture.queued_s < 0.005
+    assert capture.caught_up
     assert span_s - 0.5 >= 0.29  # the lost time shows in the span
 
 
@@ -260,16 +278,17 @@ def test_a_backlog_moves_the_start_back_and_a_later_loss_does_not(socket_client,
     client, sender = socket_client
     bursts = [
         (0.0, FRESH_PAIR * 200),
-        *_real_time(150, 1000),
-        *_real_time(150, 1000, after_s=0.25),
+        *_real_time(300, 1000),
+        *_real_time(200, 1000, after_s=0.4),
     ]
-    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, *bursts)
+    capture, span_s = _capture(monkeypatch, client, sender, 0.7, *bursts)
     assert 0.15 <= capture.queued_s <= 0.201
     assert capture.backlogged
-    assert span_s - 0.5 >= 0.05
+    assert capture.caught_up  # 0.6 s at real time after the backlog
+    assert span_s - 0.7 >= 0.05
 
 
-def test_a_backlog_sent_between_quiet_gaps_is_dated_by_its_arrival(rtl_tcp_factory):
+def _capture_behind_a_backlog(rtl_tcp_factory, duration_s):
     # As on the live receiver on 2026-11-03: the drain stops in a gap between
     # bursts of rtl_tcp's queue, and the capture reads a second of queued
     # samples faster than real time.
@@ -279,12 +298,24 @@ def test_a_backlog_sent_between_quiet_gaps_is_dated_by_its_arrival(rtl_tcp_facto
     ):
         client.set_sample_rate(2_400_000)
         client.set_frequency(102_850_000)
-        capture = client.capture_fresh(2.0, 2_400_000, settle_s=0)
-    span_s = (capture.capture_end_monotonic_ns - capture.capture_start_monotonic_ns) / 1e9
-    assert span_s - capture.queued_s < 1.5  # the read itself was that much shorter
+        capture = client.capture_fresh(duration_s, 2_400_000, settle_s=0)
+    return capture, (capture.capture_end_monotonic_ns - capture.capture_start_monotonic_ns) / 1e9
+
+
+def test_a_backlog_sent_between_quiet_gaps_is_dated_by_its_arrival(rtl_tcp_factory):
+    capture, span_s = _capture_behind_a_backlog(rtl_tcp_factory, 3.0)
+    assert span_s - capture.queued_s < 2.5  # the read itself was that much shorter
     assert capture.backlogged
+    assert capture.caught_up
     assert 0.6 <= capture.queued_s <= 1.4
-    assert 2.0 <= span_s < 2.3  # dated by arrival, the samples span real time again
+    assert 3.0 <= span_s < 3.3  # dated by arrival, the samples span real time again
+
+
+def test_a_capture_shorter_than_the_backlog_does_not_catch_up(rtl_tcp_factory):
+    capture, _ = _capture_behind_a_backlog(rtl_tcp_factory, 0.75)
+    assert capture.backlogged
+    assert not capture.caught_up
+    assert capture.queued_s < 0.75  # a lower bound: about a second had queued
 
 
 def test_fresh_capture_reports_eof_during_drain(socket_client):

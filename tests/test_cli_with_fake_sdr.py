@@ -1,8 +1,17 @@
 """CLI tests for sub-commands that talk to ``rtl_tcp``."""
 
 import json
+import time
+from datetime import UTC, datetime
 
+import numpy as np
+
+import rdsclock.cli as cli
 from rdsclock.cli import main
+from rdsclock.decoder import DecodeResult
+from rdsclock.rds_clock import ClockTime
+from rdsclock.rds_groups import StationInfo
+from rdsclock.rtl_tcp import FreshCapture, RtlTcpClient
 
 
 class TestCmdLive:
@@ -52,6 +61,29 @@ class TestCmdLive:
         assert rc == 0
         assert save_path.exists()
         assert "queued when the capture began:" in capsys.readouterr().out
+
+    def test_a_capture_that_never_caught_up_is_not_compared_with_the_host(
+        self, fake_rtl_tcp, capsys, monkeypatch
+    ):
+        def capture_fresh(self, duration_s, sample_rate, **kwargs):
+            iq = np.zeros(round(duration_s * sample_rate), dtype=np.complex64)
+            start_ns = time.monotonic_ns() - 3_000_000_000
+            return FreshCapture(iq, start_ns, 0, queued_s=3.0, backlogged=True, caught_up=False)
+
+        info = StationInfo(pi=0xCAFE)
+        info.clock_times.append(
+            ClockTime(datetime(2026, 11, 3, 12, 0, tzinfo=UTC), 60, rx_monotonic_ns=1)
+        )
+        decoded = DecodeResult(
+            info=info, n_groups=1, n_bits=104, freq_offset_hz=0.0, symbol_offset=0
+        )
+        monkeypatch.setattr(RtlTcpClient, "capture_fresh", capture_fresh)
+        monkeypatch.setattr(cli, "decode_iq", lambda iq, **kwargs: decoded)
+        argv = ["live", "--freq", "95.5", "--duration", "0.01", "--port", str(fake_rtl_tcp)]
+        assert main([*argv, "--host", "127.0.0.1"]) == 0
+        out = capsys.readouterr().out
+        assert "at least 3.0 s behind real time and never caught up" in out
+        assert "CT versus host UTC" not in out
 
 
 class TestCmdScan:

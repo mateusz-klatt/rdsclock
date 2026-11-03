@@ -61,19 +61,26 @@ class _Receiver:
 class _Backlogged(_Receiver):
     """A ``_Receiver`` whose captures began 2.5 s behind real time."""
 
-    def __init__(self, amplitudes: list[float]):
+    def __init__(self, amplitudes: list[float], caught_up: bool = True):
         super().__init__(amplitudes)
+        self.caught_up = caught_up
         self.captures: list[FreshCapture] = []
 
     def capture_fresh(self, duration, fs, **kwargs):
         iq = super().capture_fresh(duration, fs, **kwargs).iq
         start_ns = time.monotonic_ns() - 2_500_000_000
-        self.captures.append(FreshCapture(iq, start_ns, 0, queued_s=2.5, backlogged=True))
+        self.captures.append(
+            FreshCapture(iq, start_ns, 0, queued_s=2.5, backlogged=True, caught_up=self.caught_up)
+        )
         return self.captures[-1]
 
 
 BACKLOG_MESSAGE = (
     ": the capture began 2.5 s behind real time (queued samples); receive times account for it"
+)
+BEHIND_MESSAGE = (
+    ": the capture began at least 2.5 s behind real time and never caught up; "
+    "its Clock-Time stays out of the consensus"
 )
 
 
@@ -133,6 +140,7 @@ class TestEventToJson:
         assert record["clock_time"]["utc"] == "2026-11-03T12:00:00+00:00"
         assert record["clock_time"]["local_offset_minutes"] == 60
         assert record["queued_s"] == 0.0
+        assert record["caught_up"] is True
 
     def test_unavailable_consensus_encodes_infinity_as_null(self):
         event = recon.CycleCompleted(
@@ -245,6 +253,29 @@ class TestScanAndHopEvents:
         assert messages == [
             "  hop  95.50 MHz" + BACKLOG_MESSAGE,
             "  hop  95.50 MHz: CT=12:00:00Z groups=4",
+        ]
+
+    def test_ct_from_a_capture_that_never_caught_up_stays_out_of_the_consensus(self, monkeypatch):
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(_clock()))
+        consensus = TimeConsensus()
+        events: list[recon.ReconEvent] = []
+        messages: list[str] = []
+        n_obs = recon.hop_collect_ct(
+            _Backlogged([1.0], caught_up=False),
+            [recon.StationCandidate(95.5e6, -10.0, 4, True, 0xCAFE)],
+            _cfg(),
+            consensus,
+            progress=messages.append,
+            on_event=events.append,
+        )
+        assert n_obs == 0
+        assert consensus.tracks == {}
+        assert events[0].clock_time == _clock()
+        assert not events[0].caught_up
+        assert json.loads(recon.event_to_json(events[0]))["caught_up"] is False
+        assert messages == [
+            "  hop  95.50 MHz" + BEHIND_MESSAGE,
+            "  hop  95.50 MHz: CT=12:00:00Z groups=4 (receive time unknown, not used)",
         ]
 
     def test_a_backlogged_scan_step_is_reported(self, monkeypatch):

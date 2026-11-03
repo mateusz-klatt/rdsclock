@@ -200,8 +200,10 @@ class HopResult:
     """One watchlist station recorded and decoded; ``clock_time`` is ``None`` without CT.
 
     ``queued_s`` is how long the capture's first sample had queued when the
-    capture began reading (:attr:`FreshCapture.queued_s`). Receive times
-    already account for it.
+    capture began reading (:attr:`FreshCapture.queued_s`); receive times
+    account for it. ``caught_up`` is false when the capture never caught up
+    with real time: its receive times are then only upper bounds, and its CT
+    stays out of the consensus.
     """
 
     kind: ClassVar[str] = "hop_result"
@@ -214,6 +216,7 @@ class HopResult:
     n_groups_corrected: int
     clock_time: ClockTime | None
     queued_s: float = 0.0
+    caught_up: bool = True
 
 
 @dataclass(frozen=True)
@@ -361,11 +364,12 @@ def rank_candidates(candidates: list[StationCandidate]) -> list[StationCandidate
 
 @dataclass(frozen=True)
 class _CaptureStart:
-    """A capture's first sample on the monotonic and wall clocks, and how long it had queued."""
+    """A capture's first sample on the monotonic and wall clocks, and how it was dated."""
 
     monotonic_ns: int
     wall: datetime
     queued_s: float
+    caught_up: bool
 
 
 def _capture_start(capture: FreshCapture) -> _CaptureStart:
@@ -378,17 +382,24 @@ def _capture_start(capture: FreshCapture) -> _CaptureStart:
     monotonic_anchor = time.monotonic_ns()
     start_ns = capture.capture_start_monotonic_ns
     wall = wall_anchor - timedelta(seconds=(monotonic_anchor - start_ns) / 1e9)
-    return _CaptureStart(start_ns, wall, capture.queued_s)
+    return _CaptureStart(start_ns, wall, capture.queued_s, capture.caught_up)
 
 
 def _report_backlog(
     label: str, capture: FreshCapture, progress: Callable[[str], None] | None
 ) -> None:
     """Tell the operator that a capture began with samples queued while not reading."""
-    if progress and capture.backlogged:
+    if not progress or not capture.backlogged:
+        return
+    if capture.caught_up:
         progress(
             f"  {label}: the capture began {capture.queued_s:.1f} s behind real time "
             "(queued samples); receive times account for it"
+        )
+    else:
+        progress(
+            f"  {label}: the capture began at least {capture.queued_s:.1f} s behind real "
+            "time and never caught up; its Clock-Time stays out of the consensus"
         )
 
 
@@ -399,9 +410,13 @@ def _record_station(
     capture_start: _CaptureStart,
     consensus: TimeConsensus,
 ) -> HopResult:
-    """Store a decoded station's CT in the consensus and describe the station."""
+    """Store a decoded station's CT in the consensus and describe the station.
+
+    A capture that never caught up with real time has no known receive times,
+    so its CT is described but not stored.
+    """
     ct = result.info.latest_clock
-    if ct is not None:
+    if ct is not None and capture_start.caught_up:
         received_wall = None
         if ct.rx_monotonic_ns is not None:
             received_wall = capture_start.wall + timedelta(
@@ -437,6 +452,7 @@ def _record_station(
         n_groups_corrected=result.n_groups_corrected,
         clock_time=ct,
         queued_s=capture_start.queued_s,
+        caught_up=capture_start.caught_up,
     )
 
 
@@ -446,18 +462,19 @@ def _report_station(
     progress: Callable[[str], None] | None,
     on_event: Callable[[ReconEvent], None] | None,
 ) -> int:
-    """Pass one station's result on; return 1 when it carried CT, otherwise 0."""
+    """Pass one station's result on; return 1 when its CT entered the consensus, otherwise 0."""
     if progress:
         if hop.clock_time is not None:
+            unused = "" if hop.caught_up else " (receive time unknown, not used)"
             progress(
                 f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: "
-                f"CT={hop.clock_time.utc.strftime('%H:%M:%S')}Z groups={hop.n_groups}"
+                f"CT={hop.clock_time.utc.strftime('%H:%M:%S')}Z groups={hop.n_groups}{unused}"
             )
         else:
             progress(f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: no CT (groups={hop.n_groups})")
     if on_event:
         on_event(hop)
-    return 0 if hop.clock_time is None else 1
+    return 1 if hop.clock_time is not None and hop.caught_up else 0
 
 
 def hop_collect_ct(

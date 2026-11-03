@@ -254,7 +254,10 @@ had already waited in the receiver's queues when reading began. Receive times
 include it. Up to one rtl_tcp transfer (about 0.05 s at 2.4 MS/s, 0.5 s at
 250 kS/s) is normal; more means the samples queued while the receiver was
 decoding, as they do during the long decode of each WIDE cycle. With `-v`, such
-a capture is also named in the operator text.
+a capture is also named in the operator text. `caught_up` is false when the
+queue outlasted the capture: the samples were still arriving faster than real
+time when it ended, so their receive times are unknown. The CT of such a
+capture is reported but not used for the consensus.
 
 ## 6. Adjusting the Wrist Watch
 

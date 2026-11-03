@@ -151,6 +151,15 @@ transfer is normal, because rtl_tcp sends each transfer once its last sample
 exists (55 ms at 2.4 MS/s, 0.52 s at 250 kS/s); `backlogged` marks a capture
 that started more than two transfers, and at least 0.25 s, behind.
 
+The earliest bound dates the first sample only once the stream has caught up
+with real time. A backlog longer than the capture arrives ahead of real time
+throughout, and the samples are then older than the bound by an unknown amount.
+A backlogged capture counts as caught up once, for the last four backlog
+thresholds of the read (1 s at 2.4 MS/s, 4.2 s at 250 kS/s), no read moved its
+start back by more than a fifth of a threshold. That recognises a stream
+running more than 5 % ahead of real time. Otherwise `caught_up` is false, and
+recon reports the capture's Clock-Time without adding it to the consensus.
+
 Dating the first sample at the capture end minus its duration gives the same
 start when samples queue only before the capture, but samples lost during the
 capture would move that start later for every sample. A loss only loosens the
@@ -199,11 +208,12 @@ tuning point (including points below the RSSI threshold),
 `cycle_completed` and `recon_stopped`. In WIDE mode `acquisition_started` and
 `maintenance_started` also carry the capture centre and sample rate, and every
 station of a capture produces a `hop_result`. Each `hop_result` carries the
-`queued_s` of its capture, which its receive times already include; verbose
-output names every backlogged capture. `cycle_completed` carries the data
-behind the status block: the consensus result, the watchlist and one row per
-track. The loop evaluates the consensus once per cycle and passes the result
-to both outputs, because every evaluation updates trust scores.
+`queued_s` of its capture, which its receive times already include, and
+`caught_up`; verbose output names every backlogged capture. `cycle_completed`
+carries the data behind the status block: the consensus result, the watchlist
+and one row per track. The loop evaluates the consensus once per cycle and
+passes the result to both outputs, because every evaluation updates trust
+scores.
 `rdsclock recon --jsonl` renders the events with `event_to_json`, one JSON
 object per line on stdout, and moves the operator text to stderr. Before each
 iteration the loop polls `rescan_requested`; the CLI sets it from `SIGUSR1`,

@@ -49,6 +49,12 @@ class FreshCapture:
     started further behind, with samples that had queued while the client was
     not reading.
 
+    The earliest bound dates the first sample only once the stream has caught
+    up with real time. A backlog longer than the capture can deliver all of it
+    ahead of real time, and the samples are then older than the bound by an
+    unknown amount. ``caught_up`` is false for such a capture: it began behind
+    and its reads were still moving the start back near the end.
+
     Samples lost during a capture only loosen the later bounds. The start
     stays right for the samples before the loss, and later samples are early
     by the time lost. ``capture_end_monotonic_ns``, the time after the last
@@ -66,6 +72,7 @@ class FreshCapture:
     capture_end_monotonic_ns: int | None = None
     queued_s: float = 0.0
     backlogged: bool = False
+    caught_up: bool = True
 
 
 class RtlTcpDrainTimeoutError(TimeoutError):
@@ -248,7 +255,11 @@ class RtlTcpClient:
         samples fresh: after a retune, a backlog can begin with the previous
         tuning. ``backlogged`` is set when the first sample had queued for
         longer than ``backlog_threshold_s``; the default allows two rtl_tcp
-        transfers, and at least 0.25 s.
+        transfers, and at least 0.25 s. A backlogged capture has caught up
+        once, for the last four thresholds of the read (1 s at 2.4 MS/s), no
+        read moved its start back by more than a fifth of a threshold. That
+        recognises a stream that runs more than 5 % ahead of real time; a
+        link barely faster than the stream can still hide a backlog.
 
         Any failure or interruption after draining starts closes the socket:
         a partial read can otherwise leave the next attempt between I and Q.
@@ -297,10 +308,16 @@ class RtlTcpClient:
         sock = self._sock
         if sock is None:
             raise RuntimeError("not connected")
+        # A read that moves the start back by more than ``step_ns`` shows the
+        # stream still running ahead of real time; ``window_ns`` without one
+        # shows that it has caught up.
+        step_ns = round(backlog_threshold_s / 5 * 1e9)
+        window_ns = round(4 * backlog_threshold_s * 1e9)
         data = bytearray(2 * n_samples)
         view = memoryview(data)
         received = 0
-        read_start_ns = start_ns = end_ns = time.monotonic_ns()
+        read_start_ns = start_ns = level_ns = end_ns = time.monotonic_ns()
+        ran_ahead_ns: int | None = None
         while received < len(data):
             count = sock.recv_into(view[received:])
             if not count:
@@ -308,15 +325,21 @@ class RtlTcpClient:
             received += count
             end_ns = time.monotonic_ns()
             # k samples take k / sample_rate to produce: the first existed that long ago.
-            start_ns = min(start_ns, end_ns - round(received // 2 * 1e9 / sample_rate))
+            bound_ns = end_ns - round(received // 2 * 1e9 / sample_rate)
+            start_ns = min(start_ns, bound_ns)
+            if bound_ns < level_ns - step_ns:
+                level_ns, ran_ahead_ns = bound_ns, end_ns
         queued_s = (read_start_ns - start_ns) / 1e9
+        backlogged = queued_s > backlog_threshold_s
+        still_ahead = ran_ahead_ns is not None and end_ns - ran_ahead_ns < window_ns
         return FreshCapture(
             self._iq_from_bytes(data),
             start_ns,
             discarded_samples,
             capture_end_monotonic_ns=end_ns,
             queued_s=queued_s,
-            backlogged=queued_s > backlog_threshold_s,
+            backlogged=backlogged,
+            caught_up=not (backlogged and still_ahead),
         )
 
     def _discard_until_quiet(self, settle_s: float, max_drain_s: float, quiet_s: float) -> int:
