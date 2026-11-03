@@ -118,10 +118,14 @@ The dashboard starts `recon --jsonl` as a child process with the same receiver
 settings and shows:
 
 - the phase, with scan or hop progress and the time to the next scheduled rescan;
-- the consensus, advanced every second between cycles, with the host clock
-  difference, outliers and the same uncertainty caveat as the text display;
-- one row per watchlist station: PS, PI, RSSI, groups and corrected groups, the
-  latest CT and LTO, track age, trust score and consensus status;
+- the consensus, advanced every second between cycles, with the current host
+  clock difference, outliers, the time since the receiver assessed its trust
+  level and the same uncertainty caveat as the text display. Once the median CT
+  age passes the consensus freshness limit (300 s), for example during a long
+  rescan, the estimate is shown as expired;
+- one row per watchlist station: PS, PI (unknown until the hop confirms it),
+  RSSI, groups and corrected groups, the latest CT received there and its LTO,
+  track age, trust score and consensus status;
 - a log of scans, hops and cycles.
 
 `q` stops the receiver as `Ctrl+C` would and quits; a receiver that has not
