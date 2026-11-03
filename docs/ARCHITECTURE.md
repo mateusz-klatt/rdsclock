@@ -137,6 +137,36 @@ pairs. RTL-TCP has no tune acknowledgement or hardware timestamps, so remote
 queue freshness and physical reception time remain estimates; PI checks are
 an additional independent attribution check.
 
+An empty socket does not prove that the stream has caught up. While a client
+decodes instead of reading, rtl_tcp queues the samples (up to 500 transfers of
+256 KiB, about 27 s at 2.4 MS/s) and then sends them faster than real time, and
+the quiet interval can end between two bursts of that backlog. `recon --wide`
+decodes for about 45 s after every capture, so each of its cycles is exposed.
+The capture start is therefore dated by sample arrival. Samples are produced at
+the sample rate, so once `k` of them have arrived at host time `t`, the first
+existed by `t − k / fs`. `capture_start_monotonic_ns` is the earliest of these
+bounds over all reads of the capture, or the read start if that is earlier, and
+`FreshCapture.queued_s` is how far before the read start it lies. Up to one
+transfer is normal, because rtl_tcp sends each transfer once its last sample
+exists (55 ms at 2.4 MS/s, 0.52 s at 250 kS/s); `backlogged` marks a capture
+that started more than two transfers, and at least 0.25 s, behind.
+
+Dating the first sample at the capture end minus its duration gives the same
+start when samples queue only before the capture, but samples lost during the
+capture would move that start later for every sample. A loss only loosens the
+bounds after it, so the earliest bound stays right for the samples before the
+loss, and later samples are early by the lost time, as with the read start.
+`capture_end_monotonic_ns − capture_start_monotonic_ns − len(iq) / fs` measures
+that lost time, beyond up to one transfer. Draining until the stream rate falls
+to real time would need a window of several transfers before every capture,
+seconds at 250 kS/s, and many seconds per WIDE cycle on a link only a few times
+faster than the stream; the receiver keeps the queued samples and dates them
+instead. Dating keeps receive times consistent with the samples but does not
+make them fresh: after a retune, a backlog can begin with the previous tuning,
+which only the PI checks can catch. The bounds also assume that every sample
+was produced at the current rate, so a capture must not begin with samples
+queued before a sample-rate change.
+
 ## Recon Loop
 
 `recon.run_recon` cycles through two phases:
@@ -168,7 +198,9 @@ tuning point (including points below the RSSI threshold),
 `watchlist_updated`, `maintenance_started`, one `hop_result` per station,
 `cycle_completed` and `recon_stopped`. In WIDE mode `acquisition_started` and
 `maintenance_started` also carry the capture centre and sample rate, and every
-station of a capture produces a `hop_result`. `cycle_completed` carries the data
+station of a capture produces a `hop_result`. Each `hop_result` carries the
+`queued_s` of its capture, which its receive times already include; verbose
+output names every backlogged capture. `cycle_completed` carries the data
 behind the status block: the consensus result, the watchlist and one row per
 track. The loop evaluates the consensus once per cycle and passes the result
 to both outputs, because every evaluation updates trust scores.

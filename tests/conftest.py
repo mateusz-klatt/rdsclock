@@ -19,8 +19,14 @@ if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
 
-def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
-    """Continuously stream IQ in timed bursts, including between captures."""
+def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10, backlog_s: float = 0.0):
+    """Continuously stream IQ in timed bursts, including between captures.
+
+    With ``backlog_s``, the first frequency command of a session leaves that
+    much of the stream queued, as rtl_tcp queues samples while its client is
+    busy. Each burst then also carries up to 1.5 bursts of the queue, so the
+    stream arrives faster than real time, with quiet gaps between bursts.
+    """
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.bind(("127.0.0.1", 0))
     srv.listen(max_sessions)
@@ -40,6 +46,8 @@ def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
                 sample_rate = 250_000
                 commands = bytearray()
                 offset = 0
+                queued = 0
+                backlog_due = backlog_s > 0
                 next_send = time.monotonic()
                 while not stop.is_set():
                     readable, _, _ = select.select(
@@ -55,8 +63,14 @@ def _make_fake_rtl_tcp(samples_per_session: bytes, max_sessions: int = 10):
                             del commands[:5]
                             if command == 2:
                                 sample_rate = value
+                            elif command == 1 and backlog_due:
+                                queued = int(sample_rate * backlog_s) * 2
+                                backlog_due = False
                     if time.monotonic() >= next_send:
                         count = max(2, int(sample_rate * 0.1) * 2)
+                        extra = min(queued, count * 3 // 4 * 2)
+                        queued -= extra
+                        count += extra
                         repeats = (offset + count + len(samples_per_session) - 1) // len(
                             samples_per_session
                         )
@@ -87,8 +101,8 @@ def _white_noise_samples(n_samples: int = 2_000_000) -> bytes:
 @pytest.fixture
 def rtl_tcp_factory():
     @contextlib.contextmanager
-    def receiver(samples):
-        port, stop, thread = _make_fake_rtl_tcp(samples)
+    def receiver(samples, backlog_s=0.0):
+        port, stop, thread = _make_fake_rtl_tcp(samples, backlog_s=backlog_s)
         try:
             yield port
         finally:

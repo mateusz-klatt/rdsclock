@@ -249,6 +249,13 @@ and hops. A WIDE acquisition reports the span of the listed stations with a
 `scan_step_mhz` of 0, followed by one `scan_step` per station, and every
 station of a WIDE capture produces a `hop_result`.
 
+`hop_result` also carries `queued_s`: how long the first sample of its capture
+had already waited in the receiver's queues when reading began. Receive times
+include it. Up to one rtl_tcp transfer (about 0.05 s at 2.4 MS/s, 0.5 s at
+250 kS/s) is normal; more means the samples queued while the receiver was
+decoding, as they do during the long decode of each WIDE cycle. With `-v`, such
+a capture is also named in the operator text.
+
 ## 6. Adjusting the Wrist Watch
 
 Before using the display to set another clock, establish that the received

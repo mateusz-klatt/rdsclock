@@ -19,8 +19,9 @@ FREQS = (102.0e6, 102.4e6, 103.0e6)
 class _Receiver:
     """Records the receiver settings; every capture is a short constant signal."""
 
-    def __init__(self):
+    def __init__(self, queued_s: float = 0.0):
         self.calls = []
+        self.queued_s = queued_s
 
     def configure_fm(self, sample_rate, gain_db=None, ppm=0):
         self.calls.append(("configure_fm", sample_rate, gain_db))
@@ -30,7 +31,15 @@ class _Receiver:
 
     def capture_fresh(self, duration, fs, **kwargs):
         self.calls.append(("capture_fresh", duration, fs))
-        return FreshCapture(np.ones(16, dtype=np.complex64), time.monotonic_ns(), 0)
+        start_ns = time.monotonic_ns() - round(self.queued_s * 1e9)
+        backlogged = self.queued_s > 0
+        return FreshCapture(
+            np.ones(16, dtype=np.complex64),
+            start_ns,
+            0,
+            queued_s=self.queued_s,
+            backlogged=backlogged,
+        )
 
 
 def _channels(results: dict):
@@ -119,6 +128,22 @@ class TestWideEngine:
         assert len(listed) > cfg.max_watchlist
         watchlist = recon._acquire(_Receiver(), cfg, 1, recon._Outputs(lambda m: None))
         assert sorted(s.freq_hz for s in watchlist) == sorted(listed)
+
+    def test_a_backlog_is_reported_once_and_carried_by_every_station(self, monkeypatch):
+        decode = _channels({f: _decode_result(_clock()) for f in FREQS})
+        monkeypatch.setattr(recon, "decode_channels", decode)
+        watchlist = [recon.StationCandidate(f, -20.0, 4, True, 0xCAFE) for f in FREQS]
+        receiver, events, messages = _Receiver(queued_s=4.2), [], []
+        recon.wide_collect_ct(
+            receiver, watchlist, _cfg(), TimeConsensus(), messages.append, events.append
+        )
+        assert [event.queued_s for event in events] == [4.2] * 3
+        assert [message for message in messages if "behind" in message] == [
+            "  wide: the capture began 4.2 s behind real time (queued samples); "
+            "receive times account for it"
+        ]
+        start_ns = decode.calls[0]["capture_start_monotonic_ns"]
+        assert time.monotonic_ns() - start_ns >= 4_200_000_000
 
     def test_an_empty_watchlist_records_nothing(self):
         receiver = _Receiver()

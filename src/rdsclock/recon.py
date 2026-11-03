@@ -49,7 +49,7 @@ import numpy as np
 from .channelizer import ChannelDecodeResult, ChannelSpec, choose_center, decode_channels
 from .decoder import DecodeResult, decode_file, decode_iq
 from .rds_clock import ClockTime
-from .rtl_tcp import RtlTcpClient
+from .rtl_tcp import FreshCapture, RtlTcpClient
 from .time_consensus import (
     ConsensusResult,
     StationFingerprint,
@@ -197,7 +197,12 @@ class MaintenanceStarted:
 
 @dataclass(frozen=True)
 class HopResult:
-    """One watchlist station recorded and decoded; ``clock_time`` is ``None`` without CT."""
+    """One watchlist station recorded and decoded; ``clock_time`` is ``None`` without CT.
+
+    ``queued_s`` is how long the capture's first sample had queued when the
+    capture began reading (:attr:`FreshCapture.queued_s`). Receive times
+    already account for it.
+    """
 
     kind: ClassVar[str] = "hop_result"
     freq_hz: float
@@ -208,6 +213,7 @@ class HopResult:
     n_groups_clean: int
     n_groups_corrected: int
     clock_time: ClockTime | None
+    queued_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -314,6 +320,7 @@ def quick_scan_band(
     for freq_hz in _scan_tunings_hz(cfg):
         client.set_frequency(int(freq_hz))
         capture = client.capture_fresh(cfg.scan_dwell_s, cfg.fs_scan, settle_s=cfg.settle_s)
+        _report_backlog(f"scan {freq_hz / 1e6:6.2f} MHz", capture, progress)
         iq = capture.iq
         rssi = 10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12)
         candidate = None
@@ -352,7 +359,16 @@ def rank_candidates(candidates: list[StationCandidate]) -> list[StationCandidate
     )
 
 
-def _capture_start_wall(capture_start_ns: int) -> datetime:
+@dataclass(frozen=True)
+class _CaptureStart:
+    """A capture's first sample on the monotonic and wall clocks, and how long it had queued."""
+
+    monotonic_ns: int
+    wall: datetime
+    queued_s: float
+
+
+def _capture_start(capture: FreshCapture) -> _CaptureStart:
     """Map a capture's host monotonic start onto wall time.
 
     Call it right after the capture, so that neither the duration of the
@@ -360,27 +376,36 @@ def _capture_start_wall(capture_start_ns: int) -> datetime:
     """
     wall_anchor = datetime.now(UTC)
     monotonic_anchor = time.monotonic_ns()
-    return wall_anchor - timedelta(seconds=(monotonic_anchor - capture_start_ns) / 1e9)
+    start_ns = capture.capture_start_monotonic_ns
+    wall = wall_anchor - timedelta(seconds=(monotonic_anchor - start_ns) / 1e9)
+    return _CaptureStart(start_ns, wall, capture.queued_s)
+
+
+def _report_backlog(
+    label: str, capture: FreshCapture, progress: Callable[[str], None] | None
+) -> None:
+    """Tell the operator that a capture began with samples queued while not reading."""
+    if progress and capture.backlogged:
+        progress(
+            f"  {label}: the capture began {capture.queued_s:.1f} s behind real time "
+            "(queued samples); receive times account for it"
+        )
 
 
 def _record_station(
     freq_hz: float,
     result: DecodeResult,
     rssi_db: float,
-    capture_start: tuple[int, datetime],
+    capture_start: _CaptureStart,
     consensus: TimeConsensus,
 ) -> HopResult:
-    """Store a decoded station's CT in the consensus and describe the station.
-
-    ``capture_start`` is the capture's monotonic and wall-time start.
-    """
-    capture_start_ns, capture_start_wall = capture_start
+    """Store a decoded station's CT in the consensus and describe the station."""
     ct = result.info.latest_clock
     if ct is not None:
         received_wall = None
         if ct.rx_monotonic_ns is not None:
-            received_wall = capture_start_wall + timedelta(
-                seconds=(ct.rx_monotonic_ns - capture_start_ns) / 1_000_000_000
+            received_wall = capture_start.wall + timedelta(
+                seconds=(ct.rx_monotonic_ns - capture_start.monotonic_ns) / 1_000_000_000
             )
         fingerprint = StationFingerprint(
             pi_code=result.info.pi,
@@ -394,7 +419,7 @@ def _record_station(
             received_monotonic=(
                 ct.rx_monotonic_ns / 1e9
                 if ct.rx_monotonic_ns is not None
-                else capture_start_ns / 1e9
+                else capture_start.monotonic_ns / 1e9
             ),
             fingerprint=fingerprint,
             clock_time=ct,
@@ -411,6 +436,7 @@ def _record_station(
         n_groups_clean=result.n_groups_clean,
         n_groups_corrected=result.n_groups_corrected,
         clock_time=ct,
+        queued_s=capture_start.queued_s,
     )
 
 
@@ -454,13 +480,13 @@ def hop_collect_ct(
     for station in watchlist:
         client.set_frequency(int(station.freq_hz))
         capture = client.capture_fresh(cfg.dwell_s, cfg.sample_rate, settle_s=cfg.settle_s)
+        capture_start = _capture_start(capture)
+        _report_backlog(f"hop {station.freq_hz / 1e6:6.2f} MHz", capture, progress)
         iq = capture.iq
-        capture_start_ns = capture.capture_start_monotonic_ns
-        capture_start = (capture_start_ns, _capture_start_wall(capture_start_ns))
         result = decode_iq(
             iq,
             fs=cfg.sample_rate,
-            capture_start_monotonic_ns=capture_start_ns,
+            capture_start_monotonic_ns=capture_start.monotonic_ns,
         )
         rssi_db = float(10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12))
         hop = _record_station(station.freq_hz, result, rssi_db, capture_start, consensus)
@@ -469,19 +495,22 @@ def hop_collect_ct(
 
 
 def _wide_capture(
-    client: RtlTcpClient, cfg: ReconConfig, freqs_hz: Sequence[float], duration_s: float
-) -> tuple[list[ChannelDecodeResult], tuple[int, datetime]]:
+    client: RtlTcpClient,
+    cfg: ReconConfig,
+    freqs_hz: Sequence[float],
+    duration_s: float,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[list[ChannelDecodeResult], _CaptureStart]:
     """Record ``duration_s`` around the WIDE centre and decode ``freqs_hz`` from it.
 
-    Returns the results per station and the capture's monotonic and
-    wall-time start.
+    Returns the results per station and the capture's start.
     """
     center_hz = cfg.wide_center()
     client.configure_fm(cfg.wide_sample_rate, gain_db=cfg.gain_db)
     client.set_frequency(int(center_hz))
     capture = client.capture_fresh(duration_s, cfg.wide_sample_rate, settle_s=cfg.settle_s)
-    capture_start_ns = capture.capture_start_monotonic_ns
-    capture_start = (capture_start_ns, _capture_start_wall(capture_start_ns))
+    capture_start = _capture_start(capture)
+    _report_backlog("wide", capture, progress)
     # One station at a time: each extraction holds a copy of the capture.
     results = decode_channels(
         iq_wide=capture.iq,
@@ -489,7 +518,7 @@ def _wide_capture(
         f_center=center_hz,
         channels=[ChannelSpec(freq_hz=freq_hz) for freq_hz in freqs_hz],
         max_workers=1,
-        capture_start_monotonic_ns=capture_start_ns,
+        capture_start_monotonic_ns=capture_start.monotonic_ns,
     )
     return results, capture_start
 
@@ -506,7 +535,7 @@ def wide_scan(
     ``on_event`` receives a :class:`ScanStep` for every station. The RSSI
     threshold does not apply: the capture contains every station anyway.
     """
-    results, _ = _wide_capture(client, cfg, cfg.wide_freqs_hz, cfg.scan_dwell_s)
+    results, _ = _wide_capture(client, cfg, cfg.wide_freqs_hz, cfg.scan_dwell_s, progress)
     candidates: list[StationCandidate] = []
     for channel in results:
         info = channel.result.info
@@ -553,7 +582,7 @@ def wide_collect_ct(
     if not watchlist:
         return 0
     freqs_hz = [station.freq_hz for station in watchlist]
-    results, capture_start = _wide_capture(client, cfg, freqs_hz, cfg.dwell_s)
+    results, capture_start = _wide_capture(client, cfg, freqs_hz, cfg.dwell_s, progress)
     n_obs = 0
     for channel in results:
         hop = _record_station(

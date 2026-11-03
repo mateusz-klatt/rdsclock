@@ -22,6 +22,10 @@ CMD_SET_TEST_MODE = 0x07
 CMD_SET_AGC_MODE = 0x08
 CMD_SET_DIRECT_SAMPLING = 0x09
 
+# rtl_tcp forwards librtlsdr's default 256 KiB transfers, each once its last
+# sample exists: 55 ms at 2.4 MS/s, 0.52 s at 250 kS/s.
+RTL_TCP_TRANSFER_SAMPLES = 131_072
+
 
 @dataclass
 class DongleInfo:
@@ -34,14 +38,34 @@ class DongleInfo:
 class FreshCapture:
     """IQ collected after discarding queued data and allowing tuner settling.
 
-    ``capture_start_monotonic_ns`` is a host estimate taken before the first
-    capture read. RTL-TCP provides neither hardware timestamps nor a tuning
-    acknowledgement, so this is not a hardware time reference.
+    ``capture_start_monotonic_ns`` dates the first sample on the host
+    monotonic clock; sample ``i`` follows ``i / sample_rate`` later. It is the
+    time before the first capture read, unless the reads prove the samples
+    older: they are produced in real time, so once ``k`` of them have arrived
+    at ``t``, the first existed by ``t - k / sample_rate``, and the earliest
+    such bound wins. ``queued_s`` is how far before the read that puts the
+    first sample. Up to one rtl_tcp transfer is normal, since rtl_tcp sends a
+    transfer once its last sample exists; ``backlogged`` marks a capture that
+    started further behind, with samples that had queued while the client was
+    not reading.
+
+    Samples lost during a capture only loosen the later bounds. The start
+    stays right for the samples before the loss, and later samples are early
+    by the time lost. ``capture_end_monotonic_ns``, the time after the last
+    read, shows such a loss: the capture then spans more than
+    ``len(iq) / sample_rate`` from its start, by the lost time plus up to one
+    transfer.
+
+    RTL-TCP provides neither hardware timestamps nor a tuning acknowledgement,
+    so this is not a hardware time reference.
     """
 
     iq: np.ndarray
     capture_start_monotonic_ns: int
     discarded_samples: int
+    capture_end_monotonic_ns: int | None = None
+    queued_s: float = 0.0
+    backlogged: bool = False
 
 
 class RtlTcpDrainTimeoutError(TimeoutError):
@@ -176,8 +200,10 @@ class RtlTcpClient:
             raise RuntimeError("not connected")
         if settle_s > 0:
             time.sleep(settle_s)
-        n_bytes = n_samples * 2
-        data = self._recv_exact(self._sock, n_bytes)
+        return self._iq_from_bytes(self._recv_exact(self._sock, n_samples * 2))
+
+    @staticmethod
+    def _iq_from_bytes(data: bytes | bytearray) -> np.ndarray:
         raw = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
         raw = (raw - 127.5) / 127.5
         iq = raw[0::2] + 1j * raw[1::2]
@@ -196,6 +222,7 @@ class RtlTcpClient:
         settle_s: float = 0.3,
         max_drain_s: float | None = None,
         quiet_s: float | None = None,
+        backlog_threshold_s: float | None = None,
     ) -> FreshCapture:
         """Discard stale IQ after a retune, then collect a full capture.
 
@@ -212,6 +239,16 @@ class RtlTcpClient:
         an empty client socket cannot prove that a delayed remote buffer is
         fresh. Use a continuously drained receiver and verify station PI when
         strict frequency attribution is needed.
+
+        The quiet interval can also fall between two bursts of a backlog: while
+        the client decodes instead of reading, rtl_tcp queues the samples and
+        then sends them faster than real time. The capture start is therefore
+        dated by when the samples arrived (see :class:`FreshCapture`), which
+        keeps receive times consistent with the samples. It does not make the
+        samples fresh: after a retune, a backlog can begin with the previous
+        tuning. ``backlogged`` is set when the first sample had queued for
+        longer than ``backlog_threshold_s``; the default allows two rtl_tcp
+        transfers, and at least 0.25 s.
 
         Any failure or interruption after draining starts closes the socket:
         a partial read can otherwise leave the next attempt between I and Q.
@@ -234,18 +271,53 @@ class RtlTcpClient:
             raise ValueError("quiet_s must be finite and positive")
         if not math.isfinite(max_drain_s) or max_drain_s <= max(settle_s, quiet_s):
             raise ValueError("max_drain_s must exceed settle_s and quiet_s")
+        if backlog_threshold_s is None:
+            backlog_threshold_s = max(0.25, 2 * RTL_TCP_TRANSFER_SAMPLES / sample_rate)
+        if not math.isfinite(backlog_threshold_s) or backlog_threshold_s < 0:
+            raise ValueError("backlog_threshold_s must be finite and nonnegative")
         n_samples = int(round(duration_s * sample_rate))
         if n_samples < 1:
             raise ValueError("capture must contain at least one sample")
 
         try:
             discarded = self._discard_until_quiet(settle_s, max_drain_s, quiet_s)
-            capture_start_ns = time.monotonic_ns()
-            iq = self.read_iq(n_samples, settle_s=0.0)
+            return self._read_capture(n_samples, sample_rate, discarded // 2, backlog_threshold_s)
         except BaseException:
             self.close()
             raise
-        return FreshCapture(iq, capture_start_ns, discarded // 2)
+
+    def _read_capture(
+        self,
+        n_samples: int,
+        sample_rate: float,
+        discarded_samples: int,
+        backlog_threshold_s: float,
+    ) -> FreshCapture:
+        """Read ``n_samples`` and date the first one by when the samples arrived."""
+        sock = self._sock
+        if sock is None:
+            raise RuntimeError("not connected")
+        data = bytearray(2 * n_samples)
+        view = memoryview(data)
+        received = 0
+        read_start_ns = start_ns = end_ns = time.monotonic_ns()
+        while received < len(data):
+            count = sock.recv_into(view[received:])
+            if not count:
+                raise OSError("rtl_tcp: socket closed")
+            received += count
+            end_ns = time.monotonic_ns()
+            # k samples take k / sample_rate to produce: the first existed that long ago.
+            start_ns = min(start_ns, end_ns - round(received // 2 * 1e9 / sample_rate))
+        queued_s = (read_start_ns - start_ns) / 1e9
+        return FreshCapture(
+            self._iq_from_bytes(data),
+            start_ns,
+            discarded_samples,
+            capture_end_monotonic_ns=end_ns,
+            queued_s=queued_s,
+            backlogged=queued_s > backlog_threshold_s,
+        )
 
     def _discard_until_quiet(self, settle_s: float, max_drain_s: float, quiet_s: float) -> int:
         sock = self._sock
