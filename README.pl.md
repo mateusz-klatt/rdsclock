@@ -190,19 +190,32 @@ lub Ubuntu dostaje tkinter z pakietu `python3-tk`. Z opcją `--jsonl` polecenie
 innych programów; wszystkie tryby opisuje
 [przewodnik operatora](docs/operator-quickstart.md).
 
+Z opcją `--wide` polecenie `recon` nagrywa stacje mieszczące się w paśmie
+odbiornika w jednym przechwyceniu, więc panele pokazują je wszystkie naraz, bez
+przeskakiwania między stacjami. Zrzuty poniżej to odbiór na żywo w Warszawie
+3 listopada 2026: Eska ROCK, Jedynka i Radio Kolor dekodowane razem
+z 75-sekundowych przechwyceń przy 2,4 MS/s. Panele uruchomiono tym poleceniem,
+z `--web` lub `--gui` zamiast `--tui`:
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --wide 102.0,102.4,103.0 --gain 28 --scan-dwell 3 --dwell 75 \
+  --settle-seconds 1 --tui
+```
+
 **Terminal** (`--tui`)
 
-![Panel w terminalu: czas konsensusu, poziom wiarygodności i wartość odstająca nad tabelą czterech stacji i dziennikiem zdarzeń](docs/images/dashboard-tui.png)
+![Panel w terminalu podczas odbioru WIDE na żywo: czas konsensusu i wiarygodność nad trzema stacjami z jednego przechwycenia oraz dziennik zdarzeń](docs/images/dashboard-tui.png)
 
 **Przeglądarka** (`--web`)
 
-![Panel w przeglądarce z tym samym konsensusem, tabelą stacji i dziennikiem oraz przyciskami Rescan i Pause view](docs/images/dashboard-web.png)
+![Panel w przeglądarce podczas odbioru WIDE na żywo, z tym samym konsensusem, stacjami i dziennikiem oraz przyciskami Rescan i Pause view](docs/images/dashboard-web.png)
 
 **Okno aplikacji** (`--gui`)
 
-![Okno aplikacji z tym samym widokiem i przyciskami Rescan, Pause view i Quit](docs/images/dashboard-gui.png)
+![Okno aplikacji podczas odbioru WIDE na żywo, z tym samym widokiem i przyciskami Rescan, Pause view i Quit](docs/images/dashboard-gui.png)
 
-*Zrzuty przykładowej sesji z fikcyjnymi stacjami DEMO, a nie zapis prawdziwego odbioru.*
+*Odbiór na żywo w Warszawie 3 listopada 2026. Z tych trzech stacji czas (CT) nadaje tylko Jedynka, więc konsensus opiera się na jednym źródle (N=1, zaufanie LOW lub STALE). Jedynka podaje w polu UTC polski czas lokalny, dlatego konsensus wyprzedza zegar hosta o godzinę.*
 
 ## Jak to działa
 
