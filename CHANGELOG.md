@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Actively discard buffered IQ after retuning, with bounded acquisition and
+  explicit failure when a capture boundary cannot be established. Live capture
+  duration now excludes settling; `--settle-seconds` adds discard time before
+  the full recording instead of trimming samples from it.
+- Close failed header/capture connections deterministically, including partial
+  I/Q reads, and reset digital AGC, direct sampling, test mode and PPM on FM setup.
+- Keep PS, RadioText and Clock-Time payloads isolated by PI. Decode totals cover
+  all valid groups; station-specific group counts describe the selected PI.
+- Anchor consensus to estimated CT reception and deduplicate channels and
+  confirmed PI codes before assigning votes. Unconfirmed sources cannot create
+  a HIGH-confidence result; stale/future samples are excluded.
+
+### Documentation
+
+- Add an original radio-clock SVG banner shared by the English, Polish and
+  French READMEs, with localized alternative text.
+- Refresh the English and Polish READMEs and add a complete French translation,
+  with shared examples and language navigation. Lead with a short synthetic
+  demo and measured reception results. Add the November 2 full-band report
+  covering 206 tuning points, WIDE captures and three-station CT reception.
+- Add a reproducible synthetic/live demonstration and aggregated hardware
+  validation for eight frequencies. Document gain tradeoffs and received CT
+  disagreement; remove unverified millisecond accuracy claims.
+- Clarify that agreement, CRC validity and model uncertainty do not establish
+  authenticated or calibrated absolute UTC. Optional local IQ baselines skip
+  explicitly when unavailable in a fresh checkout.
+
 ### Security
 
 - Replace the archived SonarCloud action with the pinned SonarQube Scan action

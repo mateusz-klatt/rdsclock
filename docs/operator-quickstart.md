@@ -2,16 +2,23 @@
 
 This guide walks a field operator through a passive RDS time-sync
 session with `rdsclock`. It assumes a Linux host with an RTL-SDR
-USB dongle and an FM-band antenna.
+USB dongle and an FM-band antenna. For a short presentation with a synthetic
+fallback, use the [demo walkthrough](demo.md). Read the
+[hardware validation report](hardware-validation-2026-10-31.md) before making
+claims about clock accuracy.
 
 ## 1. Pre-deployment Checklist
 
 - [ ] `python3 --version` is 3.12 or newer.
-- [ ] The host is **air-gapped** if you need offline operation. `rdsclock`
-      itself opens no outbound sockets, but the dependency install
-      step needs internet once.
+- [ ] For offline operation, install dependencies beforehand and use a
+      local receiver or an isolated receiver network. Live mode opens a
+      TCP connection to the configured `rtl_tcp` endpoint.
 - [ ] `rtl_tcp` is installed. On Debian/Ubuntu: `apt install rtl-sdr`.
 - [ ] An FM antenna is connected to the RTL-SDR.
+- [ ] The receiver is available exclusively; close other `rtl_tcp` clients.
+- [ ] Compare gain settings for the selected station using clean groups/s
+      and full-scale I/Q occupancy. A setting suitable for one station can
+      lose another station entirely.
 
 ## 2. Bring Up the SDR
 
@@ -41,14 +48,29 @@ make test-fast        # confirms the suite passes without an SDR
 
 ## 4. First Run
 
-Find a station with valid Clock-Time on your antenna:
+First locate RDS stations on your antenna. This broad scan is slow and a
+three-second dwell can miss Clock-Time:
 
 ```bash
 rdsclock scan --start 87.5 --end 108 --step 0.2 --duration 3
 ```
 
-Look for lines marked `[CT]`. If at least one appears, you have a
-working CT source.
+A line marked `[CT]` means a valid Clock-Time declaration was observed. It
+does not establish correct UTC or source authenticity. An RDS station without
+`[CT]` in this short scan may still broadcast 4A. Revisit a selected audible
+frequency for at least 70–130 seconds, and compare the declared time with an
+independent reference when one is available:
+
+```bash
+rdsclock live --freq 102.4 --gain 8.7 --duration 75 --settle-seconds 1 -v
+```
+
+The frequency and gain are examples from one measured setup. Before each
+recording, incoming IQ is actively consumed and discarded during settling and
+until the bounded drain finds a quiet client queue. The full requested
+`--duration` is then captured. RTL-TCP has no tuning acknowledgement or sample
+timestamps; an empty client queue does not prove freshness of a delayed remote
+buffer. The program reports a drain error if its boundary cannot be established.
 
 ## 5. Continuous Time Sync (`recon` mode)
 
@@ -71,14 +93,24 @@ Trust levels and what they mean:
 
 | Trust    | Meaning                                                              |
 |----------|----------------------------------------------------------------------|
-| `HIGH`   | ≥3 stations agree, fresh CT (< 2 min). Use without reservation.      |
-| `MEDIUM` | 2 stations or a fresh single source. Cross-check with another method.|
-| `LOW`    | 1 station or stale (> 5 min). Consider re-scanning.                  |
-| `STALE`  | Holdover beyond the configured precision threshold. **Do not trust.** |
+| `HIGH`   | At least three distinct confirmed PIs agree, with recent CT and small model uncertainty. |
+| `MEDIUM` | At least two distinct confirmed PIs agree within the freshness policy. |
+| `LOW`    | Fewer confirmed identities, older observations, or weaker model confidence. |
+| `STALE`  | No usable estimate within the freshness or configured uncertainty bounds. |
+
+These labels describe agreement under the model. Related observations are
+deduplicated by channel and known PI. Different PI codes can still share a
+clock source or a common error; `HIGH` does not authenticate transmissions or
+verify absolute UTC. The displayed uncertainty is a model estimate, not a
+calibrated error bound. Receipt timestamps are host estimates, and their
+accuracy includes uncharacterized receiver and network delays.
 
 ## 6. Adjusting the Wrist Watch
 
-When trust is `HIGH` and `±X` is acceptable for your task:
+Before using the display to set another clock, establish that the received
+UTC is suitable for the task. A `HIGH` label alone is insufficient: the
+hardware validation recovered clean CT declarations roughly an hour away
+from host UTC. If an independent reference confirms the estimate:
 
 1. Read the `CONSENSUS:` line.
 2. Wait for a fresh cycle (the `age` counter goes back to ~0).
@@ -90,11 +122,13 @@ When trust is `HIGH` and `±X` is acceptable for your task:
 
 | Symptom                             | Probable cause                                              | Fix                                                          |
 |-------------------------------------|-------------------------------------------------------------|--------------------------------------------------------------|
-| `scan` finds no stations            | Antenna disconnected, or band quiet                         | Verify cabling and tuner gain (`--gain 35`).                 |
-| `scan` finds stations, no `[CT]`    | Local stations not broadcasting Group 4A, or weak SNR       | Hop to a different region or wait for a quieter time.        |
-| Δf offset > 1 kHz consistently      | Tuner ppm drift                                             | Pass `--ppm <correction>` to `live` / `recon`.               |
+| `scan` finds no stations | Antenna, gain or local reception conditions | Check cabling and compare AGC with several manual settings; use clean groups/s and I/Q endpoints. |
+| RDS groups appear, no `[CT]` | Capture missed 4A, weak reception, or no usable CT | Observe the selected station for 70–130 s; absence in a short capture is inconclusive. |
+| Many full-scale I/Q values | Saturation somewhere in the received signal path | Compare lower manual gain while preserving clean group recovery; `Δf` is not currently an RF CFO measurement. |
 | `trust=STALE` from start            | All visible stations stopped CT during the run              | Increase `--max-stations`; manual cross-check.               |
-| `OUTLIERS:` line appears            | One station is wrong or attempting to spoof                 | Reduce its trust via repeated outlier hits, or remove freq.  |
+| `OUTLIERS:` appears | Source disagreement, source identity problems or timing error | Inspect the individual PI, CT and receipt estimates; disagreement alone does not establish spoofing. |
+| Header timeout or connection reset | Another client, unavailable server or interrupted service | Check exclusive access and server logs; reconnect after resolving the cause. |
+| Drain timeout | The client could not establish a quiet boundary | Resolve backlog or throughput limits and reconnect; do not relabel stale samples as the new station. |
 
 ## 8. Shutdown
 
