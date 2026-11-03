@@ -18,6 +18,7 @@ Modules:
     dashboard        Dashboard model shared by the terminal, web and desktop views.
     tui              Terminal dashboard over ``recon --jsonl`` (optional extra).
     web              Browser dashboard over ``recon --jsonl`` (standard library).
+    gui              Desktop window over ``recon --jsonl`` (tkinter).
     cli              Command-line interface: generate / decode / live / multi /
                      scan / recon / demo.
 """

@@ -163,7 +163,8 @@ polecenia `recon`. Panel pokazuje konsensus, stacje i dziennik zdarzeń; `q`
 kończy pracę, `r` zleca nowy skan, a `p` wstrzymuje widok. `--web` udostępnia
 ten sam widok w przeglądarce pod adresem <http://127.0.0.1:8080/>, bez
 dodatkowych zależności. Panel nie ma uwierzytelniania, więc do zdalnego
-odbiornika łącz się przez tunel SSH. Z opcją `--jsonl` polecenie `recon`
+odbiornika łącz się przez tunel SSH. `--gui` otwiera go w oknie
+aplikacji desktopowej, korzystając z modułu tkinter Pythona. Z opcją `--jsonl` polecenie `recon`
 wypisuje zamiast tego po jednym zdarzeniu JSON w wierszu, na potrzeby innych
 programów.
 

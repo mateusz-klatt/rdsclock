@@ -798,6 +798,23 @@ def _recon_web(args: argparse.Namespace) -> int:
     return run_web(command, args.web_host, args.web_port)
 
 
+def _recon_gui(args: argparse.Namespace) -> int:
+    """Open the desktop window, which reads a ``recon --jsonl`` child process."""
+    if args.from_dir:
+        print("error: --gui applies to live reception, not --from-dir", file=sys.stderr)
+        return 2
+    if importlib.util.find_spec("tkinter") is None:
+        print(
+            "error: the desktop window requires tkinter; install your Python's Tk "
+            "support (for example: apt install python3-tk)",
+            file=sys.stderr,
+        )
+        return 2
+    from .gui import run_gui
+
+    return run_gui([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)])
+
+
 def _recon_config(args: argparse.Namespace) -> ReconConfig:
     return ReconConfig(
         band_start_mhz=args.start,
@@ -824,6 +841,8 @@ def cmd_recon(args: argparse.Namespace) -> int:
         return _recon_tui(args)
     if args.web:
         return _recon_web(args)
+    if args.gui:
+        return _recon_gui(args)
     cfg = _recon_config(args)
     if args.jsonl:
         return _recon_jsonl(cfg, args)
@@ -1042,6 +1061,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--web",
         action="store_true",
         help="Serve a browser dashboard fed by a --jsonl child (no authentication)",
+    )
+    output.add_argument(
+        "--gui",
+        action="store_true",
+        help="Open a desktop window (tkinter) fed by a --jsonl child",
     )
     pr.add_argument(
         "--web-host",

@@ -22,11 +22,14 @@ flowchart TD
     tui[tui.py<br/>Textual dashboard<br/>reads recon --jsonl]
     web[web.py<br/>browser dashboard<br/>reads recon --jsonl]
     dashboard[dashboard.py<br/>shared view model]
+    gui[gui.py<br/>tkinter window<br/>reads recon --jsonl]
 
     cli --> tui
     cli --> web
     tui --> dashboard
     web --> dashboard
+    cli --> gui
+    gui --> dashboard
     cli --> synth
     cli --> decoder
     cli --> recon
@@ -208,6 +211,17 @@ server, so the server checks every request:
 
 The server binds to 127.0.0.1 unless `--web-host` names another address, and
 then warns that the page has no authentication.
+
+## Desktop Window
+
+`gui.py` is the tkinter window behind `rdsclock recon --gui`; it needs no
+dependency beyond Python's own Tk support. A `ReceiverProcess` reads the
+`recon --jsonl` child on background threads, which only put lines into a queue.
+The Tk main loop drains the queue every 100 ms and refreshes the view every
+second, so no widget is touched from another thread. Signal handlers only count
+`SIGINT` and `SIGUSR1`, and the same poll acts on them, because tkinter would
+otherwise swallow a `KeyboardInterrupt` raised in a callback. Closing the
+window stops the child as `Ctrl+C` would and restores the previous handlers.
 
 ## File-format Conventions
 

@@ -172,7 +172,8 @@ Pour suivre la réception dans le terminal, ajoutez `--extra tui` à `uv sync` e
 stations et un journal ; `q` quitte, `r` demande un nouveau balayage et `p` fige
 l'affichage. `--web` sert la même vue dans un navigateur à l'adresse
 <http://127.0.0.1:8080/>, sans dépendance supplémentaire. Le tableau de bord n'a
-pas d'authentification : pour un récepteur distant, passez par un tunnel SSH.
+pas d'authentification : pour un récepteur distant, passez par un tunnel SSH. `--gui` l'ouvre dans
+une fenêtre de bureau, avec le module tkinter de Python.
 Avec `--jsonl`, `recon` écrit plutôt un événement JSON par ligne pour d'autres
 programmes.
 
