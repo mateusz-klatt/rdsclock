@@ -803,15 +803,17 @@ def _recon_gui(args: argparse.Namespace) -> int:
     if args.from_dir:
         print("error: --gui applies to live reception, not --from-dir", file=sys.stderr)
         return 2
-    if importlib.util.find_spec("tkinter") is None:
+    # Import rather than look the package up: tkinter can be present without
+    # its native _tkinter extension or the Tcl/Tk libraries it loads.
+    try:
+        from .gui import run_gui
+    except ImportError as exc:
         print(
-            "error: the desktop window requires tkinter; install your Python's Tk "
-            "support (for example: apt install python3-tk)",
+            f"error: the desktop window requires tkinter ({exc}); install your "
+            "Python's Tk support (for example: apt install python3-tk)",
             file=sys.stderr,
         )
         return 2
-    from .gui import run_gui
-
     return run_gui([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)])
 
 
