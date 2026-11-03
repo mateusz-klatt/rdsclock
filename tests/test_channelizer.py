@@ -147,12 +147,20 @@ class TestHelpers:
         bw = required_bandwidth([95.5e6, 97.7e6], guard_hz=200_000)
         assert bw == pytest.approx(2.2e6 + 2 * 200_000)
 
-    def test_choose_center_keeps_the_dc_offset_clear_of_every_station(self):
+    def test_choose_center_keeps_dc_and_mirror_images_off_the_stations(self):
+        # The centre that decoded all three Warsaw stations live.
         freqs = [102.0e6, 102.4e6, 103.0e6]
         center = choose_center(freqs, 2_400_000)
-        assert center == pytest.approx(102.55e6)
+        assert center == pytest.approx(102.85e6)
+        images = [2 * center - f for f in freqs]
         assert min(abs(f - center) for f in freqs) == pytest.approx(150_000)
+        assert min(abs(f - image) for f in freqs for image in images) >= 300_000 - 2
         assert outside_capture(freqs, 2_400_000, center) == []
+
+    def test_choose_center_is_not_halfway_between_two_stations(self):
+        # Halfway, each station would sit on the other's mirror image.
+        center = choose_center([98.3e6, 98.8e6], 2_400_000)
+        assert center == pytest.approx(98.15e6)
 
     def test_choose_center_moves_off_a_lone_station(self):
         assert choose_center([100.0e6], 2_400_000) == pytest.approx(99.85e6)

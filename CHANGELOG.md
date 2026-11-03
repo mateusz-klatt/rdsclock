@@ -32,7 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bandwidth from one wideband capture per cycle (`--center`, `--fs`) instead of
   scanning the band and hopping. All of them see the same minute edge, and the
   dashboards show the capture centre. `acquisition_started` and
-  `maintenance_started` gain `wide_center_hz` and `wide_sample_rate`.
+  `maintenance_started` gain `wide_center_hz` and `wide_sample_rate`. The
+  default centre keeps every station clear of the DC offset and of the other
+  stations' mirror images; halfway between two stations, each would sit on the
+  other's image.
 
 ### Changed
 
