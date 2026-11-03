@@ -162,6 +162,12 @@ class TestHelpers:
         center = choose_center([98.3e6, 98.8e6], 2_400_000)
         assert center == pytest.approx(98.15e6)
 
+    def test_choose_center_keeps_dc_clear_when_images_cannot_be(self):
+        # No centre avoids every image here; the station on DC would be worse.
+        assert choose_center([100.0e6, 100.5e6, 101.0e6], 2_400_000) == pytest.approx(100.35e6)
+        # An exact fit leaves only one centre, images or not.
+        assert choose_center([98.3e6, 100.3e6], 2_400_000) == pytest.approx(99.3e6)
+
     def test_choose_center_moves_off_a_lone_station(self):
         assert choose_center([100.0e6], 2_400_000) == pytest.approx(99.85e6)
 

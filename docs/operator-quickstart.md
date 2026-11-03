@@ -119,10 +119,12 @@ around `--center`. The channelizer separates the stations, so all of them see
 the same minute edge, and a cycle of three stations takes one dwell instead of
 three. An acquisition is a capture of `--scan-dwell` seconds that decodes the
 listed stations; the watchlist keeps every station with RDS. Without
-`--center`, the centre lies as near the middle as possible while every station
-stays at least 150 kHz from the receiver's DC offset at the centre and 300 kHz
-from the mirror image of any other station, which I/Q imbalance reflects about
-the centre. Halfway between two stations, each would sit on the other's image.
+`--center`, `recon` places the centre as near the middle as it can while every
+station stays 150 kHz from the receiver's DC offset at the centre and 300 kHz
+from the mirror image of every other station, which I/Q imbalance reflects
+about the centre. When the stations leave no such room, it keeps only the DC
+clearance, and failing that takes the middle; halfway between two stations,
+each would sit on the other's image.
 The stations need their span plus
 a 200 kHz guard band on each side, and `recon` refuses a list that does not
 fit.
