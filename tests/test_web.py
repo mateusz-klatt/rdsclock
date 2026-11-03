@@ -3,6 +3,7 @@
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -13,6 +14,7 @@ import pytest
 
 import rdsclock.cli as cli
 import rdsclock.web as web
+from rdsclock.dashboard import COLUMNS
 from tests.fake_receiver import MARKUP_PS, receiver_command
 
 RESCAN = {"X-Requested-By": "rdsclock"}
@@ -114,6 +116,10 @@ class TestWebDashboard:
             assert body
         assert b'<script src="app.js" defer></script>' in running.request("GET", "/")[2]
         assert running.request("GET", "/missing")[0] == 404
+
+    def test_table_headers_in_the_page_match_the_view(self, running):
+        page = running.request("GET", "/")[2].decode()
+        assert tuple(re.findall(r'<th scope="col">([^<]+)</th>', page)) == COLUMNS
 
     def test_state_follows_the_receiver(self, running):
         running.wait_for(lambda state: state["consensus"] is not None)

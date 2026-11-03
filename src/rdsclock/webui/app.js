@@ -50,11 +50,7 @@ function renderConsensus(consensus, note) {
   setText("offset", consensus.host_offset);
 }
 
-function renderTable(columns, rows) {
-  const head = byId("columns");
-  if (head.childElementCount === 0) {
-    head.append(...columns.map((name) => element("th", name)));
-  }
+function renderTable(rows) {
   byId("rows").replaceChildren(
     ...rows.map((row) => {
       const tr = document.createElement("tr");
@@ -79,7 +75,7 @@ function render(view) {
   setText("status", view.status);
   byId("status").dataset.phase = view.phase;
   renderConsensus(view.consensus, view.note);
-  renderTable(view.columns, view.rows);
+  renderTable(view.rows);
   renderLog(view.log);
   byId("rescan").disabled = !view.can_rescan;
 }
