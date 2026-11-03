@@ -121,7 +121,10 @@ class WebDashboard:
         host, port = self.server.server_address[:2]
         if ipaddress.ip_address(host).is_unspecified:
             host = "127.0.0.1" if ":" not in host else "::1"
-        return f"http://[{host}]:{port}/" if ":" in host else f"http://{host}:{port}/"
+        authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        # Plain HTTP by design: the page is for this machine or an SSH tunnel, and
+        # HTTPS would need a certificate that an operator does not have.
+        return f"http://{authority}/"  # NOSONAR(S5332)
 
     def start(self) -> None:
         """Start the receiver; a failure is shown on the page and in the exit status."""
