@@ -60,9 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   earliest time that every read allows; a sample lost in the middle of a
   capture cannot move it later, as anchoring at the capture end would. This
   also removes up to one rtl_tcp transfer of lateness from other captures
-  (up to 0.52 s at 250 kS/s). `FreshCapture` gains `capture_end_monotonic_ns`,
-  `queued_s` and `backlogged`, `hop_result` gains `queued_s` (JSON Lines schema
-  1, additive), and verbose output names every backlogged capture.
+  (up to 0.52 s at 250 kS/s). A capture that ends while its backlog still
+  arrives ahead of real time can only bound its start: `caught_up` marks it,
+  and its Clock-Time is reported but kept out of the consensus. `FreshCapture`
+  gains `capture_end_monotonic_ns`, `queued_s`, `backlogged` and `caught_up`,
+  `hop_result` gains `queued_s` and `caught_up` (JSON Lines schema 1,
+  additive), and verbose output names every backlogged capture.
 - Long captures choose a fresh symbol offset every 4096 bits (about 3.4 s).
   A single offset slipped by whole bits when a station's bit clock ran tens of
   ppm away from the receiver's: in one live 75-second capture, Eska ROCK went

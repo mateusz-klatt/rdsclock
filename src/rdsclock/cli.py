@@ -246,6 +246,11 @@ def cmd_live(args: argparse.Namespace) -> int:
         if args.verbose:
             print(f"  discarded before capture: {capture.discarded_samples} samples")
             print(f"  queued when the capture began: {capture.queued_s:.3f} s")
+        if not capture.caught_up:
+            print(
+                f"  the capture began at least {capture.queued_s:.1f} s behind real time "
+                "and never caught up: receive times are unknown"
+            )
 
     if args.save:
         dsp.write_iq_complex64(iq, args.save)
@@ -265,7 +270,7 @@ def cmd_live(args: argparse.Namespace) -> int:
     )
     _print_station(result.info)
     ct = result.info.latest_clock
-    if ct is not None and ct.rx_monotonic_ns is not None:
+    if ct is not None and ct.rx_monotonic_ns is not None and capture.caught_up:
         estimated_now = ct.utc + timedelta(seconds=(time.monotonic_ns() - ct.rx_monotonic_ns) / 1e9)
         difference = (estimated_now - datetime.now(UTC)).total_seconds()
         print(
