@@ -72,6 +72,7 @@ class ReconConfig:
     host: str = "localhost"
     port: int = 1234
     iterations: int | None = None  # None = run forever (until Ctrl+C)
+    settle_s: float = 0.3  # actively discard queued IQ after retuning
 
 
 def quick_scan_band(
@@ -86,24 +87,20 @@ def quick_scan_band(
         if progress:
             progress(msg)
 
-    client.set_sample_rate(cfg.fs_scan)
-    if cfg.gain_db is None:
-        client.set_gain_mode_auto()
-    else:
-        client.set_gain_mode_manual(int(cfg.gain_db * 10))
+    client.configure_fm(cfg.fs_scan, gain_db=cfg.gain_db)
 
     candidates: list[StationCandidate] = []
     freq = cfg.band_start_mhz
     while freq <= cfg.band_end_mhz + 1e-6:
         client.set_frequency(int(freq * 1e6))
-        capture_start_ns = time.monotonic_ns()
-        iq = client.read_iq(int(cfg.fs_scan * cfg.scan_dwell_s), settle_s=0.05)
+        capture = client.capture_fresh(cfg.scan_dwell_s, cfg.fs_scan, settle_s=cfg.settle_s)
+        iq = capture.iq
         rssi = 10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12)
         if rssi > cfg.rssi_threshold_db:
             result = decode_iq(
                 iq,
                 fs=cfg.fs_scan,
-                capture_start_monotonic_ns=capture_start_ns,
+                capture_start_monotonic_ns=capture.capture_start_monotonic_ns,
             )
             has_ct = result.info.latest_clock is not None
             candidates.append(
@@ -149,18 +146,21 @@ def hop_collect_ct(
         if progress:
             progress(msg)
 
-    client.set_sample_rate(cfg.sample_rate)
-    if cfg.gain_db is None:
-        client.set_gain_mode_auto()
-    else:
-        client.set_gain_mode_manual(int(cfg.gain_db * 10))
+    client.configure_fm(cfg.sample_rate, gain_db=cfg.gain_db)
 
     n_obs = 0
     for station in watchlist:
         client.set_frequency(int(station.freq_hz))
-        capture_start_wall = datetime.now(UTC)
-        capture_start_ns = time.monotonic_ns()
-        iq = client.read_iq(int(cfg.sample_rate * cfg.dwell_s), settle_s=0.1)
+        capture = client.capture_fresh(cfg.dwell_s, cfg.sample_rate, settle_s=cfg.settle_s)
+        iq = capture.iq
+        capture_start_ns = capture.capture_start_monotonic_ns
+        # Map the host monotonic estimate onto wall time without including
+        # the duration of the capture or subsequent decoding in the CT anchor.
+        wall_anchor = datetime.now(UTC)
+        monotonic_anchor = time.monotonic_ns()
+        capture_start_wall = wall_anchor - timedelta(
+            seconds=(monotonic_anchor - capture_start_ns) / 1e9
+        )
         result = decode_iq(
             iq,
             fs=cfg.sample_rate,
@@ -175,14 +175,18 @@ def hop_collect_ct(
                 )
             fingerprint = StationFingerprint(
                 pi_code=result.info.pi,
-                cfo_hz=result.freq_offset_hz,
+                cfo_hz=None,  # the decoder currently does not measure RF CFO
                 rssi_db=10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12),
             )
             obs = StationObservation(
                 freq_hz=station.freq_hz,
                 pi=result.info.pi,
                 ct_utc=ct.utc,
-                received_monotonic=time.monotonic(),
+                received_monotonic=(
+                    ct.rx_monotonic_ns / 1e9
+                    if ct.rx_monotonic_ns is not None
+                    else capture_start_ns / 1e9
+                ),
                 fingerprint=fingerprint,
                 clock_time=ct,
                 rx_monotonic_ns=ct.rx_monotonic_ns,
@@ -214,6 +218,7 @@ def render_status(
         "  rdsclock recon — passive RDS time receiver",
         "=" * 78,
         f"  CONSENSUS: {result.format_display()}",
+        "  ± describes source dispersion/holdover; absolute UTC accuracy is uncalibrated.",
     ]
     if result.utc is not None:
         delta_s = (system_now - result.utc).total_seconds()

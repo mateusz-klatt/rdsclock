@@ -23,8 +23,8 @@ from .rds_clock import ClockTime
 
 
 class TrustLevel(Enum):
-    HIGH = "HIGH"  # ≥3 stations agree on a recent CT (<2 min old)
-    MEDIUM = "MEDIUM"  # 2 stations, or a fresh single source
+    HIGH = "HIGH"  # ≥3 distinct confirmed PIs agree on recent CT (<2 min old)
+    MEDIUM = "MEDIUM"  # ≥2 distinct confirmed PIs agree on recent CT
     LOW = "LOW"  # 1 station, or stale (>5 min)
     STALE = "STALE"  # holdover beyond the mission precision threshold
 
@@ -90,6 +90,13 @@ class StationObservation:
         if self.received_wall_utc is not None and self.received_wall_utc.tzinfo is None:
             self.received_wall_utc = self.received_wall_utc.replace(tzinfo=UTC)
 
+    @property
+    def reception_monotonic(self) -> float:
+        """Use CT receipt time when available, rather than decode completion."""
+        if self.rx_monotonic_ns is not None:
+            return self.rx_monotonic_ns / 1_000_000_000
+        return self.received_monotonic
+
 
 @dataclass
 class StationTrack:
@@ -117,13 +124,13 @@ class StationTrack:
         if not self.observations:
             return None
         last = self.observations[-1]
-        dt = monotonic_now - last.received_monotonic
+        dt = monotonic_now - last.reception_monotonic
         return last.ct_utc + timedelta(seconds=dt)
 
     def age_s(self, monotonic_now: float) -> float:
         if not self.observations:
             return float("inf")
-        return monotonic_now - self.observations[-1].received_monotonic
+        return monotonic_now - self.observations[-1].reception_monotonic
 
     def add_observation(self, obs: StationObservation) -> None:
         self.observations.append(obs)
@@ -132,7 +139,7 @@ class StationTrack:
             self.observations = self.observations[-30:]
 
     def is_active(self, monotonic_now: float, max_age_s: float = STALE_AGE_S) -> bool:
-        return self.age_s(monotonic_now) <= max_age_s
+        return 0 <= self.age_s(monotonic_now) <= max_age_s
 
 
 @dataclass
@@ -193,6 +200,40 @@ def _collect_estimates(
         if est is not None:
             estimates.append((t, est))
     return estimates
+
+
+def _is_fresher_track(track: "StationTrack", previous: "StationTrack | None") -> bool:
+    return previous is None or (
+        track.last is not None
+        and (
+            previous.last is None
+            or track.last.reception_monotonic >= previous.last.reception_monotonic
+        )
+    )
+
+
+def _distinct_source_tracks(tracks: list["StationTrack"]) -> list["StationTrack"]:
+    """Conservatively give one vote per channel and then per known PI.
+
+    Several frequencies can carry one programme clock, or capture the same
+    transmitter at adjacent tunings. Different PIs are not proof of independent
+    clocks, but repeats of one PI must never inflate confidence. Unknown PIs
+    remain separate diagnostic sources; they do not qualify for elevated trust.
+    A channel changing PI, including an unconfirmed/confirmed transition,
+    contributes only its freshest observation, without favouring known PI.
+    """
+    by_channel: dict[int, StationTrack] = {}
+    for track in tracks:
+        channel_hz = round(track.freq_hz / 100_000) * 100_000
+        if _is_fresher_track(track, by_channel.get(channel_hz)):
+            by_channel[channel_hz] = track
+
+    selected: dict[tuple[str, int | float], StationTrack] = {}
+    for track in by_channel.values():
+        key = ("pi", track.pi) if track.pi is not None else ("frequency", track.freq_hz)
+        if _is_fresher_track(track, selected.get(key)):
+            selected[key] = track
+    return list(selected.values())
 
 
 def _median_and_mad(epochs: list[float]) -> tuple[float, float]:
@@ -279,7 +320,12 @@ def _consensus_notes(mad: float, n_contrib: int) -> str:
 
 
 class TimeConsensus:
-    """Aggregator that holds the station watchlist and computes the consensus."""
+    """Aggregate a watchlist, conservatively assigning one vote to each known PI.
+
+    Tracks remain separate by frequency for diagnostics. Repeated PI values
+    cannot increase confidence, and unconfirmed PIs cannot raise trust above
+    LOW by themselves. Distinct PIs still do not prove independent clocks.
+    """
 
     def __init__(
         self,
@@ -319,7 +365,11 @@ class TimeConsensus:
 
         This path is intentionally parallel to :meth:`consensus`: it learns a
         per-station Group 4A transmit phase from timestamped observations and
-        only contributes stations whose phase has at least three samples.
+        only contributes active, distinct confirmed PIs whose phase has at
+        least three samples. It returns the median of the latest calibrated
+        reception boundaries, not a continuously advancing holdover clock.
+        Phase calibration uses the host wall clock; agreement in this result
+        is not an independent measurement of absolute UTC accuracy.
         """
         if monotonic_now_ns is None:
             monotonic_now_ns = time.monotonic_ns()
@@ -361,7 +411,10 @@ class TimeConsensus:
         wall_now_epoch_ns: int,
     ) -> list[int]:
         station_estimates: list[int] = []
-        for track in self.tracks.values():
+        tracks = _distinct_source_tracks(self.active_tracks(monotonic_now_ns / 1_000_000_000))
+        for track in tracks:
+            if track.pi is None:
+                continue
             if track.tx_latency_ns is None:
                 continue
             obs = next(
@@ -373,6 +426,9 @@ class TimeConsensus:
                 None,
             )
             if obs is None:
+                continue
+            age_s = (monotonic_now_ns - obs.rx_monotonic_ns) / 1_000_000_000
+            if not 0 <= age_s <= self.stale_age_s:
                 continue
             rx_wall_epoch_ns = wall_now_epoch_ns + (obs.rx_monotonic_ns - monotonic_now_ns)
             station_estimates.append(rx_wall_epoch_ns - track.tx_latency_ns)
@@ -388,7 +444,7 @@ class TimeConsensus:
     def consensus(self, monotonic_now: float | None = None) -> ConsensusResult:
         if monotonic_now is None:
             monotonic_now = time.monotonic()
-        active = self.active_tracks(monotonic_now)
+        active = _distinct_source_tracks(self.active_tracks(monotonic_now))
         if not active:
             return _empty_consensus_result()
 
@@ -405,7 +461,11 @@ class TimeConsensus:
         median_age = _median_age_of_contributors(estimates, epochs, median_epoch, monotonic_now)
 
         uncertainty = max(mad / 2.0, median_age * self.local_osc_ppm * 1e-6, 1.0)
-        trust = self._trust_level(len(contributing), median_age, uncertainty)
+        n_confirmed = sum(
+            track.pi is not None and abs(epoch - median_epoch) <= OUTLIER_THRESHOLD_S
+            for (track, _), epoch in zip(estimates, epochs, strict=True)
+        )
+        trust = self._trust_level(len(contributing), median_age, uncertainty, n_confirmed)
 
         return ConsensusResult(
             utc=median_utc,
@@ -437,10 +497,17 @@ class TimeConsensus:
                 contributing.append(t.freq_hz / 1e6)
         return contributing, outliers
 
-    def _trust_level(self, n_contrib: int, median_age: float, uncertainty: float) -> TrustLevel:
-        if n_contrib >= 3 and median_age < 120 and uncertainty < 30:
+    def _trust_level(
+        self,
+        n_contrib: int,
+        median_age: float,
+        uncertainty: float,
+        n_confirmed: int | None = None,
+    ) -> TrustLevel:
+        confirmed = n_contrib if n_confirmed is None else n_confirmed
+        if confirmed >= 3 and median_age < 120 and uncertainty < 30:
             return TrustLevel.HIGH
-        if n_contrib >= 2 and median_age < 180:
+        if confirmed >= 2 and median_age < 180:
             return TrustLevel.MEDIUM
         if median_age < self.mission_precision_s:
             return TrustLevel.LOW

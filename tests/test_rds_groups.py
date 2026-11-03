@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from rdsclock.rds_blocks import group_words_to_bytes
 from rdsclock.rds_groups import (
     StationInfo,
     encode_group_0a,
@@ -163,6 +164,66 @@ class TestCtParsing:
         assert info.latest_clock.utc == ct
         assert info.group_counts["0A"] == 8
         assert info.group_counts["4A"] == 1
+
+
+class TestMixedStations:
+    def test_foreign_clock_is_not_attributed_to_dominant_pi(self):
+        foreign_time = datetime(2026, 10, 31, 10, 6, tzinfo=UTC)
+        info = parse_groups(
+            encode_ps_groups(0x1111, "STATIONA") * 3 + [encode_group_4a(0x2222, foreign_time)]
+        )
+
+        assert info.pi == 0x1111
+        assert info.ps_name == "STATIONA"
+        assert info.latest_clock is None
+        assert info.group_counts == {"0A": 12}
+        assert info._pi_counts == {0x1111: 12, 0x2222: 1}
+
+    def test_payload_switches_together_when_another_pi_becomes_dominant(self):
+        time_a = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+        time_b = time_a + timedelta(hours=1)
+        ps_a = encode_ps_groups(0x1111, "STATIONA", pty=1)
+        ps_b = encode_ps_groups(0x2222, "STATIONB", pty=2)
+        rt_a = group_words_to_bytes((0x1111, 0x2000 | (1 << 5), 0x4141, 0x4141))
+        rt_b = group_words_to_bytes((0x2222, 0x2000 | (2 << 5), 0x4242, 0x4242))
+        ct_a = encode_group_4a(0x1111, time_a, pty=1)
+        ct_b = encode_group_4a(0x2222, time_b, pty=2)
+        info = parse_groups(ps_a * 2 + [rt_a, ct_a] + ps_b + [rt_b, ct_b])
+
+        assert (info.pi, info.pty, info.ps_name, info.rt_text) == (0x1111, 1, "STATIONA", "AAAA")
+        assert [ct.utc for ct in info.clock_times] == [time_a]
+        assert info.group_counts == {"0A": 8, "2A": 1, "4A": 1}
+
+        for group in ps_b + [ct_b]:
+            parse_group(group, info)
+
+        assert info.first_pi == 0x1111
+        assert info._pi_counts == {0x1111: 10, 0x2222: 11}
+        assert (info.pi, info.pty, info.ps_name, info.rt_text) == (0x2222, 2, "STATIONB", "BBBB")
+        assert [ct.utc for ct in info.clock_times] == [time_b, time_b]
+        assert info.group_counts == {"0A": 8, "2A": 1, "4A": 2}
+
+    def test_ps_segments_from_different_pi_cannot_form_one_name(self):
+        mixed_rotation = [
+            encode_group_0a(0x1111, 0, "AA"),
+            encode_group_0a(0x2222, 1, "BB"),
+            encode_group_0a(0x1111, 2, "AA"),
+            encode_group_0a(0x2222, 3, "BB"),
+        ]
+        info = parse_groups(mixed_rotation * 3)
+        assert info.pi == 0x1111
+        assert info.ps_name == ""
+        assert info.latest_ps_candidate == ""
+
+    def test_explicit_identity_reset_does_not_relabel_old_payload(self):
+        info = parse_groups(_validated_ps_groups(0x1111, "STATIONA"))
+        info.pi = 0x2222
+        assert info.pi == 0x2222
+        assert info.ps_name == ""
+        assert info.group_counts == {}
+        parse_group(encode_group_0a(0x1111, 0, "AA"), info)
+        assert info.pi == 0x2222
+        assert info.ps_name == ""
 
 
 class TestEncoders:

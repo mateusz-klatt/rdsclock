@@ -15,7 +15,7 @@ Supported types:
 
 from collections import Counter, deque
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 
 from .rds_blocks import group_bytes_to_words, group_words_to_bytes
@@ -27,8 +27,32 @@ PI_CONFIRMATION_THRESHOLD = 3
 
 
 @dataclass
+class _StationPayload:
+    """Fields assembled only from groups carrying the same PI."""
+
+    pty: int | None = None
+    ps_chars: list[str] = field(default_factory=lambda: [" "] * PS_LEN)
+    _ps_candidate: list[str] = field(default_factory=lambda: [" "] * PS_LEN)
+    _ps_segments_seen: int = 0
+    _ps_history: deque[str] = field(default_factory=lambda: deque(maxlen=4))
+    _ps_stable_count: int = 0
+    rt_chars: list[str] = field(default_factory=lambda: [" "] * RT_LEN)
+    rt_ab_flag: int | None = None
+    clock_times: list[ClockTime] = field(default_factory=list)
+    group_counts: dict[str, int] = field(default_factory=dict)
+
+
+_PAYLOAD_FIELDS = tuple(f.name for f in fields(_StationPayload))
+
+
+@dataclass
 class StationInfo:
-    """Accumulator for fields decoded from many RDS groups of one station."""
+    """Fields of the dominant PI, with PI counts retained for the whole capture.
+
+    Until a PI has three observations, ``pi`` remains ``None`` but the
+    leading PI's provisional payload is available. PS, RT, Clock-Time and
+    ``group_counts`` always belong to that one PI; they never combine stations.
+    """
 
     _pi_counts: Counter[int] = field(default_factory=Counter, init=False, repr=False)
     first_pi: int | None = field(default=None, init=False)
@@ -43,6 +67,9 @@ class StationInfo:
     rt_ab_flag: int | None = None
     clock_times: list[ClockTime] = field(default_factory=list)
     group_counts: dict[str, int] = field(default_factory=dict)
+    _station_payloads: dict[int, _StationPayload] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @property
     def ps_name(self) -> str:
@@ -91,6 +118,12 @@ def _station_info_set_pi(info: StationInfo, value: int | None) -> None:
     info.first_pi = value
     if value is not None:
         info._pi_counts[value] = PI_CONFIRMATION_THRESHOLD
+    if hasattr(info, "_station_payloads"):
+        # Explicitly changing/resetting identity must not relabel old payloads.
+        info._station_payloads.clear()
+        empty = _StationPayload()
+        for name in _PAYLOAD_FIELDS:
+            setattr(info, name, getattr(empty, name))
 
 
 StationInfo.pi = property(_station_info_get_pi, _station_info_set_pi)  # type: ignore[assignment]
@@ -109,7 +142,7 @@ def _safe_char(byte: int) -> str:
     return " "
 
 
-def _update_ps(b: int, d: int, info: StationInfo) -> None:
+def _update_ps(b: int, d: int, info: _StationPayload) -> None:
     seg = b & 0x3  # 2-bit segment address (0..3)
     bit = 1 << seg
     if not info._ps_segments_seen & bit:
@@ -131,7 +164,7 @@ def _update_ps(b: int, d: int, info: StationInfo) -> None:
     info._ps_segments_seen = 0
 
 
-def _update_rt(b: int, c: int, d: int, version: int, info: StationInfo) -> None:
+def _update_rt(b: int, c: int, d: int, version: int, info: _StationPayload) -> None:
     ab_flag = (b >> 4) & 0x1
     if info.rt_ab_flag is not None and info.rt_ab_flag != ab_flag:
         info.rt_chars = [" "] * RT_LEN
@@ -149,7 +182,9 @@ def _update_rt(b: int, c: int, d: int, version: int, info: StationInfo) -> None:
         info.rt_chars[addr * 2 + 1] = _safe_char(d & 0xFF)
 
 
-def _update_clock(b: int, c: int, d: int, rx_monotonic_ns: int | None, info: StationInfo) -> None:
+def _update_clock(
+    b: int, c: int, d: int, rx_monotonic_ns: int | None, info: _StationPayload
+) -> None:
     # The two MSBs of MJD live in block B[1:0] — pass the FULL block B.
     ct = decode_clock_time(b, c, d, rx_monotonic_ns=rx_monotonic_ns)
     if ct is not None:
@@ -167,20 +202,34 @@ def parse_group(
 
     if info.first_pi is None:
         info.first_pi = a
+    if not info._station_payloads:
+        # Preserve explicitly seeded StationInfo payloads for their original PI.
+        info._station_payloads[info.first_pi] = _StationPayload(
+            **{name: getattr(info, name) for name in _PAYLOAD_FIELDS}
+        )
+    payload = info._station_payloads.get(a)
+    if payload is None:
+        payload = _StationPayload()
+        info._station_payloads[a] = payload
     info._pi_counts[a] += 1
     group_type = (b >> 12) & 0xF
     version = (b >> 11) & 0x1  # bit selects group version A or B
-    info.pty = (b >> 5) & 0x1F if info.pty is None else info.pty
+    payload.pty = (b >> 5) & 0x1F if payload.pty is None else payload.pty
 
     label = f"{group_type}{'A' if version == 0 else 'B'}"
-    info.group_counts[label] = info.group_counts.get(label, 0) + 1
+    payload.group_counts[label] = payload.group_counts.get(label, 0) + 1
 
     if group_type == 0:
-        _update_ps(b, d, info)
+        _update_ps(b, d, payload)
     elif group_type == 2:
-        _update_rt(b, c, d, version, info)
+        _update_rt(b, c, d, version, payload)
     elif group_type == 4 and version == 0:
-        _update_clock(b, c, d, rx_monotonic_ns, info)
+        _update_clock(b, c, d, rx_monotonic_ns, payload)
+
+    dominant_pi = info._pi_counts.most_common(1)[0][0]
+    selected = info._station_payloads[dominant_pi]
+    for name in _PAYLOAD_FIELDS:
+        setattr(info, name, getattr(selected, name))
 
     return info
 

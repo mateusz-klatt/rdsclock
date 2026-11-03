@@ -40,7 +40,7 @@ from rdsclock.rds_blocks import (
 )
 from rdsclock.rds_clock import ClockTime, decode_clock_time, encode_clock_time
 from rdsclock.rds_groups import StationInfo, parse_group
-from rdsclock.rtl_tcp import RtlTcpClient
+from rdsclock.rtl_tcp import FreshCapture, RtlTcpClient
 from rdsclock.synth import (
     DEFAULT_INTERMEDIATE_FS,
     add_awgn,
@@ -323,6 +323,10 @@ def test_cli_scan_prints_clock_time_summary(monkeypatch, capsys):
         def set_gain_mode_auto(self):
             self.gain = "auto"
 
+        def configure_fm(self, sample_rate, gain_db=None, ppm=0):
+            self.set_sample_rate(sample_rate)
+            self.set_gain_mode_auto()
+
     monkeypatch.setattr(cli, "RtlTcpClient", FakeClient)
 
     def fake_scan_one(client, freq_mhz, args):
@@ -367,8 +371,12 @@ def test_cli_multi_wide_save_and_plot_play_paths(tmp_path, monkeypatch, capsys):
         def set_gain_mode_auto(self):
             self.gain = "auto"
 
-        def record(self, duration, fs):
-            return np.ones(128, dtype=np.complex64)
+        def configure_fm(self, sample_rate, gain_db=None, ppm=0):
+            self.set_sample_rate(sample_rate)
+            self.set_gain_mode_auto()
+
+        def capture_fresh(self, duration, fs, **kwargs):
+            return FreshCapture(np.ones(128, dtype=np.complex64), 0, 0)
 
     monkeypatch.setattr(cli, "RtlTcpClient", FakeClient)
     result = channelizer.ChannelDecodeResult(
@@ -673,6 +681,16 @@ class _MemoryReconClient:
     def read_iq(self, n_samples, settle_s=0.0):
         return np.ones(max(n_samples, 1), dtype=np.complex64)
 
+    def configure_fm(self, sample_rate, gain_db=None, ppm=0):
+        self.set_sample_rate(sample_rate)
+        if gain_db is None:
+            self.set_gain_mode_auto()
+        else:
+            self.set_gain_mode_manual(round(gain_db * 10))
+
+    def capture_fresh(self, duration, fs, **kwargs):
+        return FreshCapture(self.read_iq(round(duration * fs)), 0, 0)
+
 
 @contextlib.contextmanager
 def _fake_rtl_tcp(samples: bytes):
@@ -720,7 +738,7 @@ def _fake_rtl_tcp(samples: bytes):
         assert not thread.is_alive()
 
 
-def test_recon_scan_hop_and_live_loop_branches(monkeypatch):
+def test_recon_scan_hop_and_live_loop_branches(monkeypatch, rtl_tcp_factory):
     client = _MemoryReconClient()
     cfg = recon.ReconConfig(
         band_start_mhz=95.5,
@@ -757,7 +775,7 @@ def test_recon_scan_hop_and_live_loop_branches(monkeypatch):
     )
     monkeypatch.setattr(recon.time, "sleep", lambda seconds: None)
     status: list[str] = []
-    with _fake_rtl_tcp(samples) as port:
+    with rtl_tcp_factory(samples) as port:
         live_cfg = recon.ReconConfig(
             band_start_mhz=95.5,
             band_end_mhz=95.5,
@@ -776,7 +794,7 @@ def test_recon_scan_hop_and_live_loop_branches(monkeypatch):
     assert any("reached iterations=2" in message for message in status)
 
 
-def test_recon_live_loop_keyboard_interrupt(monkeypatch):
+def test_recon_live_loop_keyboard_interrupt(monkeypatch, rtl_tcp_factory):
     monkeypatch.setattr(
         recon,
         "quick_scan_band",
@@ -790,7 +808,7 @@ def test_recon_live_loop_keyboard_interrupt(monkeypatch):
         ),
     )
     status: list[str] = []
-    with _fake_rtl_tcp(bytes([128, 128] * 64)) as port:
+    with rtl_tcp_factory(bytes([128, 128] * 64)) as port:
         cfg = recon.ReconConfig(
             band_start_mhz=95.5,
             band_end_mhz=95.5,
@@ -824,10 +842,14 @@ def test_recon_offline_error_no_ct_limit_and_outlier(tmp_path, monkeypatch):
         if "106.80" in name:
             return _decode_result(clock=None, groups=2, ps_name="NOCT")
         if "107.90" in name:
-            return _decode_result(clock=ClockTime(base + timedelta(minutes=10), 0), groups=2)
+            return _decode_result(
+                clock=ClockTime(base + timedelta(minutes=10), 0), groups=2, pi=0x3333
+            )
         if "093.00" in name:
-            return _decode_result(clock=ClockTime(base + timedelta(seconds=2), 0), groups=2)
-        return _decode_result(clock=ClockTime(base, 0), groups=2)
+            return _decode_result(
+                clock=ClockTime(base + timedelta(seconds=2), 0), groups=2, pi=0x2222
+            )
+        return _decode_result(clock=ClockTime(base, 0), groups=2, pi=0x1111)
 
     monkeypatch.setattr(recon, "decode_file", fake_decode_file)
     statuses: list[str] = []
