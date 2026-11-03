@@ -167,10 +167,17 @@ to finish. The dashboard sends `SIGUSR1` for a rescan, also when it receives one
 itself; on quit it sends `SIGINT` and kills the child if it has not exited after
 a timeout.
 
-`DashboardState` turns records into what the screen shows without any UI code.
-It type-checks each record before changing state, ignores unknown events, and
-advances the consensus time and ages with its own monotonic clock between
-cycles. Strings from broadcasts or the child process are reduced to printable
+`dashboard.py` holds what every front end shows, without any UI code.
+`DashboardState` type-checks each record before changing state and ignores
+unknown events; `view()` returns display strings that `tui.py` only lays out
+and styles. Between cycles the state advances the consensus time and ages with
+its own monotonic clock and compares the current host clock with the advanced
+consensus. It says when the receiver last assessed the trust level, and shows
+the estimate as expired once its median CT age passes the consensus freshness
+limit (`STALE_AGE_S`). Rows are keyed by exact tuning, the latest CT of a tuning
+survives hops without CT until another confirmed PI answers there, and an
+unconfirmed hop PI is shown as unknown rather than borrowed from the scan.
+Strings from broadcasts or the child process are reduced to printable
 characters and rendered as plain text, never as Rich markup.
 
 ## File-format Conventions
