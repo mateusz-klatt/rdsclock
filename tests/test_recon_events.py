@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -160,6 +161,7 @@ class TestScanAndHopEvents:
         candidates = recon.quick_scan_band(_Receiver([1.0, 0.001]), _cfg(), on_event=events.append)
         strong, weak = events
         assert strong.candidate == candidates[0]
+        assert strong.candidate is not candidates[0]
         assert strong.rssi_db == pytest.approx(0.0, abs=1e-6)
         assert weak.candidate is None
         assert weak.freq_hz == pytest.approx(95.6e6)
@@ -246,8 +248,68 @@ class TestRunReconEvents:
         assert events[-2].kind == "maintenance_started"
         assert events[-1] == recon.ReconStopped(iteration=1, reason="interrupted")
 
+    def test_interruption_while_connecting_still_ends_the_stream(self, monkeypatch):
+        class Connecting:
+            def __init__(self, host, port):
+                pass
+
+            def __enter__(self):
+                raise KeyboardInterrupt
+
+            def __exit__(self, *exc_info):
+                return False
+
+        monkeypatch.setattr(recon, "RtlTcpClient", Connecting)
+        events: list[recon.ReconEvent] = []
+        status: list[str] = []
+        recon.run_recon(_cfg(), on_status=status.append, on_event=events.append)
+        assert events == [recon.ReconStopped(iteration=0, reason="interrupted")]
+        assert status == ["\nInterrupted by operator (Ctrl+C)."]
+
+    def test_consumers_cannot_change_the_watchlist(self, monkeypatch, rtl_tcp_factory):
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(_clock()))
+        log: list[str] = []
+        hops: list[float] = []
+
+        def tamper(event: recon.ReconEvent) -> None:
+            log.append(event.kind)
+            stations = getattr(event, "watchlist", ())
+            candidate = getattr(event, "candidate", None)
+            for station in (*stations, *([candidate] if candidate else [])):
+                station.freq_hz = 0.0
+            if event.kind == "hop_result":
+                hops.append(event.freq_hz)
+
+        def status(message: str) -> None:
+            log.append("status block" if "CONSENSUS:" in message else "text")
+
+        with rtl_tcp_factory(bytes([180, 128] * 256)) as port:
+            cfg = _cfg(band_end_mhz=95.5, iterations=2, host="127.0.0.1", port=port)
+            recon.run_recon(cfg, on_status=status, on_event=tamper)
+        assert hops == [95.5e6, 95.5e6]
+        # The cycle record is published before the status text, which may block.
+        assert log.index("cycle_completed") < log.index("status block")
+
 
 class TestReconJsonlCli:
+    def test_interrupt_during_a_write_waits_for_the_whole_record(self, monkeypatch):
+        written: list[str] = []
+
+        class InterruptedStdout:
+            def write(self, text: str) -> None:
+                os.kill(os.getpid(), signal.SIGINT)
+                written.append(text)
+
+            def flush(self) -> None:
+                pass
+
+        monkeypatch.setattr(sys, "stdout", InterruptedStdout())
+        with pytest.raises(KeyboardInterrupt):
+            cli._write_event_line(recon.ReconStopped(iteration=1, reason="iterations"))
+        (line,) = written
+        assert line.endswith("\n")
+        assert json.loads(line)["event"] == "recon_stopped"
+
     def test_offline_replay_is_rejected(self, tmp_path, capsys):
         rc = cli.main(["recon", "--jsonl", "--from-dir", str(tmp_path)])
         captured = capsys.readouterr()

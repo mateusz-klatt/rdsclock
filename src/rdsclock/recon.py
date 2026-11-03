@@ -34,7 +34,7 @@ import math
 import re
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -287,7 +287,8 @@ def quick_scan_band(
                 f"groups={result.n_groups} CT={'YES' if has_ct else '—'}"
             )
         if on_event:
-            on_event(ScanStep(freq_hz=freq * 1e6, rssi_db=float(rssi), candidate=candidate))
+            snapshot = None if candidate is None else replace(candidate)
+            on_event(ScanStep(freq_hz=freq * 1e6, rssi_db=float(rssi), candidate=snapshot))
         freq += cfg.scan_step_mhz
     return candidates
 
@@ -447,6 +448,11 @@ def render_status(
     return "\n".join(lines)
 
 
+def _detached(stations: list[StationCandidate]) -> tuple[StationCandidate, ...]:
+    """Copies for an event, so that a consumer cannot change the live watchlist."""
+    return tuple(replace(station) for station in stations)
+
+
 def _track_snapshots(consensus: TimeConsensus, monotonic_now: float) -> tuple[TrackSnapshot, ...]:
     """The rows of :meth:`TimeConsensus.summary`, in the same order."""
     return tuple(
@@ -486,11 +492,13 @@ def run_recon(
         if on_event:
             on_event(event)
 
-    with RtlTcpClient(host=cfg.host, port=cfg.port) as client:
-        info = client.info
-        on_status(f"  rtl_tcp OK: tuner={info.tuner_type}, gains={info.gain_count}")
-        publish(ReconStarted(tuner_type=info.tuner_type, gain_count=info.gain_count))
-        try:
+    # The handler also covers the connection and the first event, so that every
+    # interruption ends the stream with recon_stopped.
+    try:
+        with RtlTcpClient(host=cfg.host, port=cfg.port) as client:
+            info = client.info
+            on_status(f"  rtl_tcp OK: tuner={info.tuner_type}, gains={info.gain_count}")
+            publish(ReconStarted(tuner_type=info.tuner_type, gain_count=info.gain_count))
             while True:
                 iteration += 1
                 now_mono = time.monotonic()
@@ -518,7 +526,7 @@ def run_recon(
                         watchlist = [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
                     last_rescan_mono = time.monotonic()
                     on_status(f"  → watchlist: {[f'{s.freq_hz / 1e6:.2f}' for s in watchlist]}")
-                    publish(WatchlistUpdated(iteration=iteration, watchlist=tuple(watchlist)))
+                    publish(WatchlistUpdated(iteration=iteration, watchlist=_detached(watchlist)))
 
                 # MAINTENANCE — hop
                 on_status(f"\n[#{iteration}] MAINTENANCE (hop {len(watchlist)} stations)…")
@@ -529,20 +537,22 @@ def run_recon(
                 on_status(f"  collected {new_obs} new CT observations")
 
                 # Display. Evaluate the consensus once: each evaluation updates trust.
+                # Publish before the status text, which may block on a slow stderr,
+                # so that the record is stamped close to the evaluation.
                 now_mono = time.monotonic()
                 next_rescan_in = max(0.0, cfg.rescan_min * 60 - (now_mono - last_rescan_mono))
                 result = consensus.consensus(now_mono)
-                on_status("\n" + render_status(consensus, watchlist, next_rescan_in, result=result))
                 publish(
                     CycleCompleted(
                         iteration=iteration,
                         new_observations=new_obs,
                         consensus=result,
-                        watchlist=tuple(watchlist),
+                        watchlist=_detached(watchlist),
                         tracks=_track_snapshots(consensus, now_mono),
                         next_rescan_in_s=next_rescan_in,
                     )
                 )
+                on_status("\n" + render_status(consensus, watchlist, next_rescan_in, result=result))
 
                 if cfg.iterations is not None and iteration >= cfg.iterations:
                     on_status(f"\n[#{iteration}] reached iterations={cfg.iterations}, stop")
@@ -550,9 +560,9 @@ def run_recon(
                     break
                 if cfg.idle_s > 0:
                     time.sleep(cfg.idle_s)
-        except KeyboardInterrupt:
-            on_status("\nInterrupted by operator (Ctrl+C).")
-            publish(ReconStopped(iteration=iteration, reason="interrupted"))
+    except KeyboardInterrupt:
+        on_status("\nInterrupted by operator (Ctrl+C).")
+        publish(ReconStopped(iteration=iteration, reason="interrupted"))
 
 
 # ----------------------- OFFLINE / DEMO MODE -----------------------
