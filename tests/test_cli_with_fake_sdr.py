@@ -1,5 +1,7 @@
 """CLI tests for sub-commands that talk to ``rtl_tcp``."""
 
+import json
+
 from rdsclock.cli import main
 
 
@@ -175,6 +177,45 @@ class TestCmdRecon:
         out = capsys.readouterr().out
         assert "ACQUISITION" in out
         assert "MAINTENANCE" in out
+
+    def test_jsonl_events_on_stdout_and_text_on_stderr(self, fake_rtl_tcp, capsys):
+        rc = main(
+            [
+                "recon",
+                "--jsonl",
+                "-v",
+                "--start",
+                "95.5",
+                "--end",
+                "95.6",
+                "--step",
+                "0.1",
+                "--scan-dwell",
+                "0.5",
+                "--dwell",
+                "1.0",
+                "--idle",
+                "0",
+                "--iterations",
+                "1",
+                "--rssi-threshold",
+                "-200",
+                "--port",
+                str(fake_rtl_tcp),
+                "--host",
+                "127.0.0.1",
+                "--gain",
+                "30",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        kinds = [json.loads(line)["event"] for line in captured.out.splitlines()]
+        assert kinds[:3] == ["recon_started", "acquisition_started", "scan_step"]
+        assert kinds.count("scan_step") == 2
+        assert kinds[-2:] == ["cycle_completed", "recon_stopped"]
+        assert "ACQUISITION" in captured.err
+        assert "▸" in captured.err
 
     def test_offline_mode_via_cli(self, tmp_path, capsys):
         # First synthesise two IQ files into a fresh directory.

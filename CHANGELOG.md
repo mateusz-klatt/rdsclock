@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `rdsclock recon --jsonl` writes the live loop as JSON Lines on stdout and
+  moves the operator display to stderr. Every record carries `event`, `schema`
+  and the host clock; `cycle_completed` holds the data of the status block.
+  Python callers receive the same typed events through `run_recon(on_event=...)`.
+
 ### Fixed
 
 - Actively discard buffered IQ after retuning, with bounded acquisition and

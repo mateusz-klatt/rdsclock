@@ -137,6 +137,17 @@ an additional independent attribution check.
   into the consensus engine. After every cycle the operator-facing
   status block is rendered (see `render_status`).
 
+Every operator message also has a typed counterpart, delivered through
+`on_event`: `recon_started`, `acquisition_started`, one `scan_step` per
+tuning point (including points below the RSSI threshold),
+`watchlist_updated`, `maintenance_started`, one `hop_result` per station,
+`cycle_completed` and `recon_stopped`. `cycle_completed` carries the data
+behind the status block: the consensus result, the watchlist and one row per
+track. The loop evaluates the consensus once per cycle and passes the result
+to both outputs, because every evaluation updates trust scores.
+`rdsclock recon --jsonl` renders the events with `event_to_json`, one JSON
+object per line on stdout, and moves the operator text to stderr.
+
 The offline variant `run_recon_offline` replays the same logic over
 pre-recorded `.iq` files and is the primary integration test for the
 consensus engine.

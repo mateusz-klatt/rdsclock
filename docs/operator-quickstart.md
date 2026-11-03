@@ -105,6 +105,25 @@ verify absolute UTC. The displayed uncertainty is a model estimate, not a
 calibrated error bound. Receipt timestamps are host estimates, and their
 accuracy includes uncharacterized receiver and network delays.
 
+### Machine-readable output
+
+Add `--jsonl` to write one JSON object per line to stdout, for another
+program or a log file. The operator display moves to stderr:
+
+```bash
+rdsclock recon --start 87.5 --end 108 --max-stations 5 --jsonl > recon.jsonl
+```
+
+Each record starts with `event`, `schema` and `host_utc`, the host clock
+when the record was written, which is not a verified time. In loop order,
+the events are `recon_started`, `acquisition_started`, `scan_step`,
+`watchlist_updated`, `maintenance_started`, `hop_result`, `cycle_completed`
+and `recon_stopped`. `cycle_completed` holds the data of the status block,
+including the consensus and its trust level. Times are ISO 8601, and
+unavailable values such as an infinite uncertainty are `null`. A stream that
+ends without `recon_stopped` was stopped by an error; check stderr and the
+exit status. `--jsonl` covers live reception only, not `--from-dir`.
+
 ## 6. Adjusting the Wrist Watch
 
 Before using the display to set another clock, establish that the received

@@ -798,14 +798,16 @@ def test_recon_live_loop_keyboard_interrupt(monkeypatch, rtl_tcp_factory):
     monkeypatch.setattr(
         recon,
         "quick_scan_band",
-        lambda client, cfg, progress=None: [recon.StationCandidate(95.5e6, -10.0, 1, True, 0xCAFE)],
+        lambda client, cfg, progress=None, on_event=None: [
+            recon.StationCandidate(95.5e6, -10.0, 1, True, 0xCAFE)
+        ],
     )
     monkeypatch.setattr(
         recon,
         "hop_collect_ct",
-        lambda client, watchlist, cfg, consensus, progress=None: (_ for _ in ()).throw(
-            KeyboardInterrupt
-        ),
+        lambda client, watchlist, cfg, consensus, progress=None, on_event=None: (
+            _ for _ in ()
+        ).throw(KeyboardInterrupt),
     )
     status: list[str] = []
     with rtl_tcp_factory(bytes([128, 128] * 64)) as port:

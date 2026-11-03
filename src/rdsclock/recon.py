@@ -20,21 +20,33 @@ Architecture:
     Periodic rescan — every ``rescan_min`` minutes a fuller scan is
                     issued to pick up new stations or detect quality drops.
 
+Events:
+    Every operator message of the live loop has a typed counterpart
+    (:data:`ReconEvent`) delivered through ``on_event``.
+    :func:`event_to_json` renders one as a JSON Lines record; this is the
+    output of ``rdsclock recon --jsonl``.
+
 Everything is fully passive: receive-only, no RF emission of any kind.
 """
 
+import json
+import math
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 
 from .decoder import decode_file, decode_iq
+from .rds_clock import ClockTime
 from .rtl_tcp import RtlTcpClient
 from .time_consensus import (
+    ConsensusResult,
     StationFingerprint,
     StationObservation,
     TimeConsensus,
@@ -75,13 +87,170 @@ class ReconConfig:
     settle_s: float = 0.3  # actively discard queued IQ after retuning
 
 
+# ----------------------- EVENTS -----------------------
+#
+# Typed counterparts of the operator messages, for programs that follow the
+# loop without parsing console text. Bump the schema version only for
+# changes that break existing readers; new events and fields do not.
+
+JSONL_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class TrackSnapshot:
+    """One row of :meth:`TimeConsensus.summary` as data."""
+
+    freq_hz: float
+    pi: int | None
+    n_observations: int
+    trust_score: float
+    consecutive_outliers: int
+    age_s: float
+    estimated_utc: datetime | None
+
+
+@dataclass(frozen=True)
+class ReconStarted:
+    """``rtl_tcp`` answered; the loop is about to start."""
+
+    kind: ClassVar[str] = "recon_started"
+    tuner_type: int
+    gain_count: int
+
+
+@dataclass(frozen=True)
+class AcquisitionStarted:
+    """A band scan is starting; it chooses the next watchlist."""
+
+    kind: ClassVar[str] = "acquisition_started"
+    iteration: int
+    band_start_mhz: float
+    band_end_mhz: float
+    scan_step_mhz: float
+
+
+@dataclass(frozen=True)
+class ScanStep:
+    """One scanned frequency; ``candidate`` is ``None`` at or below the RSSI threshold."""
+
+    kind: ClassVar[str] = "scan_step"
+    freq_hz: float
+    rssi_db: float
+    candidate: StationCandidate | None
+
+
+@dataclass(frozen=True)
+class WatchlistUpdated:
+    """Acquisition chose the stations that the following hops visit."""
+
+    kind: ClassVar[str] = "watchlist_updated"
+    iteration: int
+    watchlist: tuple[StationCandidate, ...]
+
+
+@dataclass(frozen=True)
+class MaintenanceStarted:
+    """The hop loop is about to visit every watchlist station once."""
+
+    kind: ClassVar[str] = "maintenance_started"
+    iteration: int
+    n_stations: int
+
+
+@dataclass(frozen=True)
+class HopResult:
+    """One watchlist station recorded and decoded; ``clock_time`` is ``None`` without CT."""
+
+    kind: ClassVar[str] = "hop_result"
+    freq_hz: float
+    pi: int | None
+    ps_name: str
+    rssi_db: float
+    n_groups: int
+    n_groups_clean: int
+    n_groups_corrected: int
+    clock_time: ClockTime | None
+
+
+@dataclass(frozen=True)
+class CycleCompleted:
+    """The data behind the status block rendered after every iteration."""
+
+    kind: ClassVar[str] = "cycle_completed"
+    iteration: int
+    new_observations: int
+    consensus: ConsensusResult
+    watchlist: tuple[StationCandidate, ...]
+    tracks: tuple[TrackSnapshot, ...]
+    next_rescan_in_s: float
+
+
+@dataclass(frozen=True)
+class ReconStopped:
+    """The loop ended without an error: ``reason`` is ``"iterations"`` or ``"interrupted"``."""
+
+    kind: ClassVar[str] = "recon_stopped"
+    iteration: int
+    reason: str
+
+
+ReconEvent = (
+    ReconStarted
+    | AcquisitionStarted
+    | ScanStep
+    | WatchlistUpdated
+    | MaintenanceStarted
+    | HopResult
+    | CycleCompleted
+    | ReconStopped
+)
+
+
+def event_to_json(event: ReconEvent, host_utc: datetime | None = None) -> str:
+    """Render ``event`` as one JSON Lines record, without the trailing newline.
+
+    The record starts with ``event`` (the kind), ``schema`` and ``host_utc``:
+    the host clock when the record was rendered, not a verified time source.
+    The remaining keys mirror the dataclass fields. Datetimes become ISO 8601
+    strings, enums their values, and infinite floats ``null``.
+    """
+    record = {
+        "event": event.kind,
+        "schema": JSONL_SCHEMA_VERSION,
+        "host_utc": host_utc if host_utc is not None else datetime.now(UTC),
+        **asdict(event),
+    }
+    return json.dumps(_jsonable(record), allow_nan=False, separators=(",", ":"))
+
+
+def _jsonable(value: object) -> object:
+    """Convert the values that :func:`json.dumps` cannot encode as JSON."""
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
 def quick_scan_band(
     client: RtlTcpClient,
     cfg: ReconConfig,
     progress: Callable[[str], None] | None = None,
+    on_event: Callable[[ReconEvent], None] | None = None,
 ) -> list[StationCandidate]:
     """Quickly scan the FM band. Per frequency: capture ``scan_dwell_s``,
-    measure RSSI, and attempt a decode to check for RDS / Clock-Time."""
+    measure RSSI, and attempt a decode to check for RDS / Clock-Time.
+
+    ``on_event`` receives a :class:`ScanStep` for every frequency, including
+    those that were not decoded because of the RSSI threshold."""
 
     def emit(msg: str) -> None:
         if progress:
@@ -96,6 +265,7 @@ def quick_scan_band(
         capture = client.capture_fresh(cfg.scan_dwell_s, cfg.fs_scan, settle_s=cfg.settle_s)
         iq = capture.iq
         rssi = 10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12)
+        candidate = None
         if rssi > cfg.rssi_threshold_db:
             result = decode_iq(
                 iq,
@@ -103,20 +273,21 @@ def quick_scan_band(
                 capture_start_monotonic_ns=capture.capture_start_monotonic_ns,
             )
             has_ct = result.info.latest_clock is not None
-            candidates.append(
-                StationCandidate(
-                    freq_hz=freq * 1e6,
-                    rssi_db=float(rssi),
-                    n_groups=result.n_groups,
-                    has_ct=has_ct,
-                    pi=result.info.pi,
-                    ps_name=result.info.ps_name,
-                )
+            candidate = StationCandidate(
+                freq_hz=freq * 1e6,
+                rssi_db=float(rssi),
+                n_groups=result.n_groups,
+                has_ct=has_ct,
+                pi=result.info.pi,
+                ps_name=result.info.ps_name,
             )
+            candidates.append(candidate)
             emit(
                 f"  scan {freq:6.2f} MHz: RSSI={rssi:+.1f}dB "
                 f"groups={result.n_groups} CT={'YES' if has_ct else '—'}"
             )
+        if on_event:
+            on_event(ScanStep(freq_hz=freq * 1e6, rssi_db=float(rssi), candidate=candidate))
         freq += cfg.scan_step_mhz
     return candidates
 
@@ -136,10 +307,13 @@ def hop_collect_ct(
     cfg: ReconConfig,
     consensus: TimeConsensus,
     progress: Callable[[str], None] | None = None,
+    on_event: Callable[[ReconEvent], None] | None = None,
 ) -> int:
     """Hop through the watchlist: tune, record, decode, store CT in the consensus.
 
     Returns the number of new CT observations recorded in this iteration.
+    ``on_event`` receives a :class:`HopResult` for every station, with or
+    without CT.
     """
 
     def emit(msg: str) -> None:
@@ -167,6 +341,7 @@ def hop_collect_ct(
             capture_start_monotonic_ns=capture_start_ns,
         )
         ct = result.info.latest_clock
+        rssi_db = float(10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12))
         if ct is not None:
             received_wall = None
             if ct.rx_monotonic_ns is not None:
@@ -176,7 +351,7 @@ def hop_collect_ct(
             fingerprint = StationFingerprint(
                 pi_code=result.info.pi,
                 cfo_hz=None,  # the decoder currently does not measure RF CFO
-                rssi_db=10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12),
+                rssi_db=rssi_db,
             )
             obs = StationObservation(
                 freq_hz=station.freq_hz,
@@ -200,6 +375,19 @@ def hop_collect_ct(
             )
         else:
             emit(f"  hop {station.freq_hz / 1e6:6.2f} MHz: no CT (groups={result.n_groups})")
+        if on_event:
+            on_event(
+                HopResult(
+                    freq_hz=station.freq_hz,
+                    pi=result.info.pi,
+                    ps_name=result.info.ps_name,
+                    rssi_db=rssi_db,
+                    n_groups=result.n_groups,
+                    n_groups_clean=result.n_groups_clean,
+                    n_groups_corrected=result.n_groups_corrected,
+                    clock_time=ct,
+                )
+            )
     return n_obs
 
 
@@ -208,11 +396,17 @@ def render_status(
     watchlist: list[StationCandidate],
     next_rescan_in_s: float,
     system_now: datetime | None = None,
+    result: ConsensusResult | None = None,
 ) -> str:
-    """Render a TTY-style status block for the operator."""
+    """Render a TTY-style status block for the operator.
+
+    Pass ``result`` when the caller has already evaluated the consensus:
+    every evaluation updates the per-station trust scores.
+    """
     if system_now is None:
         system_now = datetime.now(UTC)
-    result = consensus.consensus()
+    if result is None:
+        result = consensus.consensus()
     lines: list[str] = [
         "=" * 78,
         "  rdsclock recon — passive RDS time receiver",
@@ -253,12 +447,33 @@ def render_status(
     return "\n".join(lines)
 
 
+def _track_snapshots(consensus: TimeConsensus, monotonic_now: float) -> tuple[TrackSnapshot, ...]:
+    """The rows of :meth:`TimeConsensus.summary`, in the same order."""
+    return tuple(
+        TrackSnapshot(
+            freq_hz=t.freq_hz,
+            pi=t.pi,
+            n_observations=len(t.observations),
+            trust_score=t.trust_score,
+            consecutive_outliers=t.consecutive_outliers,
+            age_s=t.age_s(monotonic_now),
+            estimated_utc=t.estimated_utc_now(monotonic_now),
+        )
+        for t in sorted(consensus.tracks.values(), key=lambda x: -x.trust_score)
+    )
+
+
 def run_recon(
     cfg: ReconConfig,
     on_status: Callable[[str], None] | None = None,
     on_progress: Callable[[str], None] | None = None,
+    on_event: Callable[[ReconEvent], None] | None = None,
 ) -> None:
-    """Run the live recon loop. Blocking; interrupt with Ctrl+C."""
+    """Run the live recon loop. Blocking; interrupt with Ctrl+C.
+
+    ``on_status`` and ``on_progress`` receive operator text; ``on_event``
+    receives the same milestones as :data:`ReconEvent` values.
+    """
     consensus = TimeConsensus(mission_precision_s=cfg.mission_precision_s)
     watchlist: list[StationCandidate] = []
     last_rescan_mono = float("-inf")
@@ -267,9 +482,14 @@ def run_recon(
     if on_status is None:
         on_status = print
 
+    def publish(event: ReconEvent) -> None:
+        if on_event:
+            on_event(event)
+
     with RtlTcpClient(host=cfg.host, port=cfg.port) as client:
         info = client.info
         on_status(f"  rtl_tcp OK: tuner={info.tuner_type}, gains={info.gain_count}")
+        publish(ReconStarted(tuner_type=info.tuner_type, gain_count=info.gain_count))
         try:
             while True:
                 iteration += 1
@@ -280,7 +500,17 @@ def run_recon(
                         f"\n[#{iteration}] ACQUISITION "
                         f"(scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…"
                     )
-                    candidates = quick_scan_band(client, cfg, progress=on_progress)
+                    publish(
+                        AcquisitionStarted(
+                            iteration=iteration,
+                            band_start_mhz=cfg.band_start_mhz,
+                            band_end_mhz=cfg.band_end_mhz,
+                            scan_step_mhz=cfg.scan_step_mhz,
+                        )
+                    )
+                    candidates = quick_scan_band(
+                        client, cfg, progress=on_progress, on_event=on_event
+                    )
                     ranked = rank_candidates(candidates)
                     watchlist = [c for c in ranked if c.has_ct][: cfg.max_watchlist]
                     if not watchlist:
@@ -288,25 +518,41 @@ def run_recon(
                         watchlist = [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
                     last_rescan_mono = time.monotonic()
                     on_status(f"  → watchlist: {[f'{s.freq_hz / 1e6:.2f}' for s in watchlist]}")
+                    publish(WatchlistUpdated(iteration=iteration, watchlist=tuple(watchlist)))
 
                 # MAINTENANCE — hop
                 on_status(f"\n[#{iteration}] MAINTENANCE (hop {len(watchlist)} stations)…")
-                new_obs = hop_collect_ct(client, watchlist, cfg, consensus, progress=on_progress)
+                publish(MaintenanceStarted(iteration=iteration, n_stations=len(watchlist)))
+                new_obs = hop_collect_ct(
+                    client, watchlist, cfg, consensus, progress=on_progress, on_event=on_event
+                )
                 on_status(f"  collected {new_obs} new CT observations")
 
-                # Display
-                next_rescan_in = max(
-                    0.0, cfg.rescan_min * 60 - (time.monotonic() - last_rescan_mono)
+                # Display. Evaluate the consensus once: each evaluation updates trust.
+                now_mono = time.monotonic()
+                next_rescan_in = max(0.0, cfg.rescan_min * 60 - (now_mono - last_rescan_mono))
+                result = consensus.consensus(now_mono)
+                on_status("\n" + render_status(consensus, watchlist, next_rescan_in, result=result))
+                publish(
+                    CycleCompleted(
+                        iteration=iteration,
+                        new_observations=new_obs,
+                        consensus=result,
+                        watchlist=tuple(watchlist),
+                        tracks=_track_snapshots(consensus, now_mono),
+                        next_rescan_in_s=next_rescan_in,
+                    )
                 )
-                on_status("\n" + render_status(consensus, watchlist, next_rescan_in))
 
                 if cfg.iterations is not None and iteration >= cfg.iterations:
                     on_status(f"\n[#{iteration}] reached iterations={cfg.iterations}, stop")
+                    publish(ReconStopped(iteration=iteration, reason="iterations"))
                     break
                 if cfg.idle_s > 0:
                     time.sleep(cfg.idle_s)
         except KeyboardInterrupt:
             on_status("\nInterrupted by operator (Ctrl+C).")
+            publish(ReconStopped(iteration=iteration, reason="interrupted"))
 
 
 # ----------------------- OFFLINE / DEMO MODE -----------------------
