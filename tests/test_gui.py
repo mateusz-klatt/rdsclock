@@ -1,6 +1,7 @@
 """Desktop dashboard (``recon --gui``): the Tk window, signals and CLI wiring."""
 
 import contextlib
+import gc
 import os
 import signal
 import sys
@@ -25,6 +26,10 @@ def root():
     yield window
     with contextlib.suppress(tk.TclError):
         window.destroy()
+    # Collect the dashboards' Tk variables now, in the main thread. Left to a
+    # later collection in another test's background thread, their __del__
+    # raises, and -W error turns that into a failure there.
+    gc.collect()
 
 
 def _pump(window, condition, timeout_s: float = 15.0) -> None:
