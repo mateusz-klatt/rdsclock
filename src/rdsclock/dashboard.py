@@ -164,8 +164,9 @@ class Hop:
 
 @dataclass(frozen=True)
 class Track:
-    """One consensus track: the age of its latest CT and its trust score."""
+    """One consensus track: its PI, the age of its latest CT and its trust score."""
 
+    pi: int | None
     age_s: float | None
     trust_score: float
 
@@ -269,6 +270,7 @@ class DashboardState:
     watchlist: list[Station] = field(default_factory=list)
     hops: dict[int, Hop] = field(default_factory=dict)
     last_ct: dict[int, Hop] = field(default_factory=dict)
+    identity: dict[int, int] = field(default_factory=dict)  # last confirmed PI per tuning
     consensus: Consensus | None = None
     tracks: dict[int, Track] = field(default_factory=dict)
     next_rescan_in_s: float | None = None
@@ -341,8 +343,11 @@ class DashboardState:
         watchlist = [Station.from_record(entry) for entry in record["watchlist"]]
         watched = {_tuning(station.freq_hz) for station in watchlist}
         self.watchlist = watchlist
-        self.hops = {key: hop for key, hop in self.hops.items() if key in watched}
-        self.last_ct = {key: hop for key, hop in self.last_ct.items() if key in watched}
+        for cache in (self.hops, self.last_ct, self.identity):
+            for key in set(cache) - watched:
+                del cache[key]
+        for station in watchlist:
+            self._confirm(_tuning(station.freq_hz), station.pi)
         if not watchlist:
             return ["Watchlist empty: no RDS station found in this scan."]
         freqs = ", ".join(f"{station.freq_hz / 1e6:.2f}" for station in watchlist)
@@ -358,14 +363,12 @@ class DashboardState:
         freq_hz = _number(record["freq_hz"])
         hop = Hop.from_record(record)
         key = _tuning(freq_hz)
+        self._confirm(key, hop.pi)
         self.hops[key] = hop
-        # CT is missing from many captures: keep the latest one, unless another
-        # transmitter now answers on this tuning.
-        previous = self.last_ct.get(key)
+        # CT is missing from many captures: keep the latest one until another
+        # transmitter is confirmed on this tuning.
         if hop.ct_utc is not None:
             self.last_ct[key] = hop
-        elif previous is not None and None not in (hop.pi, previous.pi) and hop.pi != previous.pi:
-            del self.last_ct[key]
         self.hops_done += 1
         label = f"{freq_hz / 1e6:.2f} MHz {hop.ps_name}".rstrip()
         groups = f"{hop.n_groups} groups, {hop.n_groups_corrected} corrected"
@@ -384,6 +387,7 @@ class DashboardState:
         for entry in record["tracks"]:
             key = _tuning(_number(entry["freq_hz"]))
             track = Track(
+                pi=_optional_integer(entry["pi"]),
                 age_s=_optional_number(entry["age_s"]),
                 trust_score=_number(entry["trust_score"]),
             )
@@ -410,9 +414,28 @@ class DashboardState:
         self.phase = "STOPPED"
         if returncode == 0 and (self.stopped or requested):
             return []
-        messages = [f"Receiver process exited with status {returncode}."]
+        if returncode == 0:
+            messages = ["The receiver stream ended without recon_stopped."]
+        else:
+            messages = [f"Receiver process exited with status {returncode}."]
         messages.extend(f"  {line}" for line in stderr_tail)
         return [printable(message) for message in messages]
+
+    def exit_failed(self, returncode: int, requested: bool) -> bool:
+        """Whether the child ended on its own without a clean ``recon_stopped``.
+
+        A stream that simply ends was cut short, even with exit status 0.
+        """
+        return not requested and (returncode != 0 or not self.stopped)
+
+    def _confirm(self, key: int, pi: int | None) -> None:
+        """Record a confirmed PI; a different one invalidates the tuning's caches."""
+        if pi is None:
+            return
+        if self.identity.get(key, pi) != pi:
+            self.hops.pop(key, None)
+            self.last_ct.pop(key, None)
+        self.identity[key] = pi
 
     def start_failed(self, error: OSError) -> list[str]:
         self.phase = "STOPPED"
@@ -510,13 +533,18 @@ class DashboardState:
         hop = self.hops.get(key)
         last_ct = self.last_ct.get(key)
         track = self.tracks.get(key)
+        identity = self.identity.get(key)
+        if track is not None and None not in (track.pi, identity) and track.pi != identity:
+            track = None  # its metrics belong to the transmitter that answered before
         if hop is None:
             ps, pi, rssi, groups = station.ps_name, station.pi, station.rssi_db, station.n_groups
             corrected = ""
         else:
-            # An unconfirmed hop PI stays unknown: the scan's PI may belong to
-            # another transmitter.
-            ps, pi = hop.ps_name or station.ps_name, hop.pi
+            # An unconfirmed hop PI stays unknown, and the scan's name is reused
+            # only for the same confirmed PI: both may belong to another
+            # transmitter.
+            same = hop.pi is not None and hop.pi == station.pi
+            ps, pi = hop.ps_name or (station.ps_name if same else ""), hop.pi
             rssi, groups, corrected = hop.rssi_db, hop.n_groups, str(hop.n_groups_corrected)
         ct = lto = ""
         if last_ct is not None:
@@ -530,12 +558,15 @@ class DashboardState:
                 age = f"{track.age_s + self.elapsed():.0f} s"
         cells = (f"{station.freq_hz / 1e6:.2f}", ps, _pi(pi), _db(rssi), str(groups), corrected)
         cells += (ct, lto, age, trust)
-        return Row(cells=cells, status=self._station_status(key, hop, track))
+        attributed = track is not None or key not in self.tracks
+        return Row(cells=cells, status=self._station_status(key, hop, track, attributed))
 
-    def _station_status(self, key: int, hop: Hop | None, track: Track | None) -> str:
-        if self.consensus is not None and key in self.consensus.outliers:
+    def _station_status(
+        self, key: int, hop: Hop | None, track: Track | None, attributed: bool
+    ) -> str:
+        if attributed and self.consensus is not None and key in self.consensus.outliers:
             return "OUTLIER"
-        if self.consensus is not None and key in self.consensus.contributing:
+        if attributed and self.consensus is not None and key in self.consensus.contributing:
             return "ok"
         if track is not None:
             return "not counted"

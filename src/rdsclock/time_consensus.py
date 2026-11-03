@@ -119,6 +119,15 @@ class StationTrack:
     def last(self) -> StationObservation | None:
         return self.observations[-1] if self.observations else None
 
+    @property
+    def latest_freq_hz(self) -> float:
+        """Tuning of the latest observation; ``freq_hz`` keeps the first one.
+
+        Observations within one 100 kHz bin share a track, so a station can
+        move to another tuning without starting a new track.
+        """
+        return self.last.freq_hz if self.last is not None else self.freq_hz
+
     def estimated_utc_now(self, monotonic_now: float) -> datetime | None:
         """Extrapolate UTC from the last CT observation plus elapsed monotonic time."""
         if not self.observations:
@@ -490,11 +499,11 @@ class TimeConsensus:
             if abs(epoch - median_epoch) > OUTLIER_THRESHOLD_S:
                 t.consecutive_outliers += 1
                 t.trust_score = max(0.0, t.trust_score - OUTLIER_PENALTY)
-                outliers.append(t.freq_hz / 1e6)
+                outliers.append(t.latest_freq_hz / 1e6)
             else:
                 t.consecutive_outliers = 0
                 t.trust_score = min(1.0, t.trust_score + AGREEMENT_BONUS)
-                contributing.append(t.freq_hz / 1e6)
+                contributing.append(t.latest_freq_hz / 1e6)
         return contributing, outliers
 
     def _trust_level(

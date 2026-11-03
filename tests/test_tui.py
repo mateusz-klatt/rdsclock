@@ -64,8 +64,8 @@ class TestRendering:
 
 
 class _ClosedStream:
-    async def readline(self) -> bytes:
-        return b""
+    async def readuntil(self, separator: bytes) -> bytes:
+        raise asyncio.IncompleteReadError(b"", None)
 
 
 class _VanishedProcess:
@@ -94,6 +94,43 @@ class TestReconChild:
             await exited.wait()
 
         asyncio.run(scenario())
+
+
+def _read_all(chunks: list[bytes], limit: int = 16) -> list[str]:
+    """Feed ``chunks`` one at a time to a bounded reader and collect its lines."""
+
+    async def scenario() -> list[str]:
+        reader = asyncio.StreamReader(limit=limit)
+        lines: list[str] = []
+
+        async def collect() -> None:
+            lines.extend([line async for line in tui.bounded_lines(reader)])
+
+        task = asyncio.create_task(collect())
+        for chunk in chunks:
+            reader.feed_data(chunk)
+            for _ in range(5):
+                await asyncio.sleep(0)
+        reader.feed_eof()
+        await task
+        return lines
+
+    return asyncio.run(scenario())
+
+
+class TestBoundedLines:
+    def test_overlong_line_is_dropped_through_its_newline(self):
+        record = b'{"event":"x"}\n'
+        assert _read_all([b"ok\n" + b"x" * 40 + b"\n" + record]) == ["ok\n", "", record.decode()]
+
+    def test_suffix_arriving_later_is_not_a_record(self):
+        record = b'{"event":"y"}\n'
+        lines = _read_all([b"x" * 40, b"x" * 40, b'{"event":"suffix"}\n' + record])
+        assert lines == ["", record.decode()]
+
+    def test_end_of_file_inside_an_overlong_line_or_after_a_partial_one(self):
+        assert _read_all([b"x" * 40]) == [""]
+        assert _read_all([b"no newline"]) == ["no newline"]
 
 
 def _dashboard(tmp_path, mode: str = "follow") -> tui.ReconDashboard:
@@ -205,6 +242,19 @@ class TestReconDashboard:
             await pilot.press("q")
 
         _drive(app, scenario)
+
+    def test_stream_ending_without_a_stop_is_a_failure(self, tmp_path):
+        app = _dashboard(tmp_path, mode="truncated")
+        assert app.held.maxlen == tui.LOG_LINES
+
+        async def scenario(pilot):
+            await _until(pilot, lambda: app.state.phase == "STOPPED")
+            await pilot.pause(0.05)
+            assert "The receiver stream ended without recon_stopped." in _log_text(app)
+            await pilot.press("q")
+
+        _drive(app, scenario)
+        assert app.return_code == 1
 
     def test_receiver_failure_is_shown_and_returned(self, tmp_path):
         app = _dashboard(tmp_path, mode="fail")
