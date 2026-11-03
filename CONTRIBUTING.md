@@ -6,11 +6,13 @@ Thank you for considering a contribution. This project follows a
 ## Quick Start
 
 ```bash
-git clone https://github.com/<org>/rdsclock.git
+git clone https://github.com/mateusz-klatt/rdsclock.git
 cd rdsclock
-make setup          # creates .venv with pinned deps
-make test           # 93/93 tests must pass
-make lint           # syntax + style checks
+uv sync --frozen --extra dev --extra plot --no-install-project --no-build
+export PYTHONPATH="$PWD/src"
+.venv/bin/python -m pytest tests/ -m 'not real_sdr' -q -W error
+.venv/bin/ruff check src/ tests/ examples/
+.venv/bin/black --check src/ tests/ examples/
 ```
 
 ## Development Workflow
@@ -32,16 +34,21 @@ make lint           # syntax + style checks
    in the PR description.
 
 4. **Documentation** must accompany behaviour changes. Update:
-   - `README.md` if the user-facing surface changes,
-   - `docs/architecture.md` for internal structure changes,
+   - `README.md`, `README.pl.md` and `README.fr.md` if the user-facing surface changes,
+   - `docs/ARCHITECTURE.md` for internal structure changes,
    - `CHANGELOG.md` under `## [Unreleased]`,
    - `docs/THREAT_MODEL.md` if assumptions change.
+
+   Use the English README as the reference for translations. Keep commands,
+   measured results and limitations equivalent across all three versions;
+   translate explanatory text and comments, not CLI option names. The linked
+   technical guides are maintained in English.
 
 ## Code Style
 
 - **Python 3.12** target.
-- **Black** (88-column) + **Ruff** for formatting/linting.
-  `make lint` runs both.
+- **Black** (100-column) + **Ruff** for formatting/linting; use the commands
+  above. `make lint` performs a compile-only syntax check.
 - **Type hints** required on all public functions and dataclasses.
 - **Docstrings**: imperative mood, English, terse. Document *why*,
   not *what* (the code already shows what).
@@ -61,8 +68,8 @@ Scopes: `dsp`, `rds`, `synth`, `decoder`, `channelizer`, `recon`,
 
 ## Pull Request Checklist
 
-- [ ] Tests pass: `make test` (93/93 or higher)
-- [ ] Lint clean: `make lint`
+- [ ] Relevant tests pass; skips and unavailable hardware checks are reported
+- [ ] Ruff and Black checks pass
 - [ ] Docstrings present on new public API
 - [ ] `CHANGELOG.md` updated
 - [ ] Documentation updated where applicable
