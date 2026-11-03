@@ -154,6 +154,11 @@ consensus with holdover between observations. Its acquisition scan and repeated
 captures take longer than the short demos. See the
 [operator guide](docs/operator-quickstart.md) for details.
 
+For a live terminal dashboard, add `--extra tui` to `uv sync` and `--tui` to the
+`recon` command. It shows the consensus, the stations and a log; `q` quits, `r`
+requests a new scan and `p` pauses the view. With `--jsonl`, `recon` instead
+writes one JSON event per line for other programs.
+
 ## How it works
 
 ```mermaid
@@ -227,6 +232,7 @@ when its samples were received.
 | `audio` | Single-station FM audio playback via `sounddevice` |
 | `plot` | MPX spectrum and waterfall figures via `matplotlib` |
 | `fast` | Optional Numba acceleration |
+| `tui` | Terminal dashboard for `recon --tui` via `textual` |
 | `dev` | Tests, coverage, Ruff and Black |
 
 Add the relevant `--extra` to `uv sync`. The live multi-station examples do not

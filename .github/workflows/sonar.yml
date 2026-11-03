@@ -34,7 +34,7 @@ jobs:
 
       - name: Install package and test dependencies
         run: |
-          uv sync --frozen --extra audio --extra plot --extra dev --no-install-project --no-build
+          uv sync --frozen --extra audio --extra plot --extra dev --extra tui --no-install-project --no-build
 
       - name: Run fast tests with coverage
         run: |

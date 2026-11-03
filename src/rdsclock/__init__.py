@@ -15,6 +15,7 @@ Modules:
     rtl_tcp          Minimal rtl_tcp client (context manager).
     time_consensus   Multi-source time consensus, trust scoring, holdover.
     recon            Continuous passive time receiver (live + offline modes).
+    tui              Terminal dashboard over ``recon --jsonl`` (optional extra).
     cli              Command-line interface: generate / decode / live / multi /
                      scan / recon / demo.
 """

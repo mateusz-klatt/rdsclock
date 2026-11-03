@@ -474,11 +474,14 @@ def run_recon(
     on_status: Callable[[str], None] | None = None,
     on_progress: Callable[[str], None] | None = None,
     on_event: Callable[[ReconEvent], None] | None = None,
+    rescan_requested: Callable[[], bool] | None = None,
 ) -> None:
     """Run the live recon loop. Blocking; interrupt with Ctrl+C.
 
     ``on_status`` and ``on_progress`` receive operator text; ``on_event``
     receives the same milestones as :data:`ReconEvent` values.
+    ``rescan_requested`` is polled before every iteration; when it returns
+    true, that iteration starts with an acquisition scan.
     """
     consensus = TimeConsensus(mission_precision_s=cfg.mission_precision_s)
     watchlist: list[StationCandidate] = []
@@ -502,8 +505,11 @@ def run_recon(
             while True:
                 iteration += 1
                 now_mono = time.monotonic()
-                # ACQUISITION when watchlist is empty or rescan_min has elapsed.
-                if not watchlist or (now_mono - last_rescan_mono) > cfg.rescan_min * 60:
+                # Poll first, so that a pending request is consumed in any case.
+                requested = rescan_requested is not None and rescan_requested()
+                # ACQUISITION when requested, the watchlist is empty or rescan_min has elapsed.
+                due = (now_mono - last_rescan_mono) > cfg.rescan_min * 60
+                if requested or not watchlist or due:
                     on_status(
                         f"\n[#{iteration}] ACQUISITION "
                         f"(scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…"

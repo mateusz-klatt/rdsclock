@@ -158,6 +158,12 @@ i podaje konsensus, podtrzymując oszacowanie czasu między obserwacjami.
 Skan wstępny i powtarzane rejestracje trwają dłużej niż krótkie demonstracje.
 Szczegóły opisuje [przewodnik operatora](docs/operator-quickstart.md).
 
+Aby śledzić odbiór w terminalu, dodaj `--extra tui` do `uv sync` i `--tui` do
+polecenia `recon`. Panel pokazuje konsensus, stacje i dziennik zdarzeń; `q`
+kończy pracę, `r` zleca nowy skan, a `p` wstrzymuje widok. Z opcją `--jsonl`
+polecenie `recon` wypisuje zamiast tego po jednym zdarzeniu JSON w wierszu,
+na potrzeby innych programów.
+
 ## Jak to działa
 
 ```mermaid
@@ -233,6 +239,7 @@ do czasu odbioru nie pozwala ustalić, kiedy odebrano jego próbki.
 | `audio` | Odtwarzanie dźwięku FM z jednej stacji przez `sounddevice` |
 | `plot` | Wykresy widma MPX i wodospadu przez `matplotlib` |
 | `fast` | Opcjonalne przyspieszenie przez Numba |
+| `tui` | Panel terminalowy `recon --tui` przez `textual` |
 | `dev` | Testy, pokrycie kodu, Ruff i Black |
 
 Dodaj odpowiedni `--extra` do `uv sync`. Przykłady odbioru wielu stacji na żywo

@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moves the operator display to stderr. Every record carries `event`, `schema`
   and the host clock; `cycle_completed` holds the data of the status block.
   Python callers receive the same typed events through `run_recon(on_event=...)`.
+- `rdsclock recon --tui` shows a terminal dashboard (optional extra `tui`, built
+  on Textual). It runs `recon --jsonl` as a child process and shows the
+  consensus, the watchlist stations and a log; `q` quits, `r` requests a rescan
+  and `p` pauses the view. Station names are displayed as plain printable text.
+- Live `recon` starts an acquisition scan after the current cycle when it
+  receives `SIGUSR1`; `run_recon` accepts a matching `rescan_requested` callback.
 
 ### Fixed
 

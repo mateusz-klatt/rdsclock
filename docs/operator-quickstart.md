@@ -105,6 +105,34 @@ verify absolute UTC. The displayed uncertainty is a model estimate, not a
 calibrated error bound. Receipt timestamps are host estimates, and their
 accuracy includes uncharacterized receiver and network delays.
 
+### Terminal dashboard
+
+Install the optional extra (`pip install 'rdsclock[tui]'`, or `--extra tui` with
+`uv sync`) and add `--tui` to the same command:
+
+```bash
+rdsclock recon --start 87.5 --end 108 --max-stations 5 --tui
+```
+
+The dashboard starts `recon --jsonl` as a child process with the same receiver
+settings and shows:
+
+- the phase, with scan or hop progress and the time to the next scheduled rescan;
+- the consensus, advanced every second between cycles, with the host clock
+  difference, outliers and the same uncertainty caveat as the text display;
+- one row per watchlist station: PS, PI, RSSI, groups and corrected groups, the
+  latest CT and LTO, track age, trust score and consensus status;
+- a log of scans, hops and cycles.
+
+`q` stops the receiver as `Ctrl+C` would and quits; a receiver that has not
+stopped after 5 seconds is killed. `r` sends `SIGUSR1`, which starts an
+acquisition scan after the current cycle; live `recon` without the dashboard
+reacts to `kill -USR1 <pid>` the same way, and the dashboard passes on a
+`SIGUSR1` sent to its own process. `p` pauses the view while reception
+continues. Station names are shown as plain printable text. If the receiver
+fails, its last error output stays in the log and the dashboard exits with
+status 1.
+
 ### Machine-readable output
 
 Add `--jsonl` to write one JSON object per line to stdout, for another

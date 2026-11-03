@@ -71,6 +71,7 @@ The receiver does **not**:
 | **T7.** Network attacker reaches `rtl_tcp`.         | The daemon binds to `127.0.0.1` by default; the documentation explicitly warns against `0.0.0.0`.         |
 | **T8.** Operational metadata leaks via logs / IQ.   | `SECURITY.md` lists sensitive artefacts. The default install does not write any log to disk.              |
 | **T9.** Stations stop broadcasting CT.              | Holdover with explicit uncertainty growth; consensus enters `STALE` once `mission_precision_s` is exceeded. |
+| **T10.** Broadcast text carries terminal control sequences or markup. | The decoder maps bytes outside printable ASCII to spaces, except the RadioText end marker (CR); JSON Lines output escapes control characters. The dashboard replaces any remaining non-printable character and renders station names as plain text, never as markup. |
 
 ## Out of Scope
 
