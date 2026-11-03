@@ -201,19 +201,32 @@ obtient tkinter avec `apt install python3-tk`. Avec `--jsonl`, `recon` écrit
 plutôt un événement JSON par ligne pour d'autres programmes ; le
 [guide opérateur](docs/operator-quickstart.md) décrit tous ces modes.
 
+Avec `--wide`, `recon` enregistre en une seule capture les stations qui tiennent
+dans la bande du récepteur ; les tableaux de bord les montrent alors toutes
+ensemble, sans sauter d'une station à l'autre. Les captures ci-dessous montrent
+une réception réelle à Varsovie le 3 novembre 2026 : Eska ROCK, Jedynka et
+Radio Kolor décodées ensemble à partir de captures de 75 secondes à 2,4 MS/s,
+avec cette commande et `--web` ou `--gui` à la place de `--tui` :
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --wide 102.0,102.4,103.0 --gain 28 --scan-dwell 3 --dwell 75 \
+  --settle-seconds 1 --tui
+```
+
 **Terminal** (`--tui`)
 
-![Tableau de bord en terminal : heure du consensus, niveau de confiance et valeur aberrante au-dessus d'un tableau de quatre stations et d'un journal](docs/images/dashboard-tui.png)
+![Tableau de bord en terminal pendant une réception WIDE réelle : heure du consensus et confiance au-dessus de trois stations issues d'une même capture, et journal](docs/images/dashboard-tui.png)
 
 **Navigateur** (`--web`)
 
-![Tableau de bord web avec le même consensus, le tableau des stations, le journal et les boutons Rescan et Pause view](docs/images/dashboard-web.png)
+![Tableau de bord web pendant une réception WIDE réelle, avec le même consensus, les stations, le journal et les boutons Rescan et Pause view](docs/images/dashboard-web.png)
 
 **Fenêtre de bureau** (`--gui`)
 
-![Fenêtre de bureau avec la même vue et les boutons Rescan, Pause view et Quit](docs/images/dashboard-gui.png)
+![Fenêtre de bureau pendant une réception WIDE réelle, avec la même vue et les boutons Rescan, Pause view et Quit](docs/images/dashboard-gui.png)
 
-*Captures d'une session d'exemple avec des stations DEMO fictives, et non d'une réception réelle.*
+*Réception réelle à Varsovie le 3 novembre 2026. Parmi ces trois stations, seule Jedynka diffuse l'heure (CT) : le consensus repose donc sur une seule source (N=1, confiance LOW ou STALE). Jedynka envoie l'heure locale polonaise dans le champ UTC, d'où l'avance d'une heure du consensus sur l'horloge de l'hôte.*
 
 ## Fonctionnement
 

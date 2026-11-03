@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The READMEs show how to run each dashboard, with screenshots of live WIDE
+  reception in Warsaw: three stations decoded from one capture.
 - Add an original radio-clock SVG banner shared by the English, Polish and
   French READMEs, with localized alternative text.
 - Refresh the English and Polish READMEs and add a complete French translation,

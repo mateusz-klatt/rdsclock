@@ -185,19 +185,32 @@ gets tkinter from `apt install python3-tk`. With `--jsonl`, `recon` instead
 writes one JSON event per line for other programs; the
 [operator guide](docs/operator-quickstart.md) describes all these modes.
 
+With `--wide`, `recon` records stations that fit in the receiver bandwidth
+from one capture, so the dashboards show them all at once instead of hopping
+from one to the next. The screenshots below show live reception in Warsaw on
+3 November 2026: Eska ROCK, Jedynka and Radio Kolor decoded together from
+75-second captures at 2.4 MS/s, with this command and `--web` or `--gui` in
+place of `--tui`:
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --wide 102.0,102.4,103.0 --gain 28 --scan-dwell 3 --dwell 75 \
+  --settle-seconds 1 --tui
+```
+
 **Terminal** (`--tui`)
 
-![Terminal dashboard: consensus time, trust level and an outlier above a table of four stations and a log](docs/images/dashboard-tui.png)
+![Terminal dashboard during live WIDE reception: consensus time and trust above three stations decoded from one capture, and a log](docs/images/dashboard-tui.png)
 
 **Browser** (`--web`)
 
-![Browser dashboard with the same consensus, station table and log, and Rescan and Pause view buttons](docs/images/dashboard-web.png)
+![Browser dashboard during live WIDE reception, with the same consensus, stations and log, and Rescan and Pause view buttons](docs/images/dashboard-web.png)
 
 **Desktop window** (`--gui`)
 
-![Desktop window with the same view and Rescan, Pause view and Quit buttons](docs/images/dashboard-gui.png)
+![Desktop window during live WIDE reception, with the same view and Rescan, Pause view and Quit buttons](docs/images/dashboard-gui.png)
 
-*Screenshots of an example session with made-up DEMO stations, not of a live reception.*
+*Live reception in Warsaw on 3 November 2026. Of these three stations only Jedynka broadcasts Clock-Time, so the consensus rests on one source (N=1, trust LOW or STALE). Jedynka sends Polish local time in the UTC field, which is why the consensus runs an hour ahead of the host clock.*
 
 ## How it works
 
