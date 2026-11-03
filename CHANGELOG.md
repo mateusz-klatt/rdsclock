@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tkinter, with Rescan, Pause view and Quit (also `r`, `p`, `q`). Closing the
   window or `Ctrl+C` stops the receiver, and the window forwards `SIGUSR1`. CI
   runs the window tests under a virtual X display.
+- `rdsclock recon --hop FREQS` hops between the listed stations instead of
+  scanning the band: an acquisition checks only them and keeps every one with
+  RDS. `acquisition_started` counts them in `n_points`, and the dashboards show
+  the scan as stations rather than tuning points.
 - `rdsclock recon --wide FREQS` records stations that fit in the receiver
   bandwidth from one wideband capture per cycle (`--center`, `--fs`) instead of
   scanning the band and hopping. All of them see the same minute edge, and the

@@ -285,6 +285,7 @@ class DashboardState:
     next_rescan_in_s: float | None = None
     cycle_at: float = 0.0
     band: tuple[float, float, float] | None = None
+    scan_total: int | None = None  # stations of a listed scan; None for a band
     wide: tuple[float, float] | None = None  # WIDE capture centre and rate; None for HOP
     scan_points: int = 0
     scan_freq_hz: float | None = None
@@ -329,8 +330,14 @@ class DashboardState:
             _number(record[key]) for key in ("band_start_mhz", "band_end_mhz", "scan_step_mhz")
         )
         wide = _wide(record)
+        listed = _optional_integer(record.get("n_points"))
         self.phase, self.iteration, self.band, self.wide = "ACQUISITION", iteration, band, wide
-        self.scan_points, self.scan_freq_hz = 0, None
+        self.scan_points, self.scan_freq_hz, self.scan_total = 0, None, listed
+        if wide is None and listed is not None:
+            return [
+                f"Acquisition #{iteration}: checking {listed} listed stations, "
+                f"{band[0]:.2f}-{band[1]:.2f} MHz."
+            ]
         if wide is not None:
             return [
                 f"Acquisition #{iteration}: one WIDE capture at {wide[0] / 1e6:.2f} MHz "
@@ -489,9 +496,12 @@ class DashboardState:
         elif self.phase == "ACQUISITION" and self.band is not None:
             start, end, step = self.band
             total = math.floor((end - start) / step + 1e-6) + 1 if step > 0 else 0
+            unit = "points"
+            if self.scan_total is not None:
+                total, unit = self.scan_total, "stations"
             if self.scan_freq_hz is not None:
                 status += f" · {self.scan_freq_hz / 1e6:.2f} MHz"
-            status += f" · {self.scan_points}/{total} points"
+            status += f" · {self.scan_points}/{total} {unit}"
         elif self.phase == "MAINTENANCE":
             status += self._hop_progress() if self.wide is None else self._wide_progress()
         if self.next_rescan_in_s is not None and self.phase != "STOPPED":

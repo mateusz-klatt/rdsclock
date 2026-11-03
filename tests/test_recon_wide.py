@@ -187,7 +187,7 @@ class TestWideOptions:
 
     def test_wide_options_reach_the_config_and_the_dashboard_child(self):
         args = self._args("--wide", "102.0,102.4,103.0", "--center", "102.55", "--fs", "2048000")
-        assert cli._recon_wide_error(args) is None
+        assert cli._recon_list_error(args) is None
         cfg = cli._recon_config(args)
         assert cfg.wide_freqs_hz == (102.0e6, 102.4e6, 103.0e6)
         assert (cfg.wide_center_hz, cfg.wide_sample_rate) == (102.55e6, 2_048_000)
@@ -199,4 +199,4 @@ class TestWideOptions:
         assert cli._recon_config(self._args()).wide_freqs_hz == ()
         wide = cli._recon_config(self._args("--wide", "102.0,102.4,103.0"))
         assert (wide.wide_center_hz, wide.wide_sample_rate) == (None, recon.WIDE_SAMPLE_RATE)
-        assert cli._recon_wide_error(self._args("--wide", "102.0,102.4,103.0")) is None
+        assert cli._recon_list_error(self._args("--wide", "102.0,102.4,103.0")) is None

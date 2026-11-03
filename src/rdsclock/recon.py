@@ -14,7 +14,8 @@ Operating modes:
 Architecture:
     Acquisition  — a quick band scan locates stations with strong RSSI.
                     Stations whose decode yields a Clock-Time enter the
-                    watchlist.
+                    watchlist. With ``hop_freqs_hz`` it checks only the
+                    listed stations and keeps every one with RDS.
     Maintenance  — hop through the watchlist, collect Clock-Time per
                     station, update the consensus, render status.
     WIDE         — with ``wide_freqs_hz``, one wideband capture records
@@ -92,6 +93,9 @@ class ReconConfig:
     port: int = 1234
     iterations: int | None = None  # None = run forever (until Ctrl+C)
     settle_s: float = 0.3  # actively discard queued IQ after retuning
+    # HOP over a list: when set, acquisitions check only these stations
+    # instead of scanning the band.
+    hop_freqs_hz: tuple[float, ...] = ()
     # WIDE: when set, one capture records all these stations at once,
     # replacing the band scan and the hops.
     wide_freqs_hz: tuple[float, ...] = ()
@@ -144,7 +148,8 @@ class AcquisitionStarted:
     """A band scan is starting; it chooses the next watchlist.
 
     In WIDE mode one capture at ``wide_center_hz`` replaces the scan: the band
-    spans the listed stations and ``scan_step_mhz`` is 0.
+    spans the listed stations and ``scan_step_mhz`` is 0. A scan of listed
+    HOP stations also reports a step of 0, and ``n_points`` counts them.
     """
 
     kind: ClassVar[str] = "acquisition_started"
@@ -154,6 +159,7 @@ class AcquisitionStarted:
     scan_step_mhz: float
     wide_center_hz: float | None = None
     wide_sample_rate: int | None = None
+    n_points: int | None = None
 
 
 @dataclass(frozen=True)
@@ -272,6 +278,18 @@ def _jsonable(value: object) -> object:
     return value
 
 
+def _scan_tunings_hz(cfg: ReconConfig) -> list[float]:
+    """The tunings of an acquisition scan: the listed HOP stations, or the band."""
+    if cfg.hop_freqs_hz:
+        return list(cfg.hop_freqs_hz)
+    tunings = []
+    freq = cfg.band_start_mhz
+    while freq <= cfg.band_end_mhz + 1e-6:
+        tunings.append(freq * 1e6)
+        freq += cfg.scan_step_mhz
+    return tunings
+
+
 def quick_scan_band(
     client: RtlTcpClient,
     cfg: ReconConfig,
@@ -281,8 +299,10 @@ def quick_scan_band(
     """Quickly scan the FM band. Per frequency: capture ``scan_dwell_s``,
     measure RSSI, and attempt a decode to check for RDS / Clock-Time.
 
-    ``on_event`` receives a :class:`ScanStep` for every frequency, including
-    those that were not decoded because of the RSSI threshold."""
+    With ``cfg.hop_freqs_hz`` only the listed stations are checked, and the
+    RSSI threshold does not apply to them. ``on_event`` receives a
+    :class:`ScanStep` for every frequency, including those that were not
+    decoded because of the RSSI threshold."""
 
     def emit(msg: str) -> None:
         if progress:
@@ -291,14 +311,13 @@ def quick_scan_band(
     client.configure_fm(cfg.fs_scan, gain_db=cfg.gain_db)
 
     candidates: list[StationCandidate] = []
-    freq = cfg.band_start_mhz
-    while freq <= cfg.band_end_mhz + 1e-6:
-        client.set_frequency(int(freq * 1e6))
+    for freq_hz in _scan_tunings_hz(cfg):
+        client.set_frequency(int(freq_hz))
         capture = client.capture_fresh(cfg.scan_dwell_s, cfg.fs_scan, settle_s=cfg.settle_s)
         iq = capture.iq
         rssi = 10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12)
         candidate = None
-        if rssi > cfg.rssi_threshold_db:
+        if cfg.hop_freqs_hz or rssi > cfg.rssi_threshold_db:
             result = decode_iq(
                 iq,
                 fs=cfg.fs_scan,
@@ -306,7 +325,7 @@ def quick_scan_band(
             )
             has_ct = result.info.latest_clock is not None
             candidate = StationCandidate(
-                freq_hz=freq * 1e6,
+                freq_hz=freq_hz,
                 rssi_db=float(rssi),
                 n_groups=result.n_groups,
                 has_ct=has_ct,
@@ -315,13 +334,12 @@ def quick_scan_band(
             )
             candidates.append(candidate)
             emit(
-                f"  scan {freq:6.2f} MHz: RSSI={rssi:+.1f}dB "
+                f"  scan {freq_hz / 1e6:6.2f} MHz: RSSI={rssi:+.1f}dB "
                 f"groups={result.n_groups} CT={'YES' if has_ct else '—'}"
             )
         if on_event:
             snapshot = None if candidate is None else replace(candidate)
-            on_event(ScanStep(freq_hz=freq * 1e6, rssi_db=float(rssi), candidate=snapshot))
-        freq += cfg.scan_step_mhz
+            on_event(ScanStep(freq_hz=freq_hz, rssi_db=float(rssi), candidate=snapshot))
     return candidates
 
 
@@ -654,6 +672,21 @@ def _acquire(
         )
         ranked = rank_candidates(wide_scan(client, cfg, out.progress, out.event))
         # One capture records them all, so every station with RDS stays.
+        return [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
+
+    if cfg.hop_freqs_hz:
+        out.status(f"\n[#{iteration}] ACQUISITION (check {len(cfg.hop_freqs_hz)} listed stations)…")
+        out.publish(
+            AcquisitionStarted(
+                iteration=iteration,
+                band_start_mhz=min(cfg.hop_freqs_hz) / 1e6,
+                band_end_mhz=max(cfg.hop_freqs_hz) / 1e6,
+                scan_step_mhz=0.0,
+                n_points=len(cfg.hop_freqs_hz),
+            )
+        )
+        ranked = rank_candidates(quick_scan_band(client, cfg, out.progress, out.event))
+        # The operator chose these stations: keep every one with RDS.
         return [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
 
     out.status(f"\n[#{iteration}] ACQUISITION (scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…")
