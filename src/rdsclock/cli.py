@@ -1108,7 +1108,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--center",
         type=float,
         default=None,
-        help="WIDE capture centre in MHz (default: near the middle, clear of every station)",
+        help="WIDE capture centre in MHz (default: near the middle, with every station "
+        "clear of the DC offset and of the other stations' mirror images)",
     )
     pr.add_argument(
         "--fs",

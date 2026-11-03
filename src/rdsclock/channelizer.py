@@ -156,9 +156,12 @@ def choose_center(
 ) -> float:
     """A capture centre for stations that fit in ``fs_wide``.
 
-    The receiver's DC offset appears at the centre, so prefer the point
-    nearest the midpoint that is at least ``dc_clearance_hz`` from every
-    station, while each station stays ``guard_hz`` inside the capture. Return
+    The receiver adds its DC offset at the centre and, through I/Q imbalance,
+    a mirror image of every station reflected about it. Station *i* meets the
+    image of station *j* when the centre lies halfway between them, and the
+    DC offset when *i* is *j*. Prefer the point nearest the midpoint of the
+    stations that is at least ``dc_clearance_hz`` from all these halfway
+    points, while each station stays ``guard_hz`` inside the capture. Return
     the midpoint when no such point exists.
     """
     if not fits_in_window(freqs_hz, fs_wide, guard_hz=guard_hz):
@@ -166,10 +169,12 @@ def choose_center(
     reach = fs_wide / 2 - guard_hz
     low, high = max(freqs_hz) - reach, min(freqs_hz) + reach
     middle = auto_center(freqs_hz)
+    halfway = sorted({(a + b) / 2 for a in freqs_hz for b in freqs_hz})
 
     def clear(center: float) -> bool:
-        return all(abs(f - center) >= dc_clearance_hz for f in freqs_hz)
+        # 1 Hz absorbs float rounding at the boundary itself.
+        return all(abs(point - center) >= dc_clearance_hz - 1.0 for point in halfway)
 
-    edges = [f + side * dc_clearance_hz for f in freqs_hz for side in (-1, 1)]
+    edges = [point + side * dc_clearance_hz for point in halfway for side in (-1, 1)]
     options = [c for c in (middle, low, high, *edges) if low <= c <= high and clear(c)]
     return min(options, key=lambda c: abs(c - middle), default=middle)

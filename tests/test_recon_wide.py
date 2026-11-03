@@ -117,7 +117,7 @@ class TestWideEngine:
         assert receiver.calls == []
 
     def test_the_centre_defaults_to_one_clear_of_the_stations(self):
-        assert recon.ReconConfig(wide_freqs_hz=FREQS).wide_center() == pytest.approx(102.55e6)
+        assert recon.ReconConfig(wide_freqs_hz=FREQS).wide_center() == pytest.approx(102.85e6)
         assert _cfg().wide_center() == 102.85e6
 
     def test_run_recon_reports_wide_captures(self, monkeypatch, rtl_tcp_factory):
