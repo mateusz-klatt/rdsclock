@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rdsclock recon</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>rdsclock recon</h1>
+    <p id="status" class="status">Connecting…</p>
+    <div class="actions">
+      <button id="rescan" type="button" disabled>Rescan</button>
+      <button id="pause" type="button" aria-pressed="false">Pause view</button>
+    </div>
+  </header>
+  <main>
+    <section id="clock" class="card" aria-live="polite">
+      <h2>Consensus</h2>
+      <p id="utc" class="utc">Waiting for the first completed cycle…</p>
+      <p class="facts">
+        <span id="trust" class="trust"></span>
+        <span id="assessed" class="assessed"></span>
+        <span id="uncertainty"></span>
+        <span id="sources"></span>
+        <span id="age"></span>
+      </p>
+      <p id="offset" class="offset"></p>
+      <p id="outliers" class="outliers"></p>
+      <p id="note" class="note"></p>
+      <p id="notice" class="notice" role="status"></p>
+    </section>
+    <section class="card">
+      <h2>Stations</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="columns"></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p id="empty" class="empty">No stations yet: the acquisition scan chooses them.</p>
+    </section>
+    <section class="card">
+      <h2>Log</h2>
+      <ol id="log" class="log"></ol>
+    </section>
+  </main>
+  <noscript>This dashboard needs JavaScript to follow the receiver.</noscript>
+</body>
+</html>

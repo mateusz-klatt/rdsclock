@@ -780,6 +780,17 @@ def _recon_tui(args: argparse.Namespace) -> int:
     return run_dashboard([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)])
 
 
+def _recon_web(args: argparse.Namespace) -> int:
+    """Serve the browser dashboard, which reads a ``recon --jsonl`` child process."""
+    if args.from_dir:
+        print("error: --web applies to live reception, not --from-dir", file=sys.stderr)
+        return 2
+    from .web import run_web
+
+    command = [sys.executable, "-m", "rdsclock", *_recon_child_argv(args)]
+    return run_web(command, args.web_host, args.web_port)
+
+
 def _recon_config(args: argparse.Namespace) -> ReconConfig:
     return ReconConfig(
         band_start_mhz=args.start,
@@ -804,6 +815,8 @@ def cmd_recon(args: argparse.Namespace) -> int:
     """Continuous passive time receiver: scan → hop → consensus → display."""
     if args.tui:
         return _recon_tui(args)
+    if args.web:
+        return _recon_web(args)
     cfg = _recon_config(args)
     if args.jsonl:
         return _recon_jsonl(cfg, args)
@@ -1018,6 +1031,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show a terminal dashboard (optional 'tui' extra) fed by a --jsonl child",
     )
+    output.add_argument(
+        "--web",
+        action="store_true",
+        help="Serve a browser dashboard fed by a --jsonl child (no authentication)",
+    )
+    pr.add_argument(
+        "--web-host",
+        default="127.0.0.1",
+        dest="web_host",
+        help="Address for --web (default 127.0.0.1; use an SSH tunnel for remote access)",
+    )
+    pr.add_argument("--web-port", type=int, default=8080, dest="web_port", help="Port for --web")
     pr.add_argument("-v", "--verbose", action="store_true")
     pr.set_defaults(func=cmd_recon)
 

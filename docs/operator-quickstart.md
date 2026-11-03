@@ -137,6 +137,30 @@ continues. Station names are shown as plain printable text. If the receiver
 fails, its last error output stays in the log and the dashboard exits with
 status 1.
 
+### Browser dashboard
+
+`--web` serves the same view to a browser and needs no extra dependencies:
+
+```bash
+rdsclock recon --start 87.5 --end 108 --max-stations 5 --web
+```
+
+Open <http://127.0.0.1:8080/>; `--web-port` changes the port. The page has
+*Rescan* and *Pause view* buttons, and `Ctrl+C` in the terminal stops the
+receiver and the server. The dashboard has no authentication and listens on
+loopback only. To watch a remote receiver, forward the port instead of exposing
+it:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 SDR_HOST
+```
+
+`--web-host` can bind another address. The dashboard then warns that anyone who
+can reach that address can watch it, and it still accepts rescans only from the
+receiver's own machine. It refuses requests that name an unknown host, which
+blocks DNS rebinding. A rescan needs a request from the page itself, so other
+web pages cannot trigger one.
+
 ### Machine-readable output
 
 Add `--jsonl` to write one JSON object per line to stdout, for another

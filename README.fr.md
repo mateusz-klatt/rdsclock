@@ -170,8 +170,11 @@ de temps que les courtes démonstrations. Consultez le
 Pour suivre la réception dans le terminal, ajoutez `--extra tui` à `uv sync` et
 `--tui` à la commande `recon`. Le tableau de bord affiche le consensus, les
 stations et un journal ; `q` quitte, `r` demande un nouveau balayage et `p` fige
-l'affichage. Avec `--jsonl`, `recon` écrit plutôt un événement JSON par ligne
-pour d'autres programmes.
+l'affichage. `--web` sert la même vue dans un navigateur à l'adresse
+<http://127.0.0.1:8080/>, sans dépendance supplémentaire. Le tableau de bord n'a
+pas d'authentification : pour un récepteur distant, passez par un tunnel SSH.
+Avec `--jsonl`, `recon` écrit plutôt un événement JSON par ligne pour d'autres
+programmes.
 
 ## Fonctionnement
 

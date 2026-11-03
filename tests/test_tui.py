@@ -343,7 +343,7 @@ class TestReconTuiCli:
 
     def test_child_receives_every_receiver_setting(self):
         dests = set(vars(cli.build_parser().parse_args(["recon"])))
-        local = {"command", "func", "verbose", "jsonl", "tui"}
+        local = {"command", "func", "verbose", "jsonl", "tui", "web", "web_host", "web_port"}
         local |= {"from_dir", "limit_files"}
         assert {dest for _, dest in cli._RECON_CHILD_OPTIONS} == dests - local
 

@@ -17,6 +17,7 @@ Modules:
     recon            Continuous passive time receiver (live + offline modes).
     dashboard        Dashboard model shared by the terminal, web and desktop views.
     tui              Terminal dashboard over ``recon --jsonl`` (optional extra).
+    web              Browser dashboard over ``recon --jsonl`` (standard library).
     cli              Command-line interface: generate / decode / live / multi /
                      scan / recon / demo.
 """
