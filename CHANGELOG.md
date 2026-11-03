@@ -28,9 +28,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tkinter, with Rescan, Pause view and Quit (also `r`, `p`, `q`). Closing the
   window or `Ctrl+C` stops the receiver, and the window forwards `SIGUSR1`. CI
   runs the window tests under a virtual X display.
+- `rdsclock recon --wide FREQS` records stations that fit in the receiver
+  bandwidth from one wideband capture per cycle (`--center`, `--fs`) instead of
+  scanning the band and hopping. All of them see the same minute edge, and the
+  dashboards show the capture centre. `acquisition_started` and
+  `maintenance_started` gain `wide_center_hz` and `wide_sample_rate`.
+
+### Changed
+
+- The channelizer mixes block by block and decimates with one polyphase filter.
+  A 75-second capture at 2.4 MS/s now needs about 3.4 GB of memory instead of
+  more than 30 GB, and extraction is several times faster. `decode_channels`
+  reports the power of each channel and can anchor Clock-Time receive times to
+  the capture start.
 
 ### Fixed
 
+- Long captures choose a fresh symbol offset every 4096 bits (about 3.4 s).
+  A single offset slipped by whole bits when a station's bit clock ran tens of
+  ppm away from the receiver's: in one live 75-second capture, Eska ROCK went
+  from 450 to 855 decoded groups and Radio Kolor from 591 to 810.
 - Actively discard buffered IQ after retuning, with bounded acquisition and
   explicit failure when a capture boundary cannot be established. Live capture
   duration now excludes settling; `--settle-seconds` adds discard time before

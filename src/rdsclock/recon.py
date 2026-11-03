@@ -17,6 +17,9 @@ Architecture:
                     watchlist.
     Maintenance  — hop through the watchlist, collect Clock-Time per
                     station, update the consensus, render status.
+    WIDE         — with ``wide_freqs_hz``, one wideband capture records
+                    all these stations at once and replaces both the band
+                    scan and the hops; the channelizer separates them.
     Periodic rescan — every ``rescan_min`` minutes a fuller scan is
                     issued to pick up new stations or detect quality drops.
 
@@ -33,7 +36,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -42,7 +45,8 @@ from typing import ClassVar
 
 import numpy as np
 
-from .decoder import decode_file, decode_iq
+from .channelizer import ChannelDecodeResult, ChannelSpec, choose_center, decode_channels
+from .decoder import DecodeResult, decode_file, decode_iq
 from .rds_clock import ClockTime
 from .rtl_tcp import RtlTcpClient
 from .time_consensus import (
@@ -65,6 +69,9 @@ class StationCandidate:
     ps_name: str = ""
 
 
+WIDE_SAMPLE_RATE = 2_400_000  # default WIDE capture rate, as for ``rdsclock multi``
+
+
 @dataclass
 class ReconConfig:
     band_start_mhz: float = 87.5
@@ -85,6 +92,17 @@ class ReconConfig:
     port: int = 1234
     iterations: int | None = None  # None = run forever (until Ctrl+C)
     settle_s: float = 0.3  # actively discard queued IQ after retuning
+    # WIDE: when set, one capture records all these stations at once,
+    # replacing the band scan and the hops.
+    wide_freqs_hz: tuple[float, ...] = ()
+    wide_center_hz: float | None = None  # None: chosen by wide_center()
+    wide_sample_rate: int = WIDE_SAMPLE_RATE
+
+    def wide_center(self) -> float:
+        """The WIDE capture centre: ``wide_center_hz``, or one away from the stations."""
+        if self.wide_center_hz is not None:
+            return self.wide_center_hz
+        return choose_center(self.wide_freqs_hz, self.wide_sample_rate)
 
 
 # ----------------------- EVENTS -----------------------
@@ -123,13 +141,19 @@ class ReconStarted:
 
 @dataclass(frozen=True)
 class AcquisitionStarted:
-    """A band scan is starting; it chooses the next watchlist."""
+    """A band scan is starting; it chooses the next watchlist.
+
+    In WIDE mode one capture at ``wide_center_hz`` replaces the scan: the band
+    spans the listed stations and ``scan_step_mhz`` is 0.
+    """
 
     kind: ClassVar[str] = "acquisition_started"
     iteration: int
     band_start_mhz: float
     band_end_mhz: float
     scan_step_mhz: float
+    wide_center_hz: float | None = None
+    wide_sample_rate: int | None = None
 
 
 @dataclass(frozen=True)
@@ -153,11 +177,16 @@ class WatchlistUpdated:
 
 @dataclass(frozen=True)
 class MaintenanceStarted:
-    """The hop loop is about to visit every watchlist station once."""
+    """The hop loop is about to visit every watchlist station once.
+
+    In WIDE mode one capture at ``wide_center_hz`` records them all instead.
+    """
 
     kind: ClassVar[str] = "maintenance_started"
     iteration: int
     n_stations: int
+    wide_center_hz: float | None = None
+    wide_sample_rate: int | None = None
 
 
 @dataclass(frozen=True)
@@ -305,6 +334,88 @@ def rank_candidates(candidates: list[StationCandidate]) -> list[StationCandidate
     )
 
 
+def _capture_start_wall(capture_start_ns: int) -> datetime:
+    """Map a capture's host monotonic start onto wall time.
+
+    Call it right after the capture, so that neither the duration of the
+    capture nor the decoding that follows enters the CT anchor.
+    """
+    wall_anchor = datetime.now(UTC)
+    monotonic_anchor = time.monotonic_ns()
+    return wall_anchor - timedelta(seconds=(monotonic_anchor - capture_start_ns) / 1e9)
+
+
+def _record_station(
+    freq_hz: float,
+    result: DecodeResult,
+    rssi_db: float,
+    capture_start: tuple[int, datetime],
+    consensus: TimeConsensus,
+) -> HopResult:
+    """Store a decoded station's CT in the consensus and describe the station.
+
+    ``capture_start`` is the capture's monotonic and wall-time start.
+    """
+    capture_start_ns, capture_start_wall = capture_start
+    ct = result.info.latest_clock
+    if ct is not None:
+        received_wall = None
+        if ct.rx_monotonic_ns is not None:
+            received_wall = capture_start_wall + timedelta(
+                seconds=(ct.rx_monotonic_ns - capture_start_ns) / 1_000_000_000
+            )
+        fingerprint = StationFingerprint(
+            pi_code=result.info.pi,
+            cfo_hz=None,  # the decoder currently does not measure RF CFO
+            rssi_db=rssi_db,
+        )
+        obs = StationObservation(
+            freq_hz=freq_hz,
+            pi=result.info.pi,
+            ct_utc=ct.utc,
+            received_monotonic=(
+                ct.rx_monotonic_ns / 1e9
+                if ct.rx_monotonic_ns is not None
+                else capture_start_ns / 1e9
+            ),
+            fingerprint=fingerprint,
+            clock_time=ct,
+            rx_monotonic_ns=ct.rx_monotonic_ns,
+            received_wall_utc=received_wall,
+        )
+        consensus.record(obs)
+    return HopResult(
+        freq_hz=freq_hz,
+        pi=result.info.pi,
+        ps_name=result.info.ps_name,
+        rssi_db=rssi_db,
+        n_groups=result.n_groups,
+        n_groups_clean=result.n_groups_clean,
+        n_groups_corrected=result.n_groups_corrected,
+        clock_time=ct,
+    )
+
+
+def _report_station(
+    mode: str,
+    hop: HopResult,
+    progress: Callable[[str], None] | None,
+    on_event: Callable[[ReconEvent], None] | None,
+) -> int:
+    """Pass one station's result on; return 1 when it carried CT, otherwise 0."""
+    if progress:
+        if hop.clock_time is not None:
+            progress(
+                f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: "
+                f"CT={hop.clock_time.utc.strftime('%H:%M:%S')}Z groups={hop.n_groups}"
+            )
+        else:
+            progress(f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: no CT (groups={hop.n_groups})")
+    if on_event:
+        on_event(hop)
+    return 0 if hop.clock_time is None else 1
+
+
 def hop_collect_ct(
     client: RtlTcpClient,
     watchlist: list[StationCandidate],
@@ -319,11 +430,6 @@ def hop_collect_ct(
     ``on_event`` receives a :class:`HopResult` for every station, with or
     without CT.
     """
-
-    def emit(msg: str) -> None:
-        if progress:
-            progress(msg)
-
     client.configure_fm(cfg.sample_rate, gain_db=cfg.gain_db)
 
     n_obs = 0
@@ -332,66 +438,110 @@ def hop_collect_ct(
         capture = client.capture_fresh(cfg.dwell_s, cfg.sample_rate, settle_s=cfg.settle_s)
         iq = capture.iq
         capture_start_ns = capture.capture_start_monotonic_ns
-        # Map the host monotonic estimate onto wall time without including
-        # the duration of the capture or subsequent decoding in the CT anchor.
-        wall_anchor = datetime.now(UTC)
-        monotonic_anchor = time.monotonic_ns()
-        capture_start_wall = wall_anchor - timedelta(
-            seconds=(monotonic_anchor - capture_start_ns) / 1e9
-        )
+        capture_start = (capture_start_ns, _capture_start_wall(capture_start_ns))
         result = decode_iq(
             iq,
             fs=cfg.sample_rate,
             capture_start_monotonic_ns=capture_start_ns,
         )
-        ct = result.info.latest_clock
         rssi_db = float(10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12))
-        if ct is not None:
-            received_wall = None
-            if ct.rx_monotonic_ns is not None:
-                received_wall = capture_start_wall + timedelta(
-                    seconds=(ct.rx_monotonic_ns - capture_start_ns) / 1_000_000_000
-                )
-            fingerprint = StationFingerprint(
-                pi_code=result.info.pi,
-                cfo_hz=None,  # the decoder currently does not measure RF CFO
-                rssi_db=rssi_db,
+        hop = _record_station(station.freq_hz, result, rssi_db, capture_start, consensus)
+        n_obs += _report_station("hop", hop, progress, on_event)
+    return n_obs
+
+
+def _wide_capture(
+    client: RtlTcpClient, cfg: ReconConfig, freqs_hz: Sequence[float], duration_s: float
+) -> tuple[list[ChannelDecodeResult], tuple[int, datetime]]:
+    """Record ``duration_s`` around the WIDE centre and decode ``freqs_hz`` from it.
+
+    Returns the results per station and the capture's monotonic and
+    wall-time start.
+    """
+    center_hz = cfg.wide_center()
+    client.configure_fm(cfg.wide_sample_rate, gain_db=cfg.gain_db)
+    client.set_frequency(int(center_hz))
+    capture = client.capture_fresh(duration_s, cfg.wide_sample_rate, settle_s=cfg.settle_s)
+    capture_start_ns = capture.capture_start_monotonic_ns
+    capture_start = (capture_start_ns, _capture_start_wall(capture_start_ns))
+    # One station at a time: each extraction holds a copy of the capture.
+    results = decode_channels(
+        iq_wide=capture.iq,
+        fs_wide=cfg.wide_sample_rate,
+        f_center=center_hz,
+        channels=[ChannelSpec(freq_hz=freq_hz) for freq_hz in freqs_hz],
+        max_workers=1,
+        capture_start_monotonic_ns=capture_start_ns,
+    )
+    return results, capture_start
+
+
+def wide_scan(
+    client: RtlTcpClient,
+    cfg: ReconConfig,
+    progress: Callable[[str], None] | None = None,
+    on_event: Callable[[ReconEvent], None] | None = None,
+) -> list[StationCandidate]:
+    """WIDE acquisition: decode every station of ``cfg.wide_freqs_hz`` from one
+    ``scan_dwell_s`` capture instead of scanning the band.
+
+    ``on_event`` receives a :class:`ScanStep` for every station. The RSSI
+    threshold does not apply: the capture contains every station anyway.
+    """
+    results, _ = _wide_capture(client, cfg, cfg.wide_freqs_hz, cfg.scan_dwell_s)
+    candidates: list[StationCandidate] = []
+    for channel in results:
+        info = channel.result.info
+        candidate = StationCandidate(
+            freq_hz=channel.spec.freq_hz,
+            rssi_db=channel.rssi_db,
+            n_groups=channel.result.n_groups,
+            has_ct=info.latest_clock is not None,
+            pi=info.pi,
+            ps_name=info.ps_name,
+        )
+        candidates.append(candidate)
+        if progress:
+            progress(
+                f"  wide {candidate.freq_hz / 1e6:6.2f} MHz: RSSI={candidate.rssi_db:+.1f}dB "
+                f"groups={candidate.n_groups} CT={'YES' if candidate.has_ct else '—'}"
             )
-            obs = StationObservation(
-                freq_hz=station.freq_hz,
-                pi=result.info.pi,
-                ct_utc=ct.utc,
-                received_monotonic=(
-                    ct.rx_monotonic_ns / 1e9
-                    if ct.rx_monotonic_ns is not None
-                    else capture_start_ns / 1e9
-                ),
-                fingerprint=fingerprint,
-                clock_time=ct,
-                rx_monotonic_ns=ct.rx_monotonic_ns,
-                received_wall_utc=received_wall,
-            )
-            consensus.record(obs)
-            n_obs += 1
-            emit(
-                f"  hop {station.freq_hz / 1e6:6.2f} MHz: "
-                f"CT={ct.utc.strftime('%H:%M:%S')}Z groups={result.n_groups}"
-            )
-        else:
-            emit(f"  hop {station.freq_hz / 1e6:6.2f} MHz: no CT (groups={result.n_groups})")
         if on_event:
             on_event(
-                HopResult(
-                    freq_hz=station.freq_hz,
-                    pi=result.info.pi,
-                    ps_name=result.info.ps_name,
-                    rssi_db=rssi_db,
-                    n_groups=result.n_groups,
-                    n_groups_clean=result.n_groups_clean,
-                    n_groups_corrected=result.n_groups_corrected,
-                    clock_time=ct,
+                ScanStep(
+                    freq_hz=candidate.freq_hz,
+                    rssi_db=candidate.rssi_db,
+                    candidate=replace(candidate),
                 )
             )
+    return candidates
+
+
+def wide_collect_ct(
+    client: RtlTcpClient,
+    watchlist: list[StationCandidate],
+    cfg: ReconConfig,
+    consensus: TimeConsensus,
+    progress: Callable[[str], None] | None = None,
+    on_event: Callable[[ReconEvent], None] | None = None,
+) -> int:
+    """WIDE maintenance: record every watchlist station from one ``dwell_s``
+    capture and store their CT in the consensus.
+
+    Returns the number of new CT observations. ``on_event`` receives a
+    :class:`HopResult` for every station, as after a hop. An empty watchlist
+    records nothing.
+    """
+    if not watchlist:
+        return 0
+    freqs_hz = [station.freq_hz for station in watchlist]
+    results, capture_start = _wide_capture(client, cfg, freqs_hz, cfg.dwell_s)
+    n_obs = 0
+    for channel in results:
+        hop = _record_station(
+            channel.spec.freq_hz, channel.result, channel.rssi_db, capture_start, consensus
+        )
+        n_obs += _report_station("wide", hop, progress, on_event)
     return n_obs
 
 
@@ -472,6 +622,89 @@ def _track_snapshots(consensus: TimeConsensus, monotonic_now: float) -> tuple[Tr
     )
 
 
+@dataclass(frozen=True)
+class _Outputs:
+    """Where the live loop reports: operator text, optional detail and events."""
+
+    status: Callable[[str], None]
+    progress: Callable[[str], None] | None = None
+    event: Callable[[ReconEvent], None] | None = None
+
+    def publish(self, event: ReconEvent) -> None:
+        if self.event:
+            self.event(event)
+
+
+def _acquire(
+    client: RtlTcpClient, cfg: ReconConfig, iteration: int, out: _Outputs
+) -> list[StationCandidate]:
+    """Run one acquisition and return the next watchlist."""
+    if cfg.wide_freqs_hz:
+        center_hz = cfg.wide_center()
+        out.status(f"\n[#{iteration}] ACQUISITION (WIDE capture at {center_hz / 1e6:.3f} MHz)…")
+        out.publish(
+            AcquisitionStarted(
+                iteration=iteration,
+                band_start_mhz=min(cfg.wide_freqs_hz) / 1e6,
+                band_end_mhz=max(cfg.wide_freqs_hz) / 1e6,
+                scan_step_mhz=0.0,
+                wide_center_hz=center_hz,
+                wide_sample_rate=cfg.wide_sample_rate,
+            )
+        )
+        ranked = rank_candidates(wide_scan(client, cfg, out.progress, out.event))
+        # One capture records them all, so every station with RDS stays.
+        return [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
+
+    out.status(f"\n[#{iteration}] ACQUISITION (scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…")
+    out.publish(
+        AcquisitionStarted(
+            iteration=iteration,
+            band_start_mhz=cfg.band_start_mhz,
+            band_end_mhz=cfg.band_end_mhz,
+            scan_step_mhz=cfg.scan_step_mhz,
+        )
+    )
+    ranked = rank_candidates(
+        quick_scan_band(client, cfg, progress=out.progress, on_event=out.event)
+    )
+    watchlist = [c for c in ranked if c.has_ct][: cfg.max_watchlist]
+    if not watchlist:
+        # Fallback: when no station yields CT, keep stations with RDS.
+        watchlist = [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
+    return watchlist
+
+
+def _maintain(
+    client: RtlTcpClient,
+    cfg: ReconConfig,
+    iteration: int,
+    watchlist: list[StationCandidate],
+    consensus: TimeConsensus,
+    out: _Outputs,
+) -> int:
+    """Observe the watchlist once; return the number of new CT observations."""
+    if cfg.wide_freqs_hz:
+        center_hz = cfg.wide_center()
+        out.status(
+            f"\n[#{iteration}] MAINTENANCE (WIDE capture of {len(watchlist)} stations "
+            f"at {center_hz / 1e6:.3f} MHz)…"
+        )
+        out.publish(
+            MaintenanceStarted(
+                iteration=iteration,
+                n_stations=len(watchlist),
+                wide_center_hz=center_hz,
+                wide_sample_rate=cfg.wide_sample_rate,
+            )
+        )
+        return wide_collect_ct(client, watchlist, cfg, consensus, out.progress, out.event)
+
+    out.status(f"\n[#{iteration}] MAINTENANCE (hop {len(watchlist)} stations)…")
+    out.publish(MaintenanceStarted(iteration=iteration, n_stations=len(watchlist)))
+    return hop_collect_ct(client, watchlist, cfg, consensus, out.progress, out.event)
+
+
 def run_recon(
     cfg: ReconConfig,
     on_status: Callable[[str], None] | None = None,
@@ -493,10 +726,8 @@ def run_recon(
 
     if on_status is None:
         on_status = print
-
-    def publish(event: ReconEvent) -> None:
-        if on_event:
-            on_event(event)
+    out = _Outputs(on_status, on_progress, on_event)
+    publish = out.publish
 
     # The handler also covers the connection and the first event, so that every
     # interruption ends the stream with recon_stopped.
@@ -513,36 +744,13 @@ def run_recon(
                 # ACQUISITION when requested, the watchlist is empty or rescan_min has elapsed.
                 due = (now_mono - last_rescan_mono) > cfg.rescan_min * 60
                 if requested or not watchlist or due:
-                    on_status(
-                        f"\n[#{iteration}] ACQUISITION "
-                        f"(scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…"
-                    )
-                    publish(
-                        AcquisitionStarted(
-                            iteration=iteration,
-                            band_start_mhz=cfg.band_start_mhz,
-                            band_end_mhz=cfg.band_end_mhz,
-                            scan_step_mhz=cfg.scan_step_mhz,
-                        )
-                    )
-                    candidates = quick_scan_band(
-                        client, cfg, progress=on_progress, on_event=on_event
-                    )
-                    ranked = rank_candidates(candidates)
-                    watchlist = [c for c in ranked if c.has_ct][: cfg.max_watchlist]
-                    if not watchlist:
-                        # Fallback: when no station yields CT, keep stations with RDS.
-                        watchlist = [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
+                    watchlist = _acquire(client, cfg, iteration, out)
                     last_rescan_mono = time.monotonic()
                     on_status(f"  → watchlist: {[f'{s.freq_hz / 1e6:.2f}' for s in watchlist]}")
                     publish(WatchlistUpdated(iteration=iteration, watchlist=_detached(watchlist)))
 
-                # MAINTENANCE — hop
-                on_status(f"\n[#{iteration}] MAINTENANCE (hop {len(watchlist)} stations)…")
-                publish(MaintenanceStarted(iteration=iteration, n_stations=len(watchlist)))
-                new_obs = hop_collect_ct(
-                    client, watchlist, cfg, consensus, progress=on_progress, on_event=on_event
-                )
+                # MAINTENANCE — hop, or one WIDE capture
+                new_obs = _maintain(client, cfg, iteration, watchlist, consensus, out)
                 on_status(f"  collected {new_obs} new CT observations")
 
                 # Display. Evaluate the consensus once: each evaluation updates trust.

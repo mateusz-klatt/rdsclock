@@ -109,6 +109,35 @@ class TestDashboardState:
         state, _, _ = _state([*lines[:5], line(recon.MaintenanceStarted(1, 0))])
         assert state.view().status == "MAINTENANCE #1 · no stations to visit"
 
+    def test_wide_captures_replace_scan_and_hop_progress(self):
+        lines = session()
+        wide_scan = line(recon.AcquisitionStarted(1, 98.8, 107.5, 0.0, 103.0e6, 2_400_000))
+        state, _, messages = _state([lines[0], wide_scan, lines[2]])
+        assert state.view().status == "ACQUISITION #1 · WIDE 103.00 MHz"
+        assert messages[1] == (
+            "Acquisition #1: one WIDE capture at 103.00 MHz covers 98.80-107.50 MHz."
+        )
+        wide = line(recon.MaintenanceStarted(1, 3, 103.0e6, 2_400_000))
+        state, _, messages = _state([*lines[:5], wide, lines[6]])
+        status = "MAINTENANCE #1 · WIDE 103.00 MHz · recording 3 stations at once"
+        assert state.view().status == status
+        assert "WIDE capture at 103.00 MHz, 2.40 MS/s: 3 stations at once." in messages
+        state, _, _ = _state([*lines[:5], wide, *lines[6:9]])
+        status = "MAINTENANCE #1 · WIDE 103.00 MHz · 3 stations from one capture"
+        assert state.view().status == status
+        empty = line(recon.MaintenanceStarted(1, 0, 103.0e6, 2_400_000))
+        state, _, messages = _state([*lines[:5], empty])
+        assert state.view().status == "MAINTENANCE #1 · no stations to record"
+        assert not any("WIDE capture" in message for message in messages)
+        state.apply_line(lines[1])  # back to a band scan
+        assert state.view().status == "ACQUISITION #1 · 0/101 points"
+        bad = json.loads(wide)
+        bad["wide_center_hz"] = "103"
+        assert state.apply_line(json.dumps(bad)) == [
+            "Ignored a malformed maintenance_started event."
+        ]
+        assert state.phase == "ACQUISITION"
+
     def test_unavailable_time_is_explicit(self):
         state, _, _ = _state([*session()[:-1], line(cycle(utc=None))])
         consensus = state.view().consensus

@@ -87,6 +87,15 @@ def _timestamp(value: object) -> datetime | None:
     return moment
 
 
+def _wide(record: Record) -> tuple[float, float] | None:
+    """The WIDE capture centre and sample rate of an event, or ``None`` for HOP."""
+    center_hz = _optional_number(record.get("wide_center_hz"))
+    sample_rate = _optional_number(record.get("wide_sample_rate"))
+    if center_hz is None or sample_rate is None:
+        return None
+    return center_hz, sample_rate
+
+
 def _tuning(freq_hz: float) -> int:
     """A tuned frequency in whole hertz, so that equal tunings compare equal.
 
@@ -276,6 +285,7 @@ class DashboardState:
     next_rescan_in_s: float | None = None
     cycle_at: float = 0.0
     band: tuple[float, float, float] | None = None
+    wide: tuple[float, float] | None = None  # WIDE capture centre and rate; None for HOP
     scan_points: int = 0
     scan_freq_hz: float | None = None
     hops_done: int = 0
@@ -318,8 +328,14 @@ class DashboardState:
         band = tuple(
             _number(record[key]) for key in ("band_start_mhz", "band_end_mhz", "scan_step_mhz")
         )
-        self.phase, self.iteration, self.band = "ACQUISITION", iteration, band
+        wide = _wide(record)
+        self.phase, self.iteration, self.band, self.wide = "ACQUISITION", iteration, band, wide
         self.scan_points, self.scan_freq_hz = 0, None
+        if wide is not None:
+            return [
+                f"Acquisition #{iteration}: one WIDE capture at {wide[0] / 1e6:.2f} MHz "
+                f"covers {band[0]:.2f}-{band[1]:.2f} MHz."
+            ]
         return [
             f"Acquisition #{iteration}: scanning {band[0]:.2f}-{band[1]:.2f} MHz "
             f"in {band[2]:.2f} MHz steps."
@@ -355,9 +371,15 @@ class DashboardState:
 
     def _on_maintenance_started(self, record: Record) -> list[str]:
         iteration, n_stations = _integer(record["iteration"]), _integer(record["n_stations"])
-        self.phase = "MAINTENANCE"
+        wide = _wide(record)
+        self.phase, self.wide = "MAINTENANCE", wide
         self.iteration, self.n_stations, self.hops_done = iteration, n_stations, 0
-        return []
+        if wide is None or not n_stations:
+            return []
+        return [
+            f"WIDE capture at {wide[0] / 1e6:.2f} MHz, {wide[1] / 1e6:.2f} MS/s: "
+            f"{n_stations} stations at once."
+        ]
 
     def _on_hop_result(self, record: Record) -> list[str]:
         freq_hz = _number(record["freq_hz"])
@@ -462,14 +484,16 @@ class DashboardState:
         status = self.phase
         if self.iteration:
             status += f" #{self.iteration}"
-        if self.phase == "ACQUISITION" and self.band is not None:
+        if self.phase == "ACQUISITION" and self.wide is not None:
+            status += f" · WIDE {self.wide[0] / 1e6:.2f} MHz"
+        elif self.phase == "ACQUISITION" and self.band is not None:
             start, end, step = self.band
             total = math.floor((end - start) / step + 1e-6) + 1 if step > 0 else 0
             if self.scan_freq_hz is not None:
                 status += f" · {self.scan_freq_hz / 1e6:.2f} MHz"
             status += f" · {self.scan_points}/{total} points"
         elif self.phase == "MAINTENANCE":
-            status += self._hop_progress()
+            status += self._hop_progress() if self.wide is None else self._wide_progress()
         if self.next_rescan_in_s is not None and self.phase != "STOPPED":
             remaining = max(0.0, self.next_rescan_in_s - self.elapsed())
             status += f" · next rescan in {remaining:.0f} s"
@@ -482,6 +506,14 @@ class DashboardState:
         if self.hops_done < min(self.n_stations, len(self.watchlist)):
             progress += f" · recording {self.watchlist[self.hops_done].freq_hz / 1e6:.2f} MHz"
         return progress
+
+    def _wide_progress(self) -> str:
+        if not self.n_stations:
+            return " · no stations to record"
+        progress = f" · WIDE {self.wide[0] / 1e6:.2f} MHz"
+        if self.hops_done < self.n_stations:
+            return progress + f" · recording {self.n_stations} stations at once"
+        return progress + f" · {self.n_stations} stations from one capture"
 
     def _consensus_view(self) -> ConsensusView | None:
         consensus = self.consensus

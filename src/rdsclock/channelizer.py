@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from math import gcd
 
 import numpy as np
-from scipy.signal import firwin, lfilter, resample_poly
+from scipy.signal import firwin, resample_poly
 
 from . import dsp
 from .decoder import DecodeResult, decode_iq
@@ -25,6 +25,10 @@ class ChannelSpec:
     label: str = ""  # human-friendly name, e.g. "RMF FM 95.5"
 
 
+# Samples mixed at a time: bounds the float64 phase temporaries to a few MB.
+_MIX_BLOCK = 1 << 20
+
+
 def extract_channel(
     iq_wide: np.ndarray,
     fs_wide: float,
@@ -35,26 +39,34 @@ def extract_channel(
 ) -> np.ndarray:
     """Extract a single FM channel (typically 250 kS/s) from a wide capture.
 
-    1. Frequency shift the channel to DC.
-    2. Lowpass to ``half_bw`` (≈100 kHz for FM).
-    3. Decimate to ``fs_out``.
+    1. Frequency shift the channel to DC, one block at a time.
+    2. Lowpass to ``half_bw`` (≈100 kHz for FM) and decimate to ``fs_out`` in
+       one polyphase step.
+
+    Besides the result, this needs one complex64 copy of the capture: about
+    1.4 GB for 75 s at 2.4 MS/s. The filter is centred, so output sample
+    ``k`` belongs to ``k / fs_out`` seconds after the first input sample.
     """
     if fs_out > fs_wide:
         raise ValueError("fs_out must be <= fs_wide")
-    delta = f_channel - f_center
-    n = np.arange(len(iq_wide), dtype=np.float64)
-    mixed = (iq_wide * np.exp(-1j * 2 * np.pi * delta * n / fs_wide)).astype(np.complex64)
-
-    # Lowpass designed at fs_wide with cutoff = half_bw
-    n_taps = 257
-    taps = firwin(numtaps=n_taps, cutoff=half_bw, fs=fs_wide).astype(np.float32)
-    filtered = lfilter(taps, 1.0, mixed)
-
     a = int(round(fs_out))
     b = int(round(fs_wide))
     g = gcd(a, b)
     up, down = a // g, b // g
-    return resample_poly(filtered, up, down).astype(np.complex64)
+
+    step = -2 * np.pi * (f_channel - f_center) / fs_wide
+    ramp = np.exp(1j * step * np.arange(min(_MIX_BLOCK, len(iq_wide))))
+    mixed = np.empty(len(iq_wide), dtype=np.complex64)
+    for start in range(0, len(iq_wide), _MIX_BLOCK):
+        stop = min(start + _MIX_BLOCK, len(iq_wide))
+        phasor = (np.exp(1j * step * start) * ramp[: stop - start]).astype(np.complex64)
+        np.multiply(iq_wide[start:stop], phasor, out=mixed[start:stop])
+
+    # resample_poly's own filter design, with the cutoff at half_bw instead of
+    # the output Nyquist frequency. float32 taps keep the result in complex64.
+    half_len = 10 * max(up, down)
+    taps = firwin(2 * half_len + 1, half_bw, window=("kaiser", 5.0), fs=fs_wide * up)
+    return resample_poly(mixed, up, down, window=taps.astype(np.float32))
 
 
 @dataclass
@@ -62,6 +74,7 @@ class ChannelDecodeResult:
     spec: ChannelSpec
     iq_samples: int
     result: DecodeResult
+    rssi_db: float = float("nan")  # power of the extracted channel, dBFS
 
 
 def decode_channels(
@@ -72,8 +85,15 @@ def decode_channels(
     fs_out: float = dsp.DEFAULT_INPUT_FS,
     max_workers: int = 4,
     progress: Callable[[str], None] | None = None,
+    capture_start_monotonic_ns: int | None = None,
 ) -> list[ChannelDecodeResult]:
-    """For each channel: extract → decode. Parallel via ``ThreadPoolExecutor``."""
+    """For each channel: extract → decode. Parallel via ``ThreadPoolExecutor``.
+
+    Each worker holds one complex64 copy of the capture while it extracts;
+    ``max_workers=1`` bounds memory for long captures. With
+    ``capture_start_monotonic_ns``, Clock-Time receive times refer to the
+    first sample of the wide capture, as for a capture at the station itself.
+    """
 
     def emit(msg: str) -> None:
         if progress:
@@ -82,9 +102,10 @@ def decode_channels(
     def worker(spec: ChannelSpec) -> ChannelDecodeResult:
         emit(f"channel {spec.label or f'{spec.freq_hz / 1e6:.2f}MHz'}: extract")
         iq_chan = extract_channel(iq_wide, fs_wide, f_center, spec.freq_hz, fs_out=fs_out)
+        rssi_db = float(10 * np.log10(float(np.mean(np.abs(iq_chan) ** 2)) + 1e-12))
         emit(f"channel {spec.label or f'{spec.freq_hz / 1e6:.2f}MHz'}: decode")
-        res = decode_iq(iq_chan, fs=fs_out)
-        return ChannelDecodeResult(spec=spec, iq_samples=len(iq_chan), result=res)
+        res = decode_iq(iq_chan, fs=fs_out, capture_start_monotonic_ns=capture_start_monotonic_ns)
+        return ChannelDecodeResult(spec=spec, iq_samples=len(iq_chan), result=res, rssi_db=rssi_db)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = list(pool.map(worker, channels))
@@ -109,3 +130,38 @@ def required_bandwidth(freqs_hz: Sequence[float], guard_hz: float = 200_000.0) -
 def fits_in_window(freqs_hz: Sequence[float], fs_wide: float, guard_hz: float = 200_000.0) -> bool:
     """Whether all stations fit inside a single capture at ``fs_wide``."""
     return required_bandwidth(freqs_hz, guard_hz=guard_hz) <= fs_wide
+
+
+def outside_capture(
+    freqs_hz: Sequence[float], fs_wide: float, f_center: float, guard_hz: float = 200_000.0
+) -> list[float]:
+    """The stations closer than ``guard_hz`` to the edges of a capture at ``f_center``."""
+    reach = fs_wide / 2 - guard_hz
+    return [f for f in freqs_hz if abs(f - f_center) > reach]
+
+
+def choose_center(
+    freqs_hz: Sequence[float],
+    fs_wide: float,
+    guard_hz: float = 200_000.0,
+    dc_clearance_hz: float = 150_000.0,
+) -> float:
+    """A capture centre for stations that fit in ``fs_wide``.
+
+    The receiver's DC offset appears at the centre, so prefer the point
+    nearest the midpoint that is at least ``dc_clearance_hz`` from every
+    station, while each station stays ``guard_hz`` inside the capture. Return
+    the midpoint when no such point exists.
+    """
+    if not fits_in_window(freqs_hz, fs_wide, guard_hz=guard_hz):
+        raise ValueError("the stations do not fit in one capture at fs_wide")
+    reach = fs_wide / 2 - guard_hz
+    low, high = max(freqs_hz) - reach, min(freqs_hz) + reach
+    middle = auto_center(freqs_hz)
+
+    def clear(center: float) -> bool:
+        return all(abs(f - center) >= dc_clearance_hz for f in freqs_hz)
+
+    edges = [f + side * dc_clearance_hz for f in freqs_hz for side in (-1, 1)]
+    options = [c for c in (middle, low, high, *edges) if low <= c <= high and clear(c)]
+    return min(options, key=lambda c: abs(c - middle), default=middle)

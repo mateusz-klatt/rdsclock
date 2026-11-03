@@ -5,11 +5,14 @@ from datetime import UTC, datetime
 import numpy as np
 import pytest
 
+from rdsclock import channelizer
 from rdsclock.channelizer import (
     ChannelSpec,
     auto_center,
+    choose_center,
     decode_channels,
     extract_channel,
+    outside_capture,
     required_bandwidth,
 )
 from rdsclock.rds_groups import encode_group_4a, encode_ps_groups
@@ -74,6 +77,43 @@ class TestExtractChannel:
         mean_abs = float(np.mean(np.abs(chan[200:])))
         assert 0.7 < mean_abs < 1.3
 
+    def test_mixing_blocks_join_without_phase_jumps(self, monkeypatch):
+        rng = np.random.default_rng(3)
+        wide = (rng.standard_normal(60_000) + 1j * rng.standard_normal(60_000)).astype(np.complex64)
+        whole = extract_channel(wide, 2_400_000, 102.85e6, 102.4e6)
+        monkeypatch.setattr(channelizer, "_MIX_BLOCK", 7_001)
+        blocks = extract_channel(wide, 2_400_000, 102.85e6, 102.4e6)
+        assert blocks.dtype == np.complex64
+        np.testing.assert_allclose(blocks, whole, rtol=0, atol=1e-5)
+
+    def test_output_sample_k_belongs_to_input_time_k_over_fs_out(self):
+        # Clock-Time receive times count output samples from the capture start.
+        fs_wide, f_center, f_channel = 2_400_000, 102.85e6, 102.4e6
+        n = np.arange(240_000)
+        onset = 120_000
+        tone = np.exp(2j * np.pi * (f_channel - f_center) * n / fs_wide)
+        wide = np.where(n >= onset, tone, 0).astype(np.complex64)
+        chan = extract_channel(wide, fs_wide, f_center, f_channel)
+        assert int(np.argmax(np.abs(chan) >= 0.5)) == pytest.approx(
+            onset * 250_000 / fs_wide, abs=1
+        )
+
+    def test_decode_channels_measures_power_and_passes_the_capture_start(self, monkeypatch):
+        starts = []
+
+        def decode(iq, fs, capture_start_monotonic_ns=None):
+            starts.append(capture_start_monotonic_ns)
+            return "decoded"
+
+        monkeypatch.setattr(channelizer, "decode_iq", decode)
+        wide = np.full(48_000, 0.1, dtype=np.complex64)
+        (result,) = decode_channels(
+            wide, 2_400_000, 100e6, [ChannelSpec(100e6)], capture_start_monotonic_ns=123
+        )
+        assert starts == [123]
+        assert result.result == "decoded"
+        assert result.rssi_db == pytest.approx(-20.0, abs=0.5)
+
 
 class TestHelpers:
     def test_auto_center(self):
@@ -82,6 +122,26 @@ class TestHelpers:
     def test_required_bandwidth(self):
         bw = required_bandwidth([95.5e6, 97.7e6], guard_hz=200_000)
         assert bw == pytest.approx(2.2e6 + 2 * 200_000)
+
+    def test_choose_center_keeps_the_dc_offset_clear_of_every_station(self):
+        freqs = [102.0e6, 102.4e6, 103.0e6]
+        center = choose_center(freqs, 2_400_000)
+        assert center == pytest.approx(102.55e6)
+        assert min(abs(f - center) for f in freqs) == pytest.approx(150_000)
+        assert outside_capture(freqs, 2_400_000, center) == []
+
+    def test_choose_center_moves_off_a_lone_station(self):
+        assert choose_center([100.0e6], 2_400_000) == pytest.approx(99.85e6)
+
+    def test_choose_center_falls_back_to_the_middle(self):
+        assert choose_center([100.0e6, 100.2e6], 1_000_000) == pytest.approx(100.1e6)
+
+    def test_choose_center_refuses_stations_that_do_not_fit(self):
+        with pytest.raises(ValueError, match="do not fit"):
+            choose_center([90.0e6, 103.0e6], 2_400_000)
+
+    def test_outside_capture_names_stations_near_the_edges(self):
+        assert outside_capture([102.0e6, 103.0e6], 2_400_000, 104.0e6) == [102.0e6]
 
 
 class TestMultiStationSynthetic:

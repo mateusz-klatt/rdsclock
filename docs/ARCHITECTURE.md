@@ -66,10 +66,13 @@ each implemented in `dsp.py` and orchestrated by `decoder.py`:
 7. **Symbol LPF** — zero-phase `filtfilt` at 4 kHz cut-off (falls
    back to `lfilter` for short streams).
 8. **Costas loop** — second-order BPSK phase tracker.
-9. **Clock recovery** — two parallel methods race:
-   - best-symbol-offset (energy maximisation),
-   - Mueller–Müller (closed-loop timing recovery).
-   The method that yields more groups wins.
+9. **Clock recovery** — the biphase matched-filter output is sampled at
+   each of the 16 symbol offsets, and the offset that yields the most groups
+   wins. Long streams choose a fresh offset every 4096 bits (about 3.4 s):
+   a station's bit clock can run tens of ppm away from the receiver's sample
+   clock, and one offset for a 75-second capture slips by whole bits. Streams
+   too short for the sweep fall back to best-symbol-offset (energy
+   maximisation) raced against Mueller–Müller.
 10. **Hard slice + differential decode** — recover data bits.
 11. **Block hunt** — `find_groups_in_bitstream` slides over the
     bitstream looking for four consecutive valid blocks; enforces
@@ -146,12 +149,24 @@ an additional independent attribution check.
   recording `dwell_s` seconds per station and feeding decoded CT
   into the consensus engine. After every cycle the operator-facing
   status block is rendered (see `render_status`).
+- **WIDE** (`ReconConfig.wide_freqs_hz`, CLI `--wide`): stations that fit in
+  one capture are recorded together in both phases. An acquisition is one
+  `scan_dwell_s` capture around `wide_center()`, a maintenance cycle one
+  `dwell_s` capture. `channelizer.decode_channels` extracts and decodes every
+  station from it, one at a time: each extraction mixes the station to DC block
+  by block and decimates with one centred polyphase filter, so it holds a
+  single complex64 copy of the capture, and channel sample times count from
+  the capture start. All stations see the same minute edge, and a cycle lasts
+  one dwell instead of one per station. The watchlist keeps every station with
+  RDS, not only those with CT, because the capture contains them all anyway.
 
 Every operator message also has a typed counterpart, delivered through
 `on_event`: `recon_started`, `acquisition_started`, one `scan_step` per
 tuning point (including points below the RSSI threshold),
 `watchlist_updated`, `maintenance_started`, one `hop_result` per station,
-`cycle_completed` and `recon_stopped`. `cycle_completed` carries the data
+`cycle_completed` and `recon_stopped`. In WIDE mode `acquisition_started` and
+`maintenance_started` also carry the capture centre and sample rate, and every
+station of a capture produces a `hop_result`. `cycle_completed` carries the data
 behind the status block: the consensus result, the watchlist and one row per
 track. The loop evaluates the consensus once per cycle and passes the result
 to both outputs, because every evaluation updates trust scores.
