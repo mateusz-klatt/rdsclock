@@ -51,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Date each capture by when its samples arrived. While the client decodes,
+  rtl_tcp queues samples and then sends them faster than real time, and the
+  drain could stop between two bursts of that backlog: the first seconds of a
+  capture were older than its start time, and every Clock-Time receive time
+  from it was late by as much. `recon --wide`, which decodes for about 45 s
+  between captures, was exposed every cycle. The start now moves back to the
+  earliest time that every read allows; a sample lost in the middle of a
+  capture cannot move it later, as anchoring at the capture end would. This
+  also removes up to one rtl_tcp transfer of lateness from other captures
+  (up to 0.52 s at 250 kS/s). `FreshCapture` gains `capture_end_monotonic_ns`,
+  `queued_s` and `backlogged`, `hop_result` gains `queued_s` (JSON Lines schema
+  1, additive), and verbose output names every backlogged capture.
 - Long captures choose a fresh symbol offset every 4096 bits (about 3.4 s).
   A single offset slipped by whole bits when a station's bit clock ran tens of
   ppm away from the receiver's: in one live 75-second capture, Eska ROCK went

@@ -25,7 +25,7 @@ class TestCmdLive:
         assert "Recording" in out
         assert "Groups:" in out
 
-    def test_with_manual_gain_and_carrier(self, fake_rtl_tcp, tmp_path):
+    def test_with_manual_gain_and_carrier(self, fake_rtl_tcp, tmp_path, capsys):
         save_path = tmp_path / "saved.iq"
         rc = main(
             [
@@ -51,6 +51,7 @@ class TestCmdLive:
         )
         assert rc == 0
         assert save_path.exists()
+        assert "queued when the capture began:" in capsys.readouterr().out
 
 
 class TestCmdScan:

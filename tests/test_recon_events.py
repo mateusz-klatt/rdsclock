@@ -58,6 +58,25 @@ class _Receiver:
         return FreshCapture(iq, time.monotonic_ns(), 0)
 
 
+class _Backlogged(_Receiver):
+    """A ``_Receiver`` whose captures began 2.5 s behind real time."""
+
+    def __init__(self, amplitudes: list[float]):
+        super().__init__(amplitudes)
+        self.captures: list[FreshCapture] = []
+
+    def capture_fresh(self, duration, fs, **kwargs):
+        iq = super().capture_fresh(duration, fs, **kwargs).iq
+        start_ns = time.monotonic_ns() - 2_500_000_000
+        self.captures.append(FreshCapture(iq, start_ns, 0, queued_s=2.5, backlogged=True))
+        return self.captures[-1]
+
+
+BACKLOG_MESSAGE = (
+    ": the capture began 2.5 s behind real time (queued samples); receive times account for it"
+)
+
+
 def _cfg(**overrides) -> recon.ReconConfig:
     settings = {
         "band_start_mhz": 95.5,
@@ -113,6 +132,7 @@ class TestEventToJson:
         assert record["rssi_db"] == -12.5
         assert record["clock_time"]["utc"] == "2026-11-03T12:00:00+00:00"
         assert record["clock_time"]["local_offset_minutes"] == 60
+        assert record["queued_s"] == 0.0
 
     def test_unavailable_consensus_encodes_infinity_as_null(self):
         event = recon.CycleCompleted(
@@ -199,6 +219,40 @@ class TestScanAndHopEvents:
             1,
             1,
         )
+
+    def test_a_backlogged_hop_is_dated_from_its_capture_and_reported(self, monkeypatch):
+        starts: list[int | None] = []
+
+        def decode(iq, fs, capture_start_monotonic_ns=None, **kwargs):
+            starts.append(capture_start_monotonic_ns)
+            return _decode_result(_clock())
+
+        monkeypatch.setattr(recon, "decode_iq", decode)
+        receiver = _Backlogged([1.0])
+        events: list[recon.ReconEvent] = []
+        messages: list[str] = []
+        recon.hop_collect_ct(
+            receiver,
+            [recon.StationCandidate(95.5e6, -10.0, 4, True, 0xCAFE)],
+            _cfg(),
+            TimeConsensus(),
+            progress=messages.append,
+            on_event=events.append,
+        )
+        assert starts == [receiver.captures[0].capture_start_monotonic_ns]
+        assert events[0].queued_s == 2.5
+        assert json.loads(recon.event_to_json(events[0]))["queued_s"] == 2.5
+        assert messages == [
+            "  hop  95.50 MHz" + BACKLOG_MESSAGE,
+            "  hop  95.50 MHz: CT=12:00:00Z groups=4",
+        ]
+
+    def test_a_backlogged_scan_step_is_reported(self, monkeypatch):
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(_clock()))
+        messages: list[str] = []
+        recon.quick_scan_band(_Backlogged([1.0, 0.001]), _cfg(), progress=messages.append)
+        assert messages[0] == "  scan  95.50 MHz" + BACKLOG_MESSAGE
+        assert messages[2] == "  scan  95.60 MHz" + BACKLOG_MESSAGE
 
 
 class TestRunReconEvents:

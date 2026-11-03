@@ -245,6 +245,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         _print_capture_quality(iq)
         if args.verbose:
             print(f"  discarded before capture: {capture.discarded_samples} samples")
+            print(f"  queued when the capture began: {capture.queued_s:.3f} s")
 
     if args.save:
         dsp.write_iq_complex64(iq, args.save)

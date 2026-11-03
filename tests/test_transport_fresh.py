@@ -71,30 +71,48 @@ def test_fm_profile_resets_inherited_receiver_state(socket_client, gain_db, expe
         assert state[4] == expected_gain
 
 
-def _send_on_capture(monkeypatch, client, sender, fresh):
-    """Hold future samples until draining finishes; no timing race is needed."""
+def _send_on_capture(monkeypatch, client, sender, *bursts):
+    """Hold future samples until draining finishes; no timing race is needed.
+
+    Each burst is ``(seconds after the capture read starts, data)``.
+    """
     collecting = threading.Event()
-    read_iq = client.read_iq
+    read_capture = client._read_capture
 
     def mark_capture(*args, **kwargs):
         collecting.set()
-        return read_iq(*args, **kwargs)
+        return read_capture(*args, **kwargs)
 
-    monkeypatch.setattr(client, "read_iq", mark_capture)
+    monkeypatch.setattr(client, "_read_capture", mark_capture)
 
     def send():
-        if collecting.wait(2):
-            sender.sendall(fresh)
+        if not collecting.wait(2):
+            return
+        started = time.monotonic()
+        for after_s, data in bursts:
+            time.sleep(max(0.0, started + after_s - time.monotonic()))
+            sender.sendall(data)
 
     worker = threading.Thread(target=send, daemon=True)
     worker.start()
     return worker
 
 
+FRESH_PAIR = bytes([200, 130])
+
+
+def _real_time(n_samples, sample_rate, *, after_s=0.0, chunk=10):
+    """Bursts of ``chunk`` samples, each sent once its last sample exists."""
+    return [
+        (after_s + (first + chunk) / sample_rate, FRESH_PAIR * chunk)
+        for first in range(0, n_samples, chunk)
+    ]
+
+
 def test_fresh_capture_discards_queued_station_before_full_recording(socket_client, monkeypatch):
     client, sender = socket_client
     sender.sendall(bytes([10, 20]) * 100)
-    worker = _send_on_capture(monkeypatch, client, sender, bytes([200, 130]) * 5)
+    worker = _send_on_capture(monkeypatch, client, sender, (0.0, bytes([200, 130]) * 5))
     before = time.monotonic_ns()
     capture = client.capture_fresh(0.005, 1000, settle_s=0.01, quiet_s=0.01)
     worker.join(1)
@@ -113,7 +131,7 @@ def test_drain_preserves_iq_alignment_across_partial_network_reads(socket_client
     quiet_detected = threading.Event()
     collecting = threading.Event()
     real_select = rtl_tcp.select.select
-    read_iq = client.read_iq
+    read_capture = client._read_capture
 
     def observe_quiet(*args):
         result = real_select(*args)
@@ -123,10 +141,10 @@ def test_drain_preserves_iq_alignment_across_partial_network_reads(socket_client
 
     def mark_capture(*args, **kwargs):
         collecting.set()
-        return read_iq(*args, **kwargs)
+        return read_capture(*args, **kwargs)
 
     monkeypatch.setattr(rtl_tcp.select, "select", observe_quiet)
-    monkeypatch.setattr(client, "read_iq", mark_capture)
+    monkeypatch.setattr(client, "_read_capture", mark_capture)
 
     def send():
         if quiet_detected.wait(2):
@@ -153,11 +171,11 @@ def test_continuously_backlogged_receiver_fails_instead_of_returning_stale_iq(mo
     clock = itertools.count(0, 0.001)
     monkeypatch.setattr(rtl_tcp.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(rtl_tcp.select, "select", lambda *args: ([receiver], [], []))
-    read_iq = Mock()
-    monkeypatch.setattr(client, "read_iq", read_iq)
+    read_capture = Mock()
+    monkeypatch.setattr(client, "_read_capture", read_capture)
     with pytest.raises(RtlTcpDrainTimeoutError, match="no fresh capture boundary"):
         client.capture_fresh(0.1, 250_000, settle_s=0.01, max_drain_s=0.05)
-    read_iq.assert_not_called()
+    read_capture.assert_not_called()
     assert receiver.recv.call_count > 0
 
 
@@ -187,10 +205,86 @@ def test_high_rate_capture_uses_short_gaps_in_a_continuous_stream(socket_client)
         assert len(capture.iq) == 12_000
         assert np.allclose(capture.iq.real, (200 - 127.5) / 127.5)
         assert np.allclose(capture.iq.imag, (130 - 127.5) / 127.5)
+        # A stream that keeps up is not reported, whatever its burst size.
+        assert not capture.backlogged
     finally:
         stop.set()
         worker.join(2)
         assert not worker.is_alive()
+
+
+def _capture_half_a_second(monkeypatch, client, sender, *bursts):
+    worker = _send_on_capture(monkeypatch, client, sender, *bursts)
+    capture = client.capture_fresh(0.5, 1000, settle_s=0, quiet_s=0.01, backlog_threshold_s=0.1)
+    worker.join(1)
+    assert not worker.is_alive()
+    return capture, (capture.capture_end_monotonic_ns - capture.capture_start_monotonic_ns) / 1e9
+
+
+def test_samples_that_arrive_together_are_dated_by_their_duration(socket_client, monkeypatch):
+    # 500 samples at 1 kS/s arrive at once only if they had queued: the last
+    # one exists 0.5 s after the first.
+    client, sender = socket_client
+    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, (0.0, FRESH_PAIR * 500))
+    assert 0.4 <= capture.queued_s <= 0.5
+    assert capture.backlogged
+    assert span_s >= 0.5
+    assert np.allclose(capture.iq.real, (200 - 127.5) / 127.5)
+    assert np.allclose(capture.iq.imag, (130 - 127.5) / 127.5)
+
+
+def test_a_stream_that_keeps_up_is_dated_from_the_read(socket_client, monkeypatch):
+    client, sender = socket_client
+    before = time.monotonic_ns()
+    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, *_real_time(500, 1000))
+    assert capture.queued_s < 0.005
+    assert not capture.backlogged
+    assert before <= capture.capture_start_monotonic_ns
+    assert span_s >= 0.5
+
+
+def test_samples_lost_mid_capture_do_not_move_the_start(socket_client, monkeypatch):
+    # 300 samples never arrive. Dating the capture from its end would make the
+    # 250 samples before the gap 0.3 s late.
+    client, sender = socket_client
+    bursts = _real_time(250, 1000) + _real_time(250, 1000, after_s=0.55)
+    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, *bursts)
+    assert capture.queued_s < 0.005
+    assert span_s - 0.5 >= 0.29  # the lost time shows in the span
+
+
+def test_a_backlog_moves_the_start_back_and_a_later_loss_does_not(socket_client, monkeypatch):
+    # 200 queued samples arrive together, the stream keeps up, then 100 samples
+    # are lost. Only the backlog dates the capture: its end would leave every
+    # sample 0.1 s late.
+    client, sender = socket_client
+    bursts = [
+        (0.0, FRESH_PAIR * 200),
+        *_real_time(150, 1000),
+        *_real_time(150, 1000, after_s=0.25),
+    ]
+    capture, span_s = _capture_half_a_second(monkeypatch, client, sender, *bursts)
+    assert 0.15 <= capture.queued_s <= 0.201
+    assert capture.backlogged
+    assert span_s - 0.5 >= 0.05
+
+
+def test_a_backlog_sent_between_quiet_gaps_is_dated_by_its_arrival(rtl_tcp_factory):
+    # As on the live receiver on 2026-11-03: the drain stops in a gap between
+    # bursts of rtl_tcp's queue, and the capture reads a second of queued
+    # samples faster than real time.
+    with (
+        rtl_tcp_factory(FRESH_PAIR * 4096, backlog_s=1.0) as port,
+        RtlTcpClient("127.0.0.1", port) as client,
+    ):
+        client.set_sample_rate(2_400_000)
+        client.set_frequency(102_850_000)
+        capture = client.capture_fresh(2.0, 2_400_000, settle_s=0)
+    span_s = (capture.capture_end_monotonic_ns - capture.capture_start_monotonic_ns) / 1e9
+    assert span_s - capture.queued_s < 1.5  # the read itself was that much shorter
+    assert capture.backlogged
+    assert 0.6 <= capture.queued_s <= 1.4
+    assert 2.0 <= span_s < 2.3  # dated by arrival, the samples span real time again
 
 
 def test_fresh_capture_reports_eof_during_drain(socket_client):
@@ -199,6 +293,23 @@ def test_fresh_capture_reports_eof_during_drain(socket_client):
     sender.shutdown(socket.SHUT_WR)
     with pytest.raises(OSError, match="socket closed while discarding"):
         client.capture_fresh(0.01, 250_000)
+
+
+def test_eof_during_the_capture_read_closes_the_connection(socket_client, monkeypatch):
+    client, sender = socket_client
+    receiver = client._sock
+    read_capture = client._read_capture
+
+    def end_stream(*args, **kwargs):
+        sender.sendall(FRESH_PAIR * 3)
+        sender.shutdown(socket.SHUT_WR)
+        return read_capture(*args, **kwargs)
+
+    monkeypatch.setattr(client, "_read_capture", end_stream)
+    with pytest.raises(OSError, match="rtl_tcp: socket closed$"):
+        client.capture_fresh(0.005, 1000, settle_s=0, quiet_s=0.001)
+    assert receiver.fileno() == -1
+    assert client._sock is None
 
 
 @pytest.mark.parametrize("phase", ["drain", "read"])
@@ -214,7 +325,7 @@ def test_partial_iq_timeout_requires_reconnect_before_an_aligned_capture(
             sender.sendall(partial_pair)
             expected_error = RtlTcpDrainTimeoutError
         else:
-            worker = _send_on_capture(capture_patch, client, sender, partial_pair)
+            worker = _send_on_capture(capture_patch, client, sender, (0.0, partial_pair))
             expected_error = TimeoutError
         with pytest.raises(expected_error):
             client.capture_fresh(0.002, 1000, settle_s=0, quiet_s=0.001, max_drain_s=0.02)
@@ -234,7 +345,7 @@ def test_partial_iq_timeout_requires_reconnect_before_an_aligned_capture(
             rtl_tcp.socket, "create_connection", lambda *args, **kwargs: new_receiver
         )
         client.connect()
-        worker = _send_on_capture(monkeypatch, client, new_sender, bytes([200, 130]) * 5)
+        worker = _send_on_capture(monkeypatch, client, new_sender, (0.0, bytes([200, 130]) * 5))
         capture = client.capture_fresh(0.005, 1000, settle_s=0, quiet_s=0.001)
         worker.join(1)
         assert not worker.is_alive()
@@ -259,17 +370,22 @@ def test_capture_interruption_closes_connection(socket_client, monkeypatch, phas
         monkeypatch.setattr(client, "_discard_until_quiet", interrupt)
     else:
         monkeypatch.setattr(client, "_discard_until_quiet", lambda *args: 0)
-        monkeypatch.setattr(client, "read_iq", interrupt)
+        monkeypatch.setattr(client, "_read_capture", interrupt)
     with pytest.raises(KeyboardInterrupt):
         client.capture_fresh(0.005, 1000)
     assert receiver.fileno() == -1
     assert client._sock is None
 
 
-def test_invalid_capture_arguments_leave_connection_usable(socket_client):
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [("duration_s", -1), ("backlog_threshold_s", -0.1), ("backlog_threshold_s", float("nan"))],
+)
+def test_invalid_capture_arguments_leave_connection_usable(socket_client, argument, value):
     client, sender = socket_client
-    with pytest.raises(ValueError, match="duration_s"):
-        client.capture_fresh(-1, 1000)
+    arguments = {"duration_s": 0.005, "sample_rate": 1000, argument: value}
+    with pytest.raises(ValueError, match=argument):
+        client.capture_fresh(**arguments)
     sender.sendall(bytes([200, 130]))
     iq = client.read_iq(1, settle_s=0)
     assert np.allclose(iq.real, (200 - 127.5) / 127.5)
