@@ -113,7 +113,7 @@ class StationTrack:
     @property
     def label(self) -> str:
         pi_str = f"PI=0x{self.pi:04X}" if self.pi is not None else "PI=?"
-        return f"{self.freq_hz / 1e6:.2f}MHz {pi_str}"
+        return f"{self.latest_freq_hz / 1e6:.2f}MHz {pi_str}"
 
     @property
     def last(self) -> StationObservation | None:
