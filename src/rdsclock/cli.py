@@ -12,6 +12,7 @@ Sub-commands:
 
 import argparse
 import os
+import signal
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -654,10 +655,17 @@ class _EventReaderClosedError(Exception):
 
 
 def _write_event_line(event: ReconEvent) -> None:
+    line = event_to_json(event) + "\n"
+    # Hold SIGINT until the whole record is out: an interrupted write would leave
+    # half a line, and the recon_stopped record would be appended to it.
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
     try:
-        print(event_to_json(event), flush=True)
+        sys.stdout.write(line)
+        sys.stdout.flush()
     except BrokenPipeError as exc:
         raise _EventReaderClosedError from exc
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def _print_stderr(message: str) -> None:
