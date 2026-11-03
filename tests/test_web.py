@@ -2,6 +2,8 @@
 
 import http.client
 import json
+import os
+import signal
 import socket
 import sys
 import threading
@@ -251,6 +253,33 @@ class TestRunWeb:
             assert web.run_web(receiver_command(tmp_path), "127.0.0.1", port) == 2
         assert f"cannot listen on 127.0.0.1:{port}" in capsys.readouterr().err
 
+    def test_port_outside_the_tcp_range_is_reported(self, tmp_path, capsys):
+        assert web.run_web(receiver_command(tmp_path), "127.0.0.1", 70000) == 2
+        assert "cannot listen on 127.0.0.1:70000" in capsys.readouterr().err
+
+    def test_sigusr1_requests_a_rescan_and_sigterm_stops_serving(self, tmp_path, monkeypatch):
+        before = signal.getsignal(signal.SIGTERM)
+        served: list[web.WebDashboard] = []
+
+        def serve(self):
+            served.append(self)
+            deadline = time.monotonic() + 15
+            while not self.state.can_rescan() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            os.kill(os.getpid(), signal.SIGUSR1)
+            while self.state.iteration < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(15)  # the SIGTERM handler interrupts this
+
+        monkeypatch.setattr(web.WebDashboard, "serve_forever", serve)
+        assert web.run_web(receiver_command(tmp_path), "127.0.0.1", 0) == 0
+        (dashboard,) = served
+        assert dashboard.state.iteration == 2
+        assert "Rescan requested; it starts after the current cycle." in dashboard.log
+        assert dashboard.receiver.process.returncode == 0
+        assert signal.getsignal(signal.SIGTERM) is before
+
 
 class TestReconWebCli:
     def test_child_runs_jsonl_and_the_server_gets_the_address(self, monkeypatch):
@@ -272,3 +301,10 @@ class TestReconWebCli:
         with pytest.raises(SystemExit) as exc:
             cli.main(["recon", "--web", "--jsonl"])
         assert exc.value.code == 2
+
+    @pytest.mark.parametrize("port", ["-1", "65536", "http"])
+    def test_web_port_must_be_a_tcp_port(self, port, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["recon", "--web", f"--web-port={port}"])
+        assert exc.value.code == 2
+        assert "--web-port" in capsys.readouterr().err

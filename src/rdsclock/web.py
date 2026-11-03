@@ -275,11 +275,18 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload).encode(), "application/json")
 
 
+def _stop_serving(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt  # SIGTERM stops the server and the receiver as Ctrl+C does
+
+
 def run_web(command: list[str], host: str, port: int) -> int:
-    """Serve the dashboard until Ctrl+C; return the exit status."""
+    """Serve the dashboard until Ctrl+C or SIGTERM; return the exit status.
+
+    SIGUSR1 requests a rescan, as it does for live recon without a dashboard.
+    """
     try:
         dashboard = WebDashboard(command, host, port)
-    except OSError as exc:
+    except (OSError, OverflowError) as exc:  # OverflowError: port outside 0-65535
         print(f"error: cannot listen on {host}:{port}: {exc}", file=sys.stderr)
         return 2
     print(f"Dashboard at {dashboard.url} (Ctrl+C stops it and the receiver)", file=sys.stderr)
@@ -289,11 +296,23 @@ def run_web(command: list[str], host: str, port: int) -> int:
             "address can watch it. Rescans are accepted only from this machine.",
             file=sys.stderr,
         )
-    dashboard.start()
+
+    def rescan_soon(signum: int, frame: object) -> None:
+        # The handler interrupts the main thread, which may hold the dashboard
+        # lock; a short-lived thread takes it instead.
+        threading.Thread(target=dashboard.request_rescan, daemon=True).start()
+
+    previous = {
+        signal.SIGUSR1: signal.signal(signal.SIGUSR1, rescan_soon),
+        signal.SIGTERM: signal.signal(signal.SIGTERM, _stop_serving),
+    }
     try:
+        dashboard.start()
         dashboard.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
         dashboard.close()
     return 1 if dashboard.failed else 0
