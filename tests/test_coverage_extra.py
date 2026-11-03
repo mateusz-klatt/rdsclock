@@ -915,7 +915,10 @@ class TestChannelizerCoverage:
             "rdsclock.channelizer.extract_channel",
             lambda iq_wide, fs_wide, f_center, f_channel, fs_out: np.ones(8, dtype=np.complex64),
         )
-        monkeypatch.setattr("rdsclock.channelizer.decode_iq", lambda iq_chan, fs: _decode_result())
+        monkeypatch.setattr(
+            "rdsclock.channelizer.decode_iq",
+            lambda iq_chan, fs, capture_start_monotonic_ns=None: _decode_result(),
+        )
         results = decode_channels(
             iq_wide=np.ones(16, dtype=np.complex64),
             fs_wide=250_000,

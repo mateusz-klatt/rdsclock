@@ -256,7 +256,7 @@ def test_channelizer_edge_helpers_and_progress(monkeypatch):
     with pytest.raises(ValueError, match="non-empty"):
         channelizer.required_bandwidth([])
 
-    monkeypatch.setattr(channelizer, "decode_iq", lambda iq, fs: _decode_result(groups=0))
+    monkeypatch.setattr(channelizer, "decode_iq", lambda iq, fs, **kwargs: _decode_result(groups=0))
     messages: list[str] = []
     results = channelizer.decode_channels(
         iq_wide=np.ones(512, dtype=np.complex64),

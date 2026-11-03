@@ -7,12 +7,13 @@ Sub-commands:
     scan       — sweep the FM band, attempt to decode each station
     multi      — multi-station decode (auto WIDE if in range, otherwise HOP)
     demo       — self-contained 3-station multi-channel demo (no SDR needed)
-    recon      — continuous passive time receiver (live or offline mode)
+    recon      — continuous passive time receiver (live or offline mode; HOP or WIDE)
 """
 
 import argparse
 import contextlib
 import importlib.util
+import math
 import os
 import signal
 import sys
@@ -32,12 +33,20 @@ from .channelizer import (
     auto_center,
     decode_channels,
     fits_in_window,
+    outside_capture,
     required_bandwidth,
 )
 from .decoder import decode_file, decode_iq
 from .plot import plot_iq_waterfall, plot_mpx_spectrum
 from .rds_groups import StationInfo, encode_group_4a, encode_ps_groups
-from .recon import ReconConfig, ReconEvent, event_to_json, run_recon, run_recon_offline
+from .recon import (
+    WIDE_SAMPLE_RATE,
+    ReconConfig,
+    ReconEvent,
+    event_to_json,
+    run_recon,
+    run_recon_offline,
+)
 from .rtl_tcp import RtlTcpClient
 from .synth import DEFAULT_FS, synthesize_fm_iq
 
@@ -757,6 +766,9 @@ _RECON_CHILD_OPTIONS = (
     ("--port", "port"),
     ("--gain", "gain"),
     ("--settle-seconds", "settle_seconds"),
+    ("--wide", "wide"),
+    ("--center", "center"),
+    ("--fs", "fs"),
 )
 
 
@@ -834,11 +846,59 @@ def _recon_config(args: argparse.Namespace) -> ReconConfig:
         host=args.host,
         port=args.port,
         iterations=args.iterations,
+        wide_freqs_hz=() if args.wide is None else _wide_freqs_hz(args.wide),
+        wide_center_hz=None if args.center is None else args.center * 1e6,
+        wide_sample_rate=WIDE_SAMPLE_RATE if args.fs is None else args.fs,
     )
 
 
+def _wide_freqs_hz(text: str) -> tuple[float, ...]:
+    """The stations of ``--wide`` in Hz; ``ValueError`` for an unusable list."""
+    freqs_hz = tuple(float(part) * 1e6 for part in text.split(","))
+    if not all(math.isfinite(freq_hz) and freq_hz > 0 for freq_hz in freqs_hz):
+        raise ValueError("frequencies must be positive numbers in MHz")
+    if len(set(freqs_hz)) != len(freqs_hz):
+        raise ValueError("list each station once")
+    return freqs_hz
+
+
+def _recon_wide_error(args: argparse.Namespace) -> str | None:
+    """Why the WIDE options cannot be used, or ``None`` when they can."""
+    if args.wide is None:
+        if args.center is not None or args.fs is not None:
+            return "--center and --fs apply only to --wide"
+        return None
+    if args.from_dir:
+        return "--wide applies to live reception, not --from-dir"
+    try:
+        freqs_hz = _wide_freqs_hz(args.wide)
+    except ValueError as exc:
+        return f"--wide: {exc}"
+    fs = WIDE_SAMPLE_RATE if args.fs is None else args.fs
+    if fs < dsp.DEFAULT_INPUT_FS:
+        return f"--fs must be at least {dsp.DEFAULT_INPUT_FS} S/s"
+    if args.center is None:
+        if not fits_in_window(freqs_hz, fs):
+            return (
+                f"the --wide stations need {required_bandwidth(freqs_hz) / 1e6:.2f} MS/s "
+                f"with guard bands, more than --fs {fs / 1e6:.2f} MS/s"
+            )
+        return None
+    outside = outside_capture(freqs_hz, fs, args.center * 1e6)
+    if outside:
+        return (
+            f"{outside[0] / 1e6:.2f} MHz is too close to the edge of a {fs / 1e6:.2f} MS/s "
+            f"capture centred at {args.center:.3f} MHz"
+        )
+    return None
+
+
 def cmd_recon(args: argparse.Namespace) -> int:
-    """Continuous passive time receiver: scan → hop → consensus → display."""
+    """Continuous passive time receiver: scan → hop (or one WIDE capture) → consensus."""
+    error = _recon_wide_error(args)
+    if error is not None:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     if args.tui:
         return _recon_tui(args)
     if args.web:
@@ -990,7 +1050,7 @@ def build_parser() -> argparse.ArgumentParser:
     # recon (continuous passive time receiver)
     pr = sub.add_parser(
         "recon",
-        help="Passive time receiver — multi-source consensus + hop scan",
+        help="Passive time receiver — multi-source consensus + hop scan or WIDE capture",
     )
     pr.add_argument("--start", type=float, default=87.5, help="Band start (MHz)")
     pr.add_argument("--end", type=float, default=108.0, help="Band end (MHz)")
@@ -1034,6 +1094,25 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--gain", type=float, default=None)
     pr.add_argument(
         "--settle-seconds", type=float, default=0.3, help="Discard incoming IQ after retuning (s)"
+    )
+    pr.add_argument(
+        "--wide",
+        default=None,
+        metavar="FREQS",
+        help="Record these stations (MHz, comma-separated) together from one wideband "
+        "capture per cycle, instead of scanning the band and hopping",
+    )
+    pr.add_argument(
+        "--center",
+        type=float,
+        default=None,
+        help="WIDE capture centre in MHz (default: near the middle, clear of every station)",
+    )
+    pr.add_argument(
+        "--fs",
+        type=int,
+        default=None,
+        help=f"WIDE capture sample rate in S/s (default {WIDE_SAMPLE_RATE})",
     )
     pr.add_argument(
         "--from-dir",

@@ -105,6 +105,31 @@ verify absolute UTC. The displayed uncertainty is a model estimate, not a
 calibrated error bound. Receipt timestamps are host estimates, and their
 accuracy includes uncharacterized receiver and network delays.
 
+### WIDE: several stations at once
+
+When the stations fit inside the receiver bandwidth, `--wide` records them
+together instead of scanning the band and hopping between them:
+
+```bash
+rdsclock recon --wide 102.0,102.4,103.0 --center 102.85 --gain 28 --dwell 75
+```
+
+Every cycle is then one capture of `--dwell` seconds at 2.4 MS/s (`--fs`)
+around `--center`. The channelizer separates the stations, so all of them see
+the same minute edge, and a cycle of three stations takes one dwell instead of
+three. An acquisition is a capture of `--scan-dwell` seconds that decodes the
+listed stations; the watchlist keeps every station with RDS. Without
+`--center`, the centre lies near the middle but at least 150 kHz from every
+station, away from the receiver's DC offset. The stations need their span plus
+a 200 kHz guard band on each side, and `recon` refuses a list that does not
+fit.
+
+A 75-second capture at 2.4 MS/s takes about 1.4 GB, and decoding one station
+at a time adds as much again: plan for about 5 GB of memory. `rtl_tcp` sends
+4.8 MB/s, so a remote receiver needs a link that sustains it. Set the gain
+explicitly, since the stations share one 8-bit converter. `--start`, `--end`,
+`--step` and `--rssi-threshold` apply to band scans only.
+
 ### Terminal dashboard
 
 Install the optional extra (`pip install 'rdsclock[tui]'`, or `--extra tui` with
@@ -117,7 +142,8 @@ rdsclock recon --start 87.5 --end 108 --max-stations 5 --tui
 The dashboard starts `recon --jsonl` as a child process with the same receiver
 settings and shows:
 
-- the phase, with scan or hop progress and the time to the next scheduled rescan;
+- the phase, with scan or hop progress (with `--wide`, the capture centre) and
+  the time to the next scheduled rescan;
 - the consensus, advanced every second between cycles, with the current host
   clock difference, outliers, the time since the receiver assessed its trust
   level and the same uncertainty caveat as the text display. Once the median CT
@@ -194,6 +220,12 @@ including the consensus and its trust level. Times are ISO 8601, and
 unavailable values such as an infinite uncertainty are `null`. A stream that
 ends without `recon_stopped` was stopped by an error; check stderr and the
 exit status. `--jsonl` covers live reception only, not `--from-dir`.
+
+With `--wide`, `acquisition_started` and `maintenance_started` also carry
+`wide_center_hz` and `wide_sample_rate`, which are `null` for band scans and
+hops. A WIDE acquisition reports the span of the listed stations with a
+`scan_step_mhz` of 0, followed by one `scan_step` per station, and every
+station of a WIDE capture produces a `hop_result`.
 
 ## 6. Adjusting the Wrist Watch
 
