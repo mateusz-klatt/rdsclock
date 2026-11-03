@@ -234,6 +234,21 @@ class TestRunReconEvents:
         assert track["pi"] == 0xCAFE
         assert datetime.fromisoformat(track["estimated_utc"]).tzinfo is not None
 
+    def test_requested_rescan_starts_an_acquisition(self, monkeypatch, rtl_tcp_factory):
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(_clock()))
+        requests = iter([False, True])
+        events: list[recon.ReconEvent] = []
+        with rtl_tcp_factory(bytes([180, 128] * 256)) as port:
+            cfg = _cfg(band_end_mhz=95.5, iterations=2, host="127.0.0.1", port=port)
+            recon.run_recon(
+                cfg,
+                on_status=lambda message: None,
+                on_event=events.append,
+                rescan_requested=lambda: next(requests),
+            )
+        scans = [event.iteration for event in events if event.kind == "acquisition_started"]
+        assert scans == [1, 2]
+
     def test_interruption_is_reported(self, monkeypatch, rtl_tcp_factory):
         monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(_clock()))
 
@@ -291,6 +306,29 @@ class TestRunReconEvents:
         assert log.index("cycle_completed") < log.index("status block")
 
 
+class TestRescanSignal:
+    def test_each_sigusr1_requests_one_rescan(self):
+        before = signal.getsignal(signal.SIGUSR1)
+        with cli._rescan_on_sigusr1() as rescan_requested:
+            assert not rescan_requested()
+            os.kill(os.getpid(), signal.SIGUSR1)
+            assert rescan_requested()
+            assert not rescan_requested()
+        assert signal.getsignal(signal.SIGUSR1) == before
+
+    @pytest.mark.parametrize("extra", [[], ["--jsonl"]])
+    def test_live_recon_listens_for_sigusr1(self, monkeypatch, extra):
+        seen: list[bool] = []
+
+        def run_recon(cfg, rescan_requested, **callbacks):
+            os.kill(os.getpid(), signal.SIGUSR1)
+            seen.append(rescan_requested())
+
+        monkeypatch.setattr(cli, "run_recon", run_recon)
+        assert cli.main(["recon", *extra]) == 0
+        assert seen == [True]
+
+
 class TestReconJsonlCli:
     def test_interrupt_during_a_write_waits_for_the_whole_record(self, monkeypatch):
         written: list[str] = []
@@ -318,7 +356,7 @@ class TestReconJsonlCli:
         assert "--from-dir" in captured.err
 
     def test_closed_reader_stops_quietly(self, monkeypatch, tmp_path, capsys):
-        def run_recon(cfg, on_status, on_progress, on_event):
+        def run_recon(cfg, on_status, on_progress, on_event, rescan_requested):
             on_event(recon.ReconStarted(tuner_type=5, gain_count=29))
             raise AssertionError("no events after the reader has gone")
 

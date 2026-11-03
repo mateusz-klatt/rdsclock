@@ -39,6 +39,9 @@ plot = [
 fast = [
     "numba>=0.60.0",
 ]
+tui = [
+    "textual>=8.2",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-timeout>=2.1.0",

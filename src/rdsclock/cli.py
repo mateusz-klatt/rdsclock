@@ -11,10 +11,13 @@ Sub-commands:
 """
 
 import argparse
+import contextlib
+import importlib.util
 import os
 import signal
 import sys
 import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from math import gcd
 
@@ -672,6 +675,39 @@ def _print_stderr(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+class _RescanRequests:
+    """SIGUSR1 deliveries, consumed by the live recon loop between cycles.
+
+    The handler only counts and the loop only records what it has seen, so a
+    signal that arrives while the loop polls is never lost.
+    """
+
+    def __init__(self) -> None:
+        self.received = 0
+        self.seen = 0
+
+    def handle(self, signum: int, frame: object) -> None:
+        self.received += 1
+
+    def consume(self) -> bool:
+        received = self.received
+        if received == self.seen:
+            return False
+        self.seen = received
+        return True
+
+
+@contextlib.contextmanager
+def _rescan_on_sigusr1() -> Iterator[Callable[[], bool]]:
+    """While active, SIGUSR1 asks the live loop for a new acquisition scan."""
+    requests = _RescanRequests()
+    previous = signal.signal(signal.SIGUSR1, requests.handle)
+    try:
+        yield requests.consume
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+
+
 def _recon_jsonl(cfg: ReconConfig, args: argparse.Namespace) -> int:
     """Events go to stdout, one JSON object per line; operator text to stderr."""
     if args.from_dir:
@@ -679,7 +715,14 @@ def _recon_jsonl(cfg: ReconConfig, args: argparse.Namespace) -> int:
         return 2
     on_progress = (lambda m: _print_stderr(f"  ▸ {m}")) if args.verbose else None
     try:
-        run_recon(cfg, on_status=_print_stderr, on_progress=on_progress, on_event=_write_event_line)
+        with _rescan_on_sigusr1() as rescan_requested:
+            run_recon(
+                cfg,
+                on_status=_print_stderr,
+                on_progress=on_progress,
+                on_event=_write_event_line,
+                rescan_requested=rescan_requested,
+            )
     except _EventReaderClosedError:
         # Stop quietly. Point stdout at /dev/null so the interpreter's final
         # flush does not report the closed pipe a second time.
@@ -690,9 +733,55 @@ def _recon_jsonl(cfg: ReconConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_recon(args: argparse.Namespace) -> int:
-    """Continuous passive time receiver: scan → hop → consensus → display."""
-    cfg = ReconConfig(
+# Receiver settings that the dashboard passes on to its ``recon --jsonl`` child.
+_RECON_CHILD_OPTIONS = (
+    ("--start", "start"),
+    ("--end", "end"),
+    ("--step", "step"),
+    ("--scan-dwell", "scan_dwell"),
+    ("--dwell", "dwell"),
+    ("--idle", "idle"),
+    ("--rescan-min", "rescan_min"),
+    ("--max-stations", "max_stations"),
+    ("--rssi-threshold", "rssi_threshold"),
+    ("--precision", "precision"),
+    ("--iterations", "iterations"),
+    ("--host", "host"),
+    ("--port", "port"),
+    ("--gain", "gain"),
+    ("--settle-seconds", "settle_seconds"),
+)
+
+
+def _recon_child_argv(args: argparse.Namespace) -> list[str]:
+    """Arguments for a ``recon --jsonl`` child with the same receiver settings."""
+    argv = ["recon", "--jsonl"]
+    for flag, dest in _RECON_CHILD_OPTIONS:
+        value = getattr(args, dest)
+        if value is not None:
+            argv.append(f"{flag}={value}")
+    return argv
+
+
+def _recon_tui(args: argparse.Namespace) -> int:
+    """Run the terminal dashboard, which reads a ``recon --jsonl`` child process."""
+    if args.from_dir:
+        print("error: --tui applies to live reception, not --from-dir", file=sys.stderr)
+        return 2
+    if importlib.util.find_spec("textual") is None:
+        print(
+            "error: the dashboard requires the optional 'textual' dependency; "
+            "install with: pip install 'rdsclock[tui]'",
+            file=sys.stderr,
+        )
+        return 2
+    from .tui import run_dashboard
+
+    return run_dashboard([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)])
+
+
+def _recon_config(args: argparse.Namespace) -> ReconConfig:
+    return ReconConfig(
         band_start_mhz=args.start,
         band_end_mhz=args.end,
         scan_step_mhz=args.step,
@@ -709,13 +798,21 @@ def cmd_recon(args: argparse.Namespace) -> int:
         port=args.port,
         iterations=args.iterations,
     )
+
+
+def cmd_recon(args: argparse.Namespace) -> int:
+    """Continuous passive time receiver: scan → hop → consensus → display."""
+    if args.tui:
+        return _recon_tui(args)
+    cfg = _recon_config(args)
     if args.jsonl:
         return _recon_jsonl(cfg, args)
     on_progress = (lambda m: print(f"  ▸ {m}")) if args.verbose else None
     if args.from_dir:
         run_recon_offline(cfg, args.from_dir, on_progress=on_progress, limit_files=args.limit_files)
     else:
-        run_recon(cfg, on_progress=on_progress)
+        with _rescan_on_sigusr1() as rescan_requested:
+            run_recon(cfg, on_progress=on_progress, rescan_requested=rescan_requested)
     return 0
 
 
@@ -910,10 +1007,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="limit_files",
         help="OFFLINE: maximum number of files to process",
     )
-    pr.add_argument(
+    output = pr.add_mutually_exclusive_group()
+    output.add_argument(
         "--jsonl",
         action="store_true",
         help="Write events to stdout as JSON Lines; operator text goes to stderr",
+    )
+    output.add_argument(
+        "--tui",
+        action="store_true",
+        help="Show a terminal dashboard (optional 'tui' extra) fed by a --jsonl child",
     )
     pr.add_argument("-v", "--verbose", action="store_true")
     pr.set_defaults(func=cmd_recon)

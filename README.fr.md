@@ -167,6 +167,12 @@ consensus avec maintien autonome entre les observations. Son balayage initial et
 de temps que les courtes démonstrations. Consultez le
 [guide opérateur](docs/operator-quickstart.md) pour les détails.
 
+Pour suivre la réception dans le terminal, ajoutez `--extra tui` à `uv sync` et
+`--tui` à la commande `recon`. Le tableau de bord affiche le consensus, les
+stations et un journal ; `q` quitte, `r` demande un nouveau balayage et `p` fige
+l'affichage. Avec `--jsonl`, `recon` écrit plutôt un événement JSON par ligne
+pour d'autres programmes.
+
 ## Fonctionnement
 
 ```mermaid
@@ -246,6 +252,7 @@ de réception ne permet pas de déterminer quand ses échantillons ont été re�
 | `audio` | Écoute audio FM d'une station via `sounddevice` |
 | `plot` | Figures du spectre MPX et du spectrogramme via `matplotlib` |
 | `fast` | Accélération facultative avec Numba |
+| `tui` | Tableau de bord en terminal pour `recon --tui` via `textual` |
 | `dev` | Tests, couverture, Ruff et Black |
 
 Ajoutez le `--extra` correspondant à `uv sync`. Les exemples de réception de

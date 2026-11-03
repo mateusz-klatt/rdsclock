@@ -19,7 +19,9 @@ flowchart TD
     rds_clock[rds_clock.py<br/>MJD ↔ datetime · encode/decode 4A]
     rds_groups[rds_groups.py<br/>PS / RT / CT parser+encoder]
     rtl_tcp[rtl_tcp.py<br/>TCP client]
+    tui[tui.py<br/>Textual dashboard<br/>reads recon --jsonl]
 
+    cli --> tui
     cli --> synth
     cli --> decoder
     cli --> recon
@@ -146,11 +148,30 @@ behind the status block: the consensus result, the watchlist and one row per
 track. The loop evaluates the consensus once per cycle and passes the result
 to both outputs, because every evaluation updates trust scores.
 `rdsclock recon --jsonl` renders the events with `event_to_json`, one JSON
-object per line on stdout, and moves the operator text to stderr.
+object per line on stdout, and moves the operator text to stderr. Before each
+iteration the loop polls `rescan_requested`; the CLI sets it from `SIGUSR1`,
+so a running receiver can be asked for a new acquisition scan.
 
 The offline variant `run_recon_offline` replays the same logic over
 pre-recorded `.iq` files and is the primary integration test for the
 consensus engine.
+
+## Terminal Dashboard
+
+`tui.py` (optional extra `tui`) is the Textual application behind
+`rdsclock recon --tui`. It starts `rdsclock recon --jsonl` as a child process
+and only reads that stream. The receiver connection and the CPU-heavy decoding
+stay in the child, so neither a long capture nor a pure-Python DSP loop can
+stall the interface, and `SIGINT` stops the child without waiting for a capture
+to finish. The dashboard sends `SIGUSR1` for a rescan, also when it receives one
+itself; on quit it sends `SIGINT` and kills the child if it has not exited after
+a timeout.
+
+`DashboardState` turns records into what the screen shows without any UI code.
+It type-checks each record before changing state, ignores unknown events, and
+advances the consensus time and ages with its own monotonic clock between
+cycles. Strings from broadcasts or the child process are reduced to printable
+characters and rendered as plain text, never as Rich markup.
 
 ## File-format Conventions
 

@@ -47,7 +47,7 @@ help:
 .venv/bin/python:
 	python3 -m venv .venv
 	$(PIP) install --quiet --upgrade pip
-	$(PIP) install --quiet -e ".[audio,plot,dev]"
+	$(PIP) install --quiet -e ".[audio,plot,dev,tui]"
 	@echo "venv ready: $$($(PY) --version)"
 
 setup: .venv/bin/python
