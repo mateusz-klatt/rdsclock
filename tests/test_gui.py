@@ -180,7 +180,8 @@ class TestReconGuiCli:
         assert cli.main(["recon", "--gui", "--from-dir", str(tmp_path)]) == 2
         assert "--from-dir" in capsys.readouterr().err
 
-    def test_missing_tkinter_is_explained(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: None)
+    def test_broken_tkinter_is_explained(self, monkeypatch, capsys):
+        # Present but unusable, e.g. without the native _tkinter extension.
+        monkeypatch.setitem(sys.modules, "rdsclock.gui", None)
         assert cli.main(["recon", "--gui"]) == 2
         assert "python3-tk" in capsys.readouterr().err
