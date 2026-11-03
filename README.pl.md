@@ -158,15 +158,51 @@ i podaje konsensus, podtrzymując oszacowanie czasu między obserwacjami.
 Skan wstępny i powtarzane rejestracje trwają dłużej niż krótkie demonstracje.
 Szczegóły opisuje [przewodnik operatora](docs/operator-quickstart.md).
 
-Aby śledzić odbiór w terminalu, dodaj `--extra tui` do `uv sync` i `--tui` do
-polecenia `recon`. Panel pokazuje konsensus, stacje i dziennik zdarzeń; `q`
-kończy pracę, `r` zleca nowy skan, a `p` wstrzymuje widok. `--web` udostępnia
-ten sam widok w przeglądarce pod adresem <http://127.0.0.1:8080/>, bez
-dodatkowych zależności. Panel nie ma uwierzytelniania, więc do zdalnego
-odbiornika łącz się przez tunel SSH. `--gui` otwiera go w oknie
-aplikacji desktopowej, korzystając z modułu tkinter Pythona. Z opcją `--jsonl` polecenie `recon`
-wypisuje zamiast tego po jednym zdarzeniu JSON w wierszu, na potrzeby innych
-programów.
+### Panele podglądu
+
+Postęp `recon` można śledzić na żywo w terminalu, w przeglądarce albo w oknie
+aplikacji. Dodaj jedną z tych opcji do polecenia `recon` powyżej i pomiń
+`--iterations`, aby obserwacja trwała do zamknięcia panelu:
+
+- `--tui`: panel w terminalu; najpierw dodaj `--extra tui` do `uv sync`.
+- `--web`: strona pod adresem <http://127.0.0.1:8080/>, bez dodatkowych
+  zależności; `--web-port` zmienia port.
+- `--gui`: okno aplikacji korzystające z modułu tkinter Pythona.
+
+```bash
+uv sync --frozen --extra dev --extra plot --extra tui --no-install-project --no-build
+
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --start 98.0 --end 108.0 --step 0.1 --scan-dwell 2 --dwell 75 \
+  --max-stations 3 --gain 19.7 --rssi-threshold -35 --settle-seconds 1 --tui
+```
+
+Każdy panel uruchamia `recon --jsonl` jako proces potomny z tymi samymi
+ustawieniami odbiornika i pokazuje konsensus, stacje oraz dziennik zdarzeń.
+*Rescan* (`r`) zleca skan akwizycyjny po bieżącym cyklu, a *Pause view* (`p`)
+wstrzymuje widok, podczas gdy odbiór trwa dalej; strona ma oba polecenia jako
+przyciski. `q` zamyka panel w terminalu i okno, a `Ctrl+C` zatrzymuje panel w
+przeglądarce. Strona nie ma uwierzytelniania i nasłuchuje tylko na interfejsie
+loopback, więc aby śledzić `recon` działający na innym komputerze, przekieruj
+port: `ssh -N -L 8080:127.0.0.1:8080 SDR_HOST`. Systemowy Python w Debianie
+lub Ubuntu dostaje tkinter z pakietu `python3-tk`. Z opcją `--jsonl` polecenie
+`recon` wypisuje zamiast tego po jednym zdarzeniu JSON w wierszu, na potrzeby
+innych programów; wszystkie tryby opisuje
+[przewodnik operatora](docs/operator-quickstart.md).
+
+**Terminal** (`--tui`)
+
+![Panel w terminalu: czas konsensusu, poziom wiarygodności i wartość odstająca nad tabelą czterech stacji i dziennikiem zdarzeń](docs/images/dashboard-tui.png)
+
+**Przeglądarka** (`--web`)
+
+![Panel w przeglądarce z tym samym konsensusem, tabelą stacji i dziennikiem oraz przyciskami Rescan i Pause view](docs/images/dashboard-web.png)
+
+**Okno aplikacji** (`--gui`)
+
+![Okno aplikacji z tym samym widokiem i przyciskami Rescan, Pause view i Quit](docs/images/dashboard-gui.png)
+
+*Zrzuty przykładowej sesji z fikcyjnymi stacjami DEMO, a nie zapis prawdziwego odbioru.*
 
 ## Jak to działa
 

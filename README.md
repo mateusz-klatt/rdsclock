@@ -154,13 +154,50 @@ consensus with holdover between observations. Its acquisition scan and repeated
 captures take longer than the short demos. See the
 [operator guide](docs/operator-quickstart.md) for details.
 
-For a live terminal dashboard, add `--extra tui` to `uv sync` and `--tui` to the
-`recon` command. It shows the consensus, the stations and a log; `q` quits, `r`
-requests a new scan and `p` pauses the view. `--web` serves the same view to a
-browser at <http://127.0.0.1:8080/> without extra dependencies; it has no
-authentication, so reach a remote receiver through an SSH tunnel. `--gui` opens it in a
-desktop window with Python's tkinter. With
-`--jsonl`, `recon` instead writes one JSON event per line for other programs.
+### Dashboards
+
+`recon` can show its progress live in a terminal, a browser or a desktop
+window. Add one of these flags to the `recon` command above and leave out
+`--iterations`, so that observation continues until you quit:
+
+- `--tui`: a terminal dashboard; add `--extra tui` to `uv sync` first.
+- `--web`: a page at <http://127.0.0.1:8080/>, with no extra dependency;
+  `--web-port` changes the port.
+- `--gui`: a desktop window, using Python's tkinter.
+
+```bash
+uv sync --frozen --extra dev --extra plot --extra tui --no-install-project --no-build
+
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --start 98.0 --end 108.0 --step 0.1 --scan-dwell 2 --dwell 75 \
+  --max-stations 3 --gain 19.7 --rssi-threshold -35 --settle-seconds 1 --tui
+```
+
+Each dashboard runs `recon --jsonl` as a child process with the same receiver
+options and shows the consensus, the stations and a log. *Rescan* (`r`) starts
+an acquisition scan after the current cycle, and *Pause view* (`p`) freezes the
+display while reception continues; the page offers both as buttons. `q` quits
+the terminal dashboard and the window, and `Ctrl+C` stops the browser
+dashboard. The page has no authentication and listens on loopback only, so to
+watch `recon` running on another machine, forward the port:
+`ssh -N -L 8080:127.0.0.1:8080 SDR_HOST`. A system Python on Debian or Ubuntu
+gets tkinter from `apt install python3-tk`. With `--jsonl`, `recon` instead
+writes one JSON event per line for other programs; the
+[operator guide](docs/operator-quickstart.md) describes all these modes.
+
+**Terminal** (`--tui`)
+
+![Terminal dashboard: consensus time, trust level and an outlier above a table of four stations and a log](docs/images/dashboard-tui.png)
+
+**Browser** (`--web`)
+
+![Browser dashboard with the same consensus, station table and log, and Rescan and Pause view buttons](docs/images/dashboard-web.png)
+
+**Desktop window** (`--gui`)
+
+![Desktop window with the same view and Rescan, Pause view and Quit buttons](docs/images/dashboard-gui.png)
+
+*Screenshots of an example session with made-up DEMO stations, not of a live reception.*
 
 ## How it works
 
