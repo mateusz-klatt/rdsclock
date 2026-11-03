@@ -14,7 +14,7 @@ from rdsclock import dsp
 from rdsclock.cli import _trim_settle_iq
 from rdsclock.decoder import decode_iq
 from rdsclock.rds_groups import encode_group_4a, encode_ps_groups
-from rdsclock.synth import DEFAULT_FS, synthesize_fm_iq
+from rdsclock.synth import DEFAULT_FS, rds_groups_to_bits, synthesize_fm_iq
 
 CET = timezone(timedelta(minutes=120))  # +02:00
 
@@ -156,3 +156,42 @@ def test_robust_at_many_times():
             if ct is None or ct.utc != t:
                 failures.append((t, ct.utc if ct else None))
     assert not failures, f"failures: {failures[:5]}"
+
+
+def _drifting_matched_filter_output(drift_ppm: float, n_carousels: int, seed: int = 0):
+    """Biphase matched-filter output whose bit clock runs ``drift_ppm`` slow.
+
+    Each bit peaks at its centre and falls to zero at its edges, so sampling
+    with a fixed offset decays into errors as the bit clock slips.
+    """
+    sps = 16
+    groups = _build_groups(datetime(2026, 11, 3, 18, 0, tzinfo=CET))
+    bits = rds_groups_to_bits(groups, repeat=n_carousels)
+    period = sps * (1 + drift_ppm * 1e-6)
+    t = np.arange(int(len(bits) * period)) / period  # time in bits
+    symbol = np.where(bits[np.minimum(t.astype(int), len(bits) - 1)] == 1, 1.0, -1.0)
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(scale=0.3, size=len(t))
+    return symbol * np.cos(np.pi * (t % 1.0 - 0.5)) + noise, sps, len(groups) * n_carousels
+
+
+def test_offset_sweep_follows_a_drifting_bit_clock():
+    """60 ppm over about 60 s slips four bits: one fixed offset loses most groups."""
+    matched, sps, sent = _drifting_matched_filter_output(drift_ppm=60.0, n_carousels=137)
+    whole = decoder_module._decode_with_offset_sweep(matched, sps)
+    windowed = decoder_module._decode_in_windows(matched, sps)
+    assert len(whole.groups) < 0.75 * sent
+    assert len(windowed.groups) >= 0.95 * sent
+    assert windowed.positions == sorted(windowed.positions)
+    assert len(set(windowed.positions)) == len(windowed.positions)  # no group twice
+    assert windowed.n_clean + windowed.n_corrected == len(windowed.groups)
+    assert windowed.sym_offset == -1
+    # Positions count bits from the start of the stream, as for one window.
+    assert windowed.positions[-1] == pytest.approx(len(matched) / sps, abs=3 * 104)
+
+
+def test_short_streams_keep_a_single_offset():
+    matched, sps, _ = _drifting_matched_filter_output(drift_ppm=0.0, n_carousels=10)
+    windowed = decoder_module._decode_in_windows(matched, sps)
+    assert windowed.sym_offset >= 0
+    assert windowed.groups == decoder_module._decode_with_offset_sweep(matched, sps).groups
