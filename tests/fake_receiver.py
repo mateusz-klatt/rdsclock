@@ -81,6 +81,8 @@ for line in open(path, encoding="utf-8"):
 if mode == "fail":
     print("rdsclock: [Errno 111] Connection refused", file=sys.stderr, flush=True)
     sys.exit(1)
+if mode == "truncated":
+    sys.exit(0)
 try:
     while True:
         time.sleep(0.02)

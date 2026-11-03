@@ -41,6 +41,42 @@ _TRUST_STYLES = {
     "STALE": "bold red",
 }
 _STATUS_STYLES = {"OUTLIER": "bold red", "ok": "green", "not counted": "dim", "no CT": "dim"}
+LOG_LINES = 500  # also bounds the messages held while the view is paused
+
+
+async def bounded_lines(reader: asyncio.StreamReader) -> AsyncIterator[str]:
+    """Decoded lines until end of file; a line over the stream limit becomes ``""``.
+
+    The reader keeps an overlong line buffered, so the line is dropped through
+    its own newline, in reads of at most the limit, before the next line counts.
+    """
+    while True:
+        try:
+            line = await reader.readuntil(b"\n")
+        except asyncio.IncompleteReadError as exc:  # end of file
+            if exc.partial:
+                yield exc.partial.decode("utf-8", errors="replace")
+            return
+        except asyncio.LimitOverrunError as exc:
+            yield ""
+            if not await _drop_line(reader, exc.consumed):
+                return
+            continue
+        yield line.decode("utf-8", errors="replace")
+
+
+async def _drop_line(reader: asyncio.StreamReader, consumed: int) -> bool:
+    """Discard the rest of an overlong line; ``False`` if the stream ended first."""
+    while True:
+        await reader.read(consumed)
+        try:
+            await reader.readuntil(b"\n")  # the end of the overlong line
+        except asyncio.LimitOverrunError as exc:
+            consumed = exc.consumed
+        except asyncio.IncompleteReadError:
+            return False
+        else:
+            return True
 
 
 def status_text(view: View) -> Text:
@@ -103,26 +139,17 @@ class ReconChild:
     def running(self) -> bool:
         return self.process.returncode is None
 
-    async def lines(self) -> AsyncIterator[str]:
-        """Decoded stdout lines, until the child closes its stdout.
+    def lines(self) -> AsyncIterator[str]:
+        """Decoded stdout lines until end of file; an overlong one becomes ``""``.
 
-        The reader drops a line longer than its limit; it is passed on as an
-        empty line, which the state reports as not JSON.
+        The state reports the empty line as not JSON.
         """
-        while True:
-            try:
-                line = await self.process.stdout.readline()
-            except ValueError:
-                yield ""
-                continue
-            if not line:
-                return
-            yield line.decode("utf-8", errors="replace")
+        return bounded_lines(self.process.stdout)
 
     async def _keep_stderr_tail(self) -> None:
         # Draining stderr also keeps the child from blocking on a full pipe.
-        while line := await self.process.stderr.readline():
-            self.stderr_tail.append(line.decode("utf-8", errors="replace").rstrip())
+        async for line in bounded_lines(self.process.stderr):
+            self.stderr_tail.append(line.rstrip())
 
     async def wait(self) -> int:
         returncode = await self.process.wait()
@@ -181,14 +208,14 @@ class ReconDashboard(App[None]):
         self.child: ReconChild | None = None
         self.paused = False
         self.failed = False
-        self.held: list[str] = []
+        self.held: deque[str] = deque(maxlen=LOG_LINES)
         self._stop_requested = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="status")
         yield Static(id="consensus")
         yield DataTable(id="stations", cursor_type="none", zebra_stripes=True)
-        yield RichLog(id="log", max_lines=500)
+        yield RichLog(id="log", max_lines=LOG_LINES)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -211,7 +238,7 @@ class ReconDashboard(App[None]):
             self._log_all(self.state.apply_line(line))
             self._refresh()
         returncode = await self.child.wait()
-        self.failed = returncode != 0 and not self._stop_requested
+        self.failed = self.state.exit_failed(returncode, self._stop_requested)
         self._log_all(
             self.state.receiver_exited(returncode, self.child.stderr_tail, self._stop_requested)
         )
@@ -260,7 +287,8 @@ class ReconDashboard(App[None]):
             banner = "VIEW PAUSED · the receiver keeps running · p resumes"
             self.query_one("#status", Static).update(Text(banner, style="reverse"))
             return
-        held, self.held = self.held, []
+        held = list(self.held)
+        self.held.clear()
         self._log_all(held)
         self._refresh()
 

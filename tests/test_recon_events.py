@@ -17,7 +17,7 @@ from rdsclock.decoder import DecodeResult
 from rdsclock.rds_clock import ClockTime
 from rdsclock.rds_groups import StationInfo
 from rdsclock.rtl_tcp import FreshCapture
-from rdsclock.time_consensus import TimeConsensus
+from rdsclock.time_consensus import StationObservation, TimeConsensus
 
 HOST_UTC = datetime(2026, 11, 3, 12, 0, 5, tzinfo=UTC)
 
@@ -77,6 +77,17 @@ def _cfg(**overrides) -> recon.ReconConfig:
 def test_event_kinds_are_unique():
     kinds = [event.kind for event in get_args(recon.ReconEvent)]
     assert len(set(kinds)) == len(kinds) == 8
+
+
+def test_tracks_report_the_tuning_of_their_latest_observation():
+    consensus = TimeConsensus()
+    now = time.monotonic()
+    for freq_hz in (102.40e6, 102.42e6):  # one 100 kHz bin, so one track
+        observation = StationObservation(freq_hz, 0xCAFE, _clock().utc, received_monotonic=now)
+        consensus.record(observation)
+    assert len(consensus.tracks) == 1
+    assert consensus.consensus(now).contributing_freqs_mhz == [pytest.approx(102.42)]
+    assert recon._track_snapshots(consensus, now)[0].freq_hz == 102.42e6
 
 
 class TestEventToJson:

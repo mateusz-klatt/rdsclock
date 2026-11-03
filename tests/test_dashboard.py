@@ -45,8 +45,10 @@ def _state(lines: list[str]) -> tuple[dashboard.DashboardState, _Clock, list[str
     return state, clock, messages
 
 
-def _hop(pi: int | None, ct: ClockTime | None, freq_hz: float = 102.4e6) -> str:
-    return line(recon.HopResult(freq_hz, pi, "STACJA A", -18.2, 812, 795, 17, ct))
+def _hop(
+    pi: int | None, ct: ClockTime | None, freq_hz: float = 102.4e6, ps: str = "STACJA A"
+) -> str:
+    return line(recon.HopResult(freq_hz, pi, ps, -18.2, 812, 795, 17, ct))
 
 
 def _cells(row: dashboard.Row) -> list[str]:
@@ -231,6 +233,46 @@ class TestDashboardState:
         state.apply_line(_hop(0xBEEF, None))
         assert state.view().rows[0].cells[6:8] == ("none", "")
         assert state.view().rows[0].status == "no CT"
+
+    def test_an_unconfirmed_ct_is_not_shown_beside_another_transmitter(self):
+        unconfirmed = ClockTime(CT.replace(minute=5), 60)
+        lines = [*session()[:6], _hop(0xA101, ClockTime(CT, 60)), _hop(None, unconfirmed)]
+        state, _, _ = _state([*lines, _hop(0xB202, None)])
+        assert state.view().rows[0].cells[2] == "0xB202"
+        assert state.view().rows[0].cells[6] == "none"
+
+    def test_a_rescan_that_confirms_another_pi_drops_the_tuning_caches(self):
+        moved = recon.StationCandidate(102.4e6, -30.0, 90, True, 0xB202, "OTHER")
+        state, _, _ = _state([*session(), line(recon.WatchlistUpdated(2, (moved,)))])
+        assert state.view().rows[0].cells[1:3] == ("OTHER", "0xB202")
+        assert state.view().rows[0].cells[5:8] == ("", "", "")
+
+    def test_metrics_of_another_transmitter_are_not_shown(self):
+        state, _, _ = _state([*session(), _hop(0xBEEF, None)])
+        row = state.view().rows[0]
+        assert (row.cells[2], row.cells[8:], row.status) == ("0xBEEF", ("—", "—"), "no CT")
+
+    def test_scan_name_is_reused_only_for_the_same_confirmed_pi(self):
+        lines = session()[:6]
+        state, _, _ = _state([*lines, _hop(0xA101, None, ps="")])
+        assert state.view().rows[0].cells[1] == "STACJA A"
+        state, _, _ = _state([*lines, _hop(0xB202, None, ps="")])
+        assert state.view().rows[0].cells[1] == ""
+        state, _, _ = _state([*lines, _hop(None, None, ps="")])
+        assert state.view().rows[0].cells[1] == ""
+
+    def test_a_stream_that_ends_without_a_stop_has_failed(self):
+        state, _, _ = _state(session())
+        assert state.exit_failed(0, requested=False)
+        assert not state.exit_failed(1, requested=True)
+        assert state.receiver_exited(0, [], requested=False) == [
+            "The receiver stream ended without recon_stopped."
+        ]
+        state.apply_line(
+            json.dumps({"event": "recon_stopped", "schema": 1, "reason": "iterations"})
+        )
+        assert not state.exit_failed(0, requested=False)
+        assert state.exit_failed(1, requested=False)
 
     def test_broadcast_text_is_reduced_to_printable_characters(self):
         hostile = recon.StationCandidate(95.5e6, -20.0, 5, False, None, "\x1b[2J[b]X[/b]")

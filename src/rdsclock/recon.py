@@ -98,7 +98,10 @@ JSONL_SCHEMA_VERSION = 1
 
 @dataclass(frozen=True)
 class TrackSnapshot:
-    """One row of :meth:`TimeConsensus.summary` as data."""
+    """One row of :meth:`TimeConsensus.summary` as data.
+
+    ``freq_hz`` is the tuning of the track's latest observation.
+    """
 
     freq_hz: float
     pi: int | None
@@ -457,7 +460,7 @@ def _track_snapshots(consensus: TimeConsensus, monotonic_now: float) -> tuple[Tr
     """The rows of :meth:`TimeConsensus.summary`, in the same order."""
     return tuple(
         TrackSnapshot(
-            freq_hz=t.freq_hz,
+            freq_hz=t.latest_freq_hz,
             pi=t.pi,
             n_observations=len(t.observations),
             trust_score=t.trust_score,
