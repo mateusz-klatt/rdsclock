@@ -733,6 +733,13 @@ def _recon_jsonl(cfg: ReconConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def _port(value: str) -> int:
+    port = int(value)
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"{value} is not a TCP port (0-65535)")
+    return port
+
+
 # Receiver settings that the dashboard passes on to its ``recon --jsonl`` child.
 _RECON_CHILD_OPTIONS = (
     ("--start", "start"),
@@ -1042,7 +1049,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="web_host",
         help="Address for --web (default 127.0.0.1; use an SSH tunnel for remote access)",
     )
-    pr.add_argument("--web-port", type=int, default=8080, dest="web_port", help="Port for --web")
+    pr.add_argument("--web-port", type=_port, default=8080, dest="web_port", help="Port for --web")
     pr.add_argument("-v", "--verbose", action="store_true")
     pr.set_defaults(func=cmd_recon)
 
