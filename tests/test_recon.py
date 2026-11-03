@@ -120,3 +120,10 @@ class TestRenderStatus:
         sys_now = datetime(2026, 5, 17, 12, 0, 5, tzinfo=UTC)
         text = render_status(consensus, [], next_rescan_in_s=600.0, system_now=sys_now)
         assert "2026-05-17 12:00:05" in text
+
+    def test_render_reuses_a_given_result(self, monkeypatch):
+        consensus = self._populated_consensus()
+        result = consensus.consensus()
+        monkeypatch.setattr(consensus, "consensus", lambda *args: pytest.fail("re-evaluated"))
+        text = render_status(consensus, [], next_rescan_in_s=0.0, result=result)
+        assert result.format_display() in text

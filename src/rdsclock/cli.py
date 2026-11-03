@@ -33,7 +33,7 @@ from .channelizer import (
 from .decoder import decode_file, decode_iq
 from .plot import plot_iq_waterfall, plot_mpx_spectrum
 from .rds_groups import StationInfo, encode_group_4a, encode_ps_groups
-from .recon import ReconConfig, run_recon, run_recon_offline
+from .recon import ReconConfig, ReconEvent, event_to_json, run_recon, run_recon_offline
 from .rtl_tcp import RtlTcpClient
 from .synth import DEFAULT_FS, synthesize_fm_iq
 
@@ -649,6 +649,39 @@ def cmd_play(args: argparse.Namespace) -> int:
 # ---------- recon (continuous passive time receiver) ----------
 
 
+class _EventReaderClosedError(Exception):
+    """The reader of the ``--jsonl`` stream closed its end of the pipe."""
+
+
+def _write_event_line(event: ReconEvent) -> None:
+    try:
+        print(event_to_json(event), flush=True)
+    except BrokenPipeError as exc:
+        raise _EventReaderClosedError from exc
+
+
+def _print_stderr(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _recon_jsonl(cfg: ReconConfig, args: argparse.Namespace) -> int:
+    """Events go to stdout, one JSON object per line; operator text to stderr."""
+    if args.from_dir:
+        print("error: --jsonl applies to live reception, not --from-dir", file=sys.stderr)
+        return 2
+    on_progress = (lambda m: _print_stderr(f"  ▸ {m}")) if args.verbose else None
+    try:
+        run_recon(cfg, on_status=_print_stderr, on_progress=on_progress, on_event=_write_event_line)
+    except _EventReaderClosedError:
+        # Stop quietly. Point stdout at /dev/null so the interpreter's final
+        # flush does not report the closed pipe a second time.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+        return 1
+    return 0
+
+
 def cmd_recon(args: argparse.Namespace) -> int:
     """Continuous passive time receiver: scan → hop → consensus → display."""
     cfg = ReconConfig(
@@ -668,6 +701,8 @@ def cmd_recon(args: argparse.Namespace) -> int:
         port=args.port,
         iterations=args.iterations,
     )
+    if args.jsonl:
+        return _recon_jsonl(cfg, args)
     on_progress = (lambda m: print(f"  ▸ {m}")) if args.verbose else None
     if args.from_dir:
         run_recon_offline(cfg, args.from_dir, on_progress=on_progress, limit_files=args.limit_files)
@@ -866,6 +901,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="limit_files",
         help="OFFLINE: maximum number of files to process",
+    )
+    pr.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Write events to stdout as JSON Lines; operator text goes to stderr",
     )
     pr.add_argument("-v", "--verbose", action="store_true")
     pr.set_defaults(func=cmd_recon)
