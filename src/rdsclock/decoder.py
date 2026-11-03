@@ -97,6 +97,59 @@ def _decode_with_offset_sweep(matched: np.ndarray, sps: int) -> _DecodeAttempt |
     return best
 
 
+# Bits decoded with one symbol offset. A station's bit clock can run tens of
+# ppm away from the receiver's sample clock (the 19 kHz pilot may be 2 Hz off),
+# so one offset for a 75 s capture slips by whole bits: on live captures a
+# fresh offset every few seconds recovered up to twice as many groups.
+_SWEEP_WINDOW_BITS = 4096  # about 3.4 s at 1187.5 bit/s
+
+
+def _decode_in_windows(matched: np.ndarray, sps: int) -> _DecodeAttempt | None:
+    """Run the offset sweep window by window, each with its own symbol offset.
+
+    A window starts where the last complete group of the previous one ends, so
+    no group is counted twice. Streams up to two windows long are swept whole.
+    """
+    window = _SWEEP_WINDOW_BITS * sps
+    if len(matched) <= 2 * window:
+        return _decode_with_offset_sweep(matched, sps)
+    groups: list[bytearray] = []
+    positions: list[int] = []
+    bit_parts: list[np.ndarray] = []
+    n_clean = n_corrected = 0
+    start = 0  # a multiple of sps: bit k of a window is bit start // sps + k
+    while len(matched) - start >= 100 * sps:
+        stop = start + window
+        if len(matched) - stop < window // 2:
+            stop = len(matched)  # no short last window
+        attempt = _decode_with_offset_sweep(matched[start:stop], sps)
+        next_start = stop
+        if attempt is not None and attempt.groups:
+            found = sorted(zip(attempt.positions, attempt.groups, strict=True), key=_position)
+            positions.extend(start // sps + position for position, _ in found)
+            groups.extend(group for _, group in found)
+            n_clean += attempt.n_clean
+            n_corrected += attempt.n_corrected
+            if stop < len(matched):
+                next_start = start + (found[-1][0] + GROUP_BITS) * sps
+        if attempt is not None:
+            bit_parts.append(attempt.bits[: (next_start - start) // sps])
+        start = next_start
+    return _DecodeAttempt(
+        groups=groups,
+        positions=positions,
+        n_clean=n_clean,
+        n_corrected=n_corrected,
+        bits=np.concatenate(bit_parts) if bit_parts else np.zeros(0, dtype=np.uint8),
+        variant_used=f"biphase/windows of {_SWEEP_WINDOW_BITS} bits",
+        sym_offset=-1,  # every window chooses its own offset
+    )
+
+
+def _position(found: tuple[int, bytearray]) -> int:
+    return found[0]
+
+
 def _decode_fallback(rds_sync: np.ndarray, sps: int) -> _DecodeAttempt:
     bo_symbols, bo_sym_off = dsp.best_symbol_offset(rds_sync, sps=sps)
     bo_bits = dsp.bits_from_symbols_diff(bo_symbols)
@@ -185,9 +238,9 @@ def decode_iq(
     rds_sync = dsp.costas_loop_bpsk(rds_agc, alpha=costas_alpha, beta=costas_beta)
 
     sps = int(round(dsp.DEFAULT_RDS_FS / dsp.RDS_SYMBOL_RATE))
-    emit(f"biphase matched filter + offset search (sps {sps})")
+    emit(f"biphase matched filter + offset search per window (sps {sps})")
     matched = dsp.biphase_matched_filter(rds_sync, sps_bit=sps)
-    attempt = _decode_with_offset_sweep(matched, sps)
+    attempt = _decode_in_windows(matched, sps)
     if attempt is None:
         # Very short streams may not have enough biphase samples for the
         # offset sweep. Preserve the legacy paths for those callers.
