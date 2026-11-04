@@ -1091,7 +1091,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         dest="max_stations",
-        help="Maximum watchlist size",
+        help="Maximum watchlist size after a band scan (--hop and --wide keep every station)",
     )
     pr.add_argument(
         "--rssi-threshold",
