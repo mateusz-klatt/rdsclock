@@ -146,7 +146,7 @@ class TestDesktopDashboard:
 
     def test_consensus_panel_states(self, root, tmp_path):
         dashboard = gui.DesktopDashboard(root, [str(tmp_path / "missing-rdsclock")])
-        assert dashboard.clock.get() == "Waiting for the first completed cycle…"
+        assert dashboard.clock.get() == "Waiting for the first completed cycle..."
         expired = gui.ConsensusView("STALE", None, "±? s", "N=2", None, None, None, "expired", "")
         dashboard._show_consensus(expired)
         assert (dashboard.clock.get(), dashboard.facts.get()) == ("TIME UNAVAILABLE", "expired")
@@ -175,7 +175,9 @@ class TestRunGui:
 class TestReconGuiCli:
     def test_child_runs_jsonl_with_the_same_settings(self, monkeypatch):
         commands: list[list[str]] = []
-        monkeypatch.setattr(gui, "run_gui", lambda command: commands.append(command) or 0)
+        monkeypatch.setattr(
+            gui, "run_gui", lambda command, language="en": commands.append(command) or 0
+        )
         assert cli.main(["recon", "--gui", "--start=98"]) == 0
         ((command,),) = [commands]
         assert command[:5] == [sys.executable, "-m", "rdsclock", "recon", "--jsonl"]
@@ -190,3 +192,76 @@ class TestReconGuiCli:
         monkeypatch.setitem(sys.modules, "rdsclock.gui", None)
         assert cli.main(["recon", "--gui"]) == 2
         assert "python3-tk" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "language,trust,rescan,paused,groups",
+    [
+        ("en", "HIGH", "Rescan", "VIEW PAUSED", "Groups"),
+        ("pl", "WYSOKIE", "Skanuj ponownie", "WIDOK WSTRZYMANY", "Grupy"),
+        ("fr", "ÉLEVÉE", "Relancer le balayage", "AFFICHAGE SUSPENDU", "Groupes"),
+    ],
+)
+def test_window_language_reaches_controls_table_and_status(
+    root, tmp_path, language, trust, rescan, paused, groups
+):
+    dashboard = gui.DesktopDashboard(root, receiver_command(tmp_path), language=language)
+    try:
+        _pump(root, lambda: dashboard.state.consensus is not None)
+        assert dashboard.trust_label.cget("text") == trust
+        assert dashboard.rescan_button.cget("text") == rescan
+        assert dashboard.table.heading("Groups", "text") == groups
+        assert _rows(dashboard)[2][0][1] == MARKUP_PS
+        assert _rows(dashboard)[2][1] == ("outlier",)
+        dashboard.toggle_pause()
+        assert dashboard.status.get().startswith(paused)
+    finally:
+        dashboard.quit()
+
+
+def _punctuation_tk_cannot_draw(text: str) -> set[str]:
+    return {char for char in text if 0x2000 <= ord(char) <= 0x206F}
+
+
+@pytest.mark.parametrize("language", ["en", "pl", "fr"])
+def test_waiting_text_avoids_a_glyph_the_fixed_font_lacks(root, tmp_path, language):
+    dashboard = gui.DesktopDashboard(root, receiver_command(tmp_path), language=language)
+    try:
+        waiting = dashboard.clock.get()
+        assert waiting.endswith("...")
+        assert not _punctuation_tk_cannot_draw(waiting)
+    finally:
+        dashboard.quit()
+
+
+def test_every_widget_spells_general_punctuation_in_ascii(root, tmp_path):
+    # Tk's fonts draw U+2019 and U+2014 as nothing: "l’hôte" became "lhôte".
+    dashboard = gui.DesktopDashboard(root, receiver_command(tmp_path), language="fr")
+    try:
+        _pump(root, lambda: dashboard.state.consensus is not None)
+        dashboard._refresh()
+        assert dashboard.pause_button.cget("text") == "Suspendre l'affichage"
+        assert "l'hôte" in dashboard.offset.get()
+        cells = [
+            str(v)
+            for item in dashboard.table.get_children()
+            for v in dashboard.table.item(item, "values")
+        ]
+        shown = [
+            dashboard.status.get(),
+            dashboard.clock.get(),
+            dashboard.facts.get(),
+            dashboard.offset.get(),
+            dashboard.outliers.get(),
+            dashboard.assessed_label.cget("text"),
+            dashboard.log_text(),
+            *cells,
+        ]
+        assert not _punctuation_tk_cannot_draw("".join(shown))
+    finally:
+        dashboard.quit()
+
+
+def test_tk_text_replaces_only_what_the_fonts_lack():
+    assert gui.tk_text("l’hôte — 2–3 “x” „y” ‘z’…") == 'l\'hôte - 2-3 "x" "y" \'z\'...'
+    assert gui.tk_text("Zażółć · ±1 s · «»") == "Zażółć · ±1 s · «»"

@@ -291,7 +291,9 @@ class TestReconWebCli:
     def test_child_runs_jsonl_and_the_server_gets_the_address(self, monkeypatch):
         calls: list[tuple[list[str], str, int]] = []
         monkeypatch.setattr(
-            web, "run_web", lambda command, host, port: calls.append((command, host, port)) or 0
+            web,
+            "run_web",
+            lambda command, host, port, language="en": calls.append((command, host, port)) or 0,
         )
         assert cli.main(["recon", "--web", "--web-port=9000", "--start=98"]) == 0
         ((command, host, port),) = calls
@@ -314,3 +316,34 @@ class TestReconWebCli:
             cli.main(["recon", "--web", f"--web-port={port}"])
         assert exc.value.code == 2
         assert "--web-port" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "language,trust,rescan,groups",
+    [
+        ("en", "HIGH", "Rescan", "Groups"),
+        ("pl", "WYSOKIE", "Skanuj ponownie", "Grupy"),
+        ("fr", "ÉLEVÉE", "Relancer le balayage", "Groupes"),
+    ],
+)
+def test_web_language_covers_initial_page_and_live_snapshot(language, trust, rescan, groups):
+    from tests.fake_receiver import session
+
+    dashboard = web.WebDashboard(["unused"], port=0, language=language)
+    try:
+        page = dashboard.pages["/"].decode()
+        assert f'lang="{language}"' in page
+        assert f">{rescan}</button>" in page
+        assert f">{groups}</th>" in page
+        assert "data-labels=" in page
+        for record in session():
+            dashboard._on_line(record)
+        view, _ = dashboard.snapshot("127.0.0.1")
+        assert view["language"] == language
+        assert view["consensus"]["trust_level"] == "HIGH"
+        assert view["consensus"]["trust_label"] == trust
+        assert view["rows"][2]["status"] == "OUTLIER"
+        assert view["rows"][2]["cells"][1] == MARKUP_PS
+        assert dashboard.state.view().consensus.trust_level == "HIGH"
+    finally:
+        dashboard.close()

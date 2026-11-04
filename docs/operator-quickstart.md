@@ -150,6 +150,16 @@ at a time adds as much again: plan for about 5 GB of memory. `rtl_tcp` sends
 explicitly, since the stations share one 8-bit converter. `--start`, `--end`,
 `--step`, `--rssi-threshold` and `--max-stations` apply to band scans only.
 
+### Interface languages (2.0.0)
+
+All three dashboards support `--lang en`, `--lang pl` and `--lang fr` (English
+by default). For example, add `--web --lang pl` to a WIDE command or
+`--tui --lang fr` to a HOP command. Each dashboard starts its own receiver;
+use only one per `rtl_tcp` endpoint. The setting translates interface controls,
+status messages and the operator log. PS names, PI codes, CT values and JSONL
+field names remain unchanged; raw receiver diagnostics retain their original
+text. The plain CLI and command help remain in English.
+
 ### Terminal dashboard
 
 Install the optional extra (`pip install 'rdsclock[tui]'`, or `--extra tui` with
