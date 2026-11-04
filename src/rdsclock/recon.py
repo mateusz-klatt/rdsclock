@@ -389,17 +389,17 @@ def _report_backlog(
     label: str, capture: FreshCapture, progress: Callable[[str], None] | None
 ) -> None:
     """Tell the operator that a capture began with samples queued while not reading."""
-    if not progress or not capture.backlogged:
+    if not progress:
         return
-    if capture.caught_up:
-        progress(
-            f"  {label}: the capture began {capture.queued_s:.1f} s behind real time "
-            "(queued samples); receive times account for it"
-        )
-    else:
+    if not capture.caught_up:
         progress(
             f"  {label}: the capture began at least {capture.queued_s:.1f} s behind real "
             "time and never caught up; its Clock-Time stays out of the consensus"
+        )
+    elif capture.backlogged:
+        progress(
+            f"  {label}: the capture began {capture.queued_s:.1f} s behind real time "
+            "(queued samples); receive times account for it"
         )
 
 

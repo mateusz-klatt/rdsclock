@@ -27,6 +27,12 @@ CMD_SET_DIRECT_SAMPLING = 0x09
 # sample exists: 55 ms at 2.4 MS/s, 0.52 s at 250 kS/s.
 RTL_TCP_TRANSFER_SAMPLES = 131_072
 
+# Latency differences that a stream arriving in real time may still show.
+_JITTER_NS = 50_000_000
+# A capture that began behind must end with this many segments of two
+# transfers that each show the stream in real time.
+_CATCH_UP_SEGMENTS = 4
+
 
 @dataclass
 class DongleInfo:
@@ -53,8 +59,9 @@ class FreshCapture:
     The earliest bound dates the first sample only once the stream has caught
     up with real time. A backlog longer than the capture can deliver all of it
     ahead of real time, and the samples are then older than the bound by an
-    unknown amount. ``caught_up`` is false for such a capture: it began behind,
-    and its last reads did not show the stream arriving in real time.
+    unknown amount. ``caught_up`` is false for such a capture: it began more
+    than one transfer behind, and its last reads did not show the stream
+    arriving in real time. That holds whether or not it is ``backlogged``.
 
     Samples lost during a capture only loosen the later bounds. The start
     stays right for the samples before the loss, and later samples are early
@@ -81,20 +88,31 @@ class RtlTcpDrainTimeoutError(TimeoutError):
 
 
 def _arrived_in_real_time(
-    recent: deque[tuple[int, int]], start_ns: int, middle_ns: int, threshold_ns: int
+    recent: deque[tuple[int, int]],
+    start_ns: int,
+    end_ns: int,
+    segment_ns: int,
+    level_tolerance_ns: int,
 ) -> bool:
-    """Whether the reads ``(arrival, bound)`` of a window show the stream in real time.
+    """Whether every segment of the reads ``(arrival, bound)`` before ``end_ns`` is in real time.
 
-    In real time the earliest bound stays put. Delivery ahead of real time
-    moves it back between the halves of the window, also after a stall, and a
-    stall leaves the last read well behind the earliest bound of the capture.
+    In real time every transfer brings the bound back to the same level, so the
+    lowest bound of each segment is about the same. Delivery ahead of real time
+    lowers it from segment to segment, a stall leaves a segment without reads,
+    and a queue that stays keeps the level well after the earliest bound.
     """
-    first = [bound for arrival, bound in recent if arrival < middle_ns]
-    second = [bound for arrival, bound in recent if arrival >= middle_ns]
-    if not first or not second:
-        return False
+    window_start_ns = end_ns - _CATCH_UP_SEGMENTS * segment_ns
+    lows: list[int | None] = [None] * _CATCH_UP_SEGMENTS
+    for arrival_ns, bound_ns in recent:  # the reads of the window only
+        index = min((arrival_ns - window_start_ns) // segment_ns, _CATCH_UP_SEGMENTS - 1)
+        low = lows[index]
+        if low is None or bound_ns < low:
+            lows[index] = bound_ns
+    levels = [low for low in lows if low is not None]
     return (
-        min(first) - min(second) <= threshold_ns // 5 and recent[-1][1] - start_ns <= threshold_ns
+        len(levels) == _CATCH_UP_SEGMENTS
+        and max(levels) - min(levels) <= _JITTER_NS
+        and min(levels) - start_ns <= level_tolerance_ns
     )
 
 
@@ -249,6 +267,7 @@ class RtlTcpClient:
         max_drain_s: float | None = None,
         quiet_s: float | None = None,
         backlog_threshold_s: float | None = None,
+        transfer_samples: int = RTL_TCP_TRANSFER_SAMPLES,
     ) -> FreshCapture:
         """Discard stale IQ after a retune, then collect a full capture.
 
@@ -274,14 +293,20 @@ class RtlTcpClient:
         samples fresh: after a retune, a backlog can begin with the previous
         tuning. ``backlogged`` is set when the first sample had queued for
         longer than ``backlog_threshold_s``; the default allows two rtl_tcp
-        transfers, and at least 0.25 s. A backlogged capture has caught up
-        once the last four thresholds of its read (1 s at 2.4 MS/s) showed the
-        stream in real time. The earliest bound of their second half may lie
-        at most a fifth of a threshold before that of their first half, which
-        delivery more than 10 % ahead of real time prevents, also after a
-        stall. The last read must lie within a threshold of the earliest
-        bound, which a stall before it prevents. A link barely faster than the
-        stream can still hide a backlog.
+        transfers, and at least 0.25 s. ``transfer_samples`` is the size of
+        the server's transfers, 131072 for rtl_tcp.
+
+        Whatever that threshold, a capture that began more than one transfer
+        and 50 ms behind must show that it caught up. Its read is divided at
+        the end into four segments of two transfers each (0.44 s in all at
+        2.4 MS/s). Each segment must contain reads, and the lowest bounds of
+        the segments must lie within 50 ms of each other and within
+        ``backlog_threshold_s`` of the earliest bound. Delivery ahead of real
+        time lowers that bound from segment to segment, a stall leaves a
+        segment without reads, and a queue that stays keeps the bound late.
+        Otherwise ``caught_up`` is false. A capture of less than about one
+        transfer cannot reveal a backlog, and neither can a link that is barely
+        faster than the stream.
 
         Any failure or interruption after draining starts closes the socket:
         a partial read can otherwise leave the next attempt between I and Q.
@@ -304,8 +329,15 @@ class RtlTcpClient:
             raise ValueError("quiet_s must be finite and positive")
         if not math.isfinite(max_drain_s) or max_drain_s <= max(settle_s, quiet_s):
             raise ValueError("max_drain_s must exceed settle_s and quiet_s")
+        if (
+            not math.isfinite(transfer_samples)
+            or transfer_samples < 1
+            or int(transfer_samples) != transfer_samples
+        ):
+            raise ValueError("transfer_samples must be a positive integer")
+        transfer_s = int(transfer_samples) / sample_rate
         if backlog_threshold_s is None:
-            backlog_threshold_s = max(0.25, 2 * RTL_TCP_TRANSFER_SAMPLES / sample_rate)
+            backlog_threshold_s = max(0.25, 2 * transfer_s)
         if not math.isfinite(backlog_threshold_s) or backlog_threshold_s <= 0:
             raise ValueError("backlog_threshold_s must be finite and positive")
         n_samples = int(round(duration_s * sample_rate))
@@ -314,7 +346,9 @@ class RtlTcpClient:
 
         try:
             discarded = self._discard_until_quiet(settle_s, max_drain_s, quiet_s)
-            return self._read_capture(n_samples, sample_rate, discarded // 2, backlog_threshold_s)
+            return self._read_capture(
+                n_samples, sample_rate, discarded // 2, backlog_threshold_s, transfer_s
+            )
         except BaseException:
             self.close()
             raise
@@ -325,13 +359,15 @@ class RtlTcpClient:
         sample_rate: float,
         discarded_samples: int,
         backlog_threshold_s: float,
+        transfer_s: float,
     ) -> FreshCapture:
         """Read ``n_samples`` and date the first one by when the samples arrived."""
         sock = self._sock
         if sock is None:
             raise RuntimeError("not connected")
-        threshold_ns = round(backlog_threshold_s * 1e9)
-        window_ns = 4 * threshold_ns
+        transfer_ns = round(transfer_s * 1e9)
+        segment_ns = 2 * transfer_ns
+        window_ns = _CATCH_UP_SEGMENTS * segment_ns
         data = bytearray(2 * n_samples)
         view = memoryview(data)
         received = 0
@@ -349,19 +385,21 @@ class RtlTcpClient:
             recent.append((end_ns, bound_ns))
             while recent[0][0] < end_ns - window_ns:
                 recent.popleft()
-        queued_s = (read_start_ns - start_ns) / 1e9
-        backlogged = queued_s > backlog_threshold_s
-        caught_up = not backlogged or (
+        queued_ns = read_start_ns - start_ns
+        # Up to one transfer of queue is normal; anything more must be seen to drain.
+        caught_up = queued_ns <= transfer_ns + _JITTER_NS or (
             end_ns - read_start_ns >= window_ns
-            and _arrived_in_real_time(recent, start_ns, end_ns - window_ns // 2, threshold_ns)
+            and _arrived_in_real_time(
+                recent, start_ns, end_ns, segment_ns, round(backlog_threshold_s * 1e9)
+            )
         )
         return FreshCapture(
             self._iq_from_bytes(data),
             start_ns,
             discarded_samples,
             capture_end_monotonic_ns=end_ns,
-            queued_s=queued_s,
-            backlogged=backlogged,
+            queued_s=queued_ns / 1e9,
+            backlogged=queued_ns / 1e9 > backlog_threshold_s,
             caught_up=caught_up,
         )
 

@@ -154,14 +154,23 @@ that started more than two transfers, and at least 0.25 s, behind.
 The earliest bound dates the first sample only once the stream has caught up
 with real time. A backlog longer than the capture arrives ahead of real time
 throughout, and the samples are then older than the bound by an unknown amount.
-A backlogged capture counts as caught up only when the last four backlog
-thresholds of its read (1 s at 2.4 MS/s, 4.2 s at 250 kS/s) show the stream in
-real time. The earliest bound of their second half may lie at most a fifth of
-a threshold before that of their first half, which delivery more than 10 %
-ahead of real time prevents, also after a stall. The last read must lie within
-a threshold of the earliest bound, which a stall before it prevents. Otherwise
-`caught_up` is false, and recon reports the capture's Clock-Time without
-adding it to the consensus.
+Any capture that began more than one transfer and 50 ms behind must therefore
+show that it caught up, whether or not that counts as `backlogged`. The end of
+its read is divided into four segments of two transfers each (0.44 s in all at
+2.4 MS/s, 4.2 s at 250 kS/s). In real time every transfer brings the bound
+back to the same level. So each segment must contain reads, the lowest bounds
+of the segments must lie within 50 ms of each other, and they must lie within
+the backlog threshold of the earliest bound. Each of these conditions fails
+for a different cause:
+- delivery ahead of real time lowers the bound from segment to segment, also
+  after a stall;
+- a stall leaves a segment without reads;
+- a queue that stays keeps the level late.
+
+Otherwise `caught_up` is false, and recon reports the capture's Clock-Time
+without adding it to the consensus. No client can tell a capture of less than
+about one transfer, or one over a link barely faster than the stream, from a
+fresh one.
 
 Dating the first sample at the capture end minus its duration gives the same
 start when samples queue only before the capture, but samples lost during the
