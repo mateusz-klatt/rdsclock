@@ -21,6 +21,7 @@ server, so the dashboard defends itself:
 """
 
 import contextlib
+import html
 import ipaddress
 import json
 import signal
@@ -37,6 +38,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .dashboard import COLUMNS, UNCERTAINTY_NOTE, DashboardState, ReceiverProcess
+from .i18n import translate
 
 LOG_LINES = 200
 STOP_TIMEOUT_S = 5.0
@@ -57,6 +59,22 @@ _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
 }
 _RESCAN_REQUESTED = "Rescan requested; it starts after the current cycle."
+_WEB_LABELS = {
+    "connecting": "Connecting…",
+    "rescan": "Rescan",
+    "pause": "Pause view",
+    "resume": "Resume view",
+    "paused": "VIEW PAUSED · the receiver keeps running",
+    "consensus": "Consensus",
+    "stations": "Stations",
+    "log": "Log",
+    "waiting": "Waiting for the first completed cycle…",
+    "unavailable": "TIME UNAVAILABLE",
+    "empty": "No stations yet: the acquisition scan chooses them.",
+    "noscript": "This dashboard needs JavaScript to follow the receiver.",
+    "disconnected": "Connection lost; reconnecting…",
+    "rescan_failed": "The rescan request failed:",
+}
 
 
 def is_loopback(address: str) -> bool:
@@ -98,9 +116,12 @@ class WebDashboard:
         host: str = "127.0.0.1",
         port: int = 8080,
         clock: Callable[[], float] = time.monotonic,
+        language: str = "en",
     ) -> None:
         self.host = host
-        self.state = DashboardState(clock=clock)
+        self.state = DashboardState(clock=clock, language=language)
+        self.language = self.state.language
+        self.labels = {key: self._t(message) for key, message in _WEB_LABELS.items()}
         self.log: deque[str] = deque(maxlen=LOG_LINES)
         self.version = 0
         self.closing = False
@@ -110,11 +131,21 @@ class WebDashboard:
             path: resources.files(__package__).joinpath("webui", name).read_bytes()
             for path, (name, _) in _STATIC.items()
         }
+        page = self.pages["/"].decode("utf-8")
+        for message in (*_WEB_LABELS.values(), *COLUMNS):
+            page = page.replace(f">{message}<", f">{html.escape(self._t(message))}<")
+        page = page.replace('lang="en"', f'lang="{self.language}"')
+        labels = html.escape(json.dumps(self.labels, ensure_ascii=False), quote=True)
+        page = page.replace("<body>", f'<body data-labels="{labels}">')
+        self.pages["/"] = page.encode("utf-8")
         self.receiver = ReceiverProcess(command, self._on_line, self._on_exit)
         self._stop_requested = False
         server_class = _Server6 if ":" in host else _Server
         self.server = server_class((host, port), _Handler)
         self.server.dashboard = self
+
+    def _t(self, message: str, **values: object) -> str:
+        return translate(self.language, message, **values)
 
     @property
     def url(self) -> str:
@@ -154,8 +185,13 @@ class WebDashboard:
         """The page model for ``client`` and the state version it reflects."""
         with self.changed:
             view = self.state.view().as_dict()
-            view["note"] = UNCERTAINTY_NOTE
-            view["columns"] = list(COLUMNS)
+            view["note"] = self._t(UNCERTAINTY_NOTE)
+            view["columns"] = [self._t(name) for name in COLUMNS]
+            view["language"] = self.language
+            for row in view["rows"]:
+                row["status_label"] = self._t(row["status"])
+            if view["consensus"] is not None:
+                view["consensus"]["trust_label"] = self._t(view["consensus"]["trust_level"])
             view["log"] = list(self.log)
             view["can_rescan"] = (
                 self.state.can_rescan() and self.receiver.running and is_loopback(client)
@@ -169,9 +205,10 @@ class WebDashboard:
     def request_rescan(self) -> tuple[HTTPStatus, str]:
         with self.changed:
             if not self.state.can_rescan() or not self.receiver.send_signal(signal.SIGUSR1):
-                return HTTPStatus.CONFLICT, "The receiver is not ready for a rescan."
-            self._publish([_RESCAN_REQUESTED])
-            return HTTPStatus.ACCEPTED, _RESCAN_REQUESTED
+                return HTTPStatus.CONFLICT, self._t("The receiver is not ready for a rescan.")
+            message = self._t(_RESCAN_REQUESTED)
+            self._publish([message])
+            return HTTPStatus.ACCEPTED, message
 
     def serve_forever(self) -> None:
         self.server.serve_forever(poll_interval=0.2)
@@ -275,6 +312,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        if "error" in payload:
+            payload = {**payload, "error": self.dashboard._t(payload["error"])}
         self._send(status, json.dumps(payload).encode(), "application/json")
 
 
@@ -282,21 +321,38 @@ def _stop_serving(signum: int, frame: object) -> None:
     raise KeyboardInterrupt  # SIGTERM stops the server and the receiver as Ctrl+C does
 
 
-def run_web(command: list[str], host: str, port: int) -> int:
+def run_web(command: list[str], host: str, port: int, language: str = "en") -> int:
     """Serve the dashboard until Ctrl+C or SIGTERM; return the exit status.
 
     SIGUSR1 requests a rescan, as it does for live recon without a dashboard.
     """
     try:
-        dashboard = WebDashboard(command, host, port)
+        dashboard = WebDashboard(command, host, port, language=language)
     except (OSError, OverflowError) as exc:  # OverflowError: port outside 0-65535
-        print(f"error: cannot listen on {host}:{port}: {exc}", file=sys.stderr)
+        print(
+            translate(
+                language,
+                "error: cannot listen on {host}:{port}: {error}",
+                host=host,
+                port=port,
+                error=exc,
+            ),
+            file=sys.stderr,
+        )
         return 2
-    print(f"Dashboard at {dashboard.url} (Ctrl+C stops it and the receiver)", file=sys.stderr)
+    print(
+        translate(
+            language, "Dashboard at {url} (Ctrl+C stops it and the receiver)", url=dashboard.url
+        ),
+        file=sys.stderr,
+    )
     if not is_loopback(host):
         print(
-            "warning: the dashboard has no authentication; anyone who can reach this "
-            "address can watch it. Rescans are accepted only from this machine.",
+            translate(
+                language,
+                "warning: the dashboard has no authentication; anyone who can reach this "
+                "address can watch it. Rescans are accepted only from this machine.",
+            ),
             file=sys.stderr,
         )
 

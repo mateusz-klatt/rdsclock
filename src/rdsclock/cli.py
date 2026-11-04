@@ -37,6 +37,7 @@ from .channelizer import (
     required_bandwidth,
 )
 from .decoder import decode_file, decode_iq
+from .i18n import SUPPORTED_LANGUAGES, translate
 from .plot import plot_iq_waterfall, plot_mpx_spectrum
 from .rds_groups import StationInfo, encode_group_4a, encode_ps_groups
 from .recon import (
@@ -792,35 +793,55 @@ def _recon_child_argv(args: argparse.Namespace) -> list[str]:
 def _recon_tui(args: argparse.Namespace) -> int:
     """Run the terminal dashboard, which reads a ``recon --jsonl`` child process."""
     if args.from_dir:
-        print("error: --tui applies to live reception, not --from-dir", file=sys.stderr)
+        print(
+            translate(
+                args.lang, "error: {flag} applies to live reception, not --from-dir", flag="--tui"
+            ),
+            file=sys.stderr,
+        )
         return 2
     if importlib.util.find_spec("textual") is None:
         print(
-            "error: the dashboard requires the optional 'textual' dependency; "
-            "install with: pip install 'rdsclock[tui]'",
+            translate(
+                args.lang,
+                "error: the dashboard requires the optional 'textual' dependency; "
+                "install with: pip install 'rdsclock[tui]'",
+            ),
             file=sys.stderr,
         )
         return 2
     from .tui import run_dashboard
 
-    return run_dashboard([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)])
+    return run_dashboard(
+        [sys.executable, "-m", "rdsclock", *_recon_child_argv(args)], language=args.lang
+    )
 
 
 def _recon_web(args: argparse.Namespace) -> int:
     """Serve the browser dashboard, which reads a ``recon --jsonl`` child process."""
     if args.from_dir:
-        print("error: --web applies to live reception, not --from-dir", file=sys.stderr)
+        print(
+            translate(
+                args.lang, "error: {flag} applies to live reception, not --from-dir", flag="--web"
+            ),
+            file=sys.stderr,
+        )
         return 2
     from .web import run_web
 
     command = [sys.executable, "-m", "rdsclock", *_recon_child_argv(args)]
-    return run_web(command, args.web_host, args.web_port)
+    return run_web(command, args.web_host, args.web_port, language=args.lang)
 
 
 def _recon_gui(args: argparse.Namespace) -> int:
     """Open the desktop window, which reads a ``recon --jsonl`` child process."""
     if args.from_dir:
-        print("error: --gui applies to live reception, not --from-dir", file=sys.stderr)
+        print(
+            translate(
+                args.lang, "error: {flag} applies to live reception, not --from-dir", flag="--gui"
+            ),
+            file=sys.stderr,
+        )
         return 2
     # Import rather than look the package up: tkinter can be present without
     # its native _tkinter extension or the Tcl/Tk libraries it loads.
@@ -828,12 +849,16 @@ def _recon_gui(args: argparse.Namespace) -> int:
         from .gui import run_gui
     except ImportError as exc:
         print(
-            f"error: the desktop window requires tkinter ({exc}); install your "
-            "Python's Tk support (for example: apt install python3-tk)",
+            translate(
+                args.lang,
+                "error: the desktop window requires tkinter ({error}); install your "
+                "Python's Tk support (for example: apt install python3-tk)",
+                error=exc,
+            ),
             file=sys.stderr,
         )
         return 2
-    return run_gui([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)])
+    return run_gui([sys.executable, "-m", "rdsclock", *_recon_child_argv(args)], language=args.lang)
 
 
 def _recon_config(args: argparse.Namespace) -> ReconConfig:
@@ -1173,6 +1198,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--gui",
         action="store_true",
         help="Open a desktop window (tkinter) fed by a --jsonl child",
+    )
+    pr.add_argument(
+        "--lang",
+        choices=SUPPORTED_LANGUAGES,
+        default="en",
+        help="Language of the terminal, browser or desktop dashboard (default: en)",
     )
     pr.add_argument(
         "--web-host",

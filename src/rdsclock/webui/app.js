@@ -3,6 +3,7 @@
 // Every value comes from the receiver or from broadcasts: it is inserted with
 // textContent, never as HTML.
 
+const labels = JSON.parse(document.body.dataset.labels);
 const byId = (id) => document.getElementById(id);
 const CONSENSUS_FIELDS = [
   "trust",
@@ -30,15 +31,15 @@ function renderConsensus(consensus, note) {
   byId("clock").dataset.trust = consensus ? consensus.trust_level : "";
   setText("note", note);
   if (!consensus) {
-    setText("utc", "Waiting for the first completed cycle…");
+    setText("utc", labels.waiting);
     CONSENSUS_FIELDS.forEach((id) => setText(id, ""));
     return;
   }
-  setText("trust", consensus.trust_level);
+  setText("trust", consensus.trust_label);
   setText("assessed", consensus.assessed);
   setText("outliers", consensus.outliers);
   if (consensus.utc === null) {
-    setText("utc", "TIME UNAVAILABLE");
+    setText("utc", labels.unavailable);
     setText("uncertainty", consensus.notes);
     ["sources", "age", "offset"].forEach((id) => setText(id, ""));
     return;
@@ -55,7 +56,7 @@ function renderTable(rows) {
     ...rows.map((row) => {
       const tr = document.createElement("tr");
       tr.dataset.status = row.status;
-      tr.append(...row.cells.map((value) => element("td", value)), element("td", row.status));
+      tr.append(...row.cells.map((value) => element("td", value)), element("td", row.status_label));
       return tr;
     }),
   );
@@ -72,6 +73,7 @@ function renderLog(messages) {
 }
 
 function render(view) {
+  document.documentElement.lang = view.language;
   setText("status", view.status);
   byId("status").dataset.phase = view.phase;
   renderConsensus(view.consensus, view.note);
@@ -84,9 +86,9 @@ byId("pause").addEventListener("click", () => {
   paused = !paused;
   const button = byId("pause");
   button.setAttribute("aria-pressed", String(paused));
-  button.textContent = paused ? "Resume view" : "Pause view";
+  button.textContent = paused ? labels.resume : labels.pause;
   if (paused) {
-    setText("status", "VIEW PAUSED · the receiver keeps running");
+    setText("status", labels.paused);
   } else if (latest) {
     render(latest);
   }
@@ -101,7 +103,7 @@ byId("rescan").addEventListener("click", async () => {
     const body = await response.json();
     setText("notice", body.message ?? body.error);
   } catch (error) {
-    setText("notice", `The rescan request failed: ${error}`);
+    setText("notice", `${labels.rescan_failed} ${error}`);
   }
 });
 
@@ -114,6 +116,6 @@ events.addEventListener("message", (event) => {
 });
 events.addEventListener("error", () => {
   if (!paused) {
-    setText("status", "Connection lost; reconnecting…");
+    setText("status", labels.disconnected);
   }
 });

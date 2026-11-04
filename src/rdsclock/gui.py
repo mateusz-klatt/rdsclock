@@ -21,6 +21,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 
 from .dashboard import COLUMNS, UNCERTAINTY_NOTE, ConsensusView, DashboardState, ReceiverProcess
+from .i18n import translate
 
 POLL_MS = 100
 TICK_MS = 1000
@@ -32,15 +33,31 @@ _STATUS_TAGS = {"OUTLIER": "outlier", "ok": "ok", "not counted": "muted", "no CT
 _MUTED = "#5b6475"
 _ALERT = "#b8232a"
 
+# Tk's Nimbus fonts have no glyphs for these General Punctuation characters:
+# they draw nothing, or unrelated symbols for U+2026, so the window uses ASCII.
+_TK_ASCII = str.maketrans(
+    {"…": "...", "’": "'", "‘": "'", "—": "-", "–": "-", "“": '"', "”": '"', "„": '"'}
+)
+
+
+def tk_text(text: str) -> str:
+    """``text`` with the punctuation that Tk's fonts cannot draw spelled in ASCII."""
+    return text.translate(_TK_ASCII)
+
 
 class DesktopDashboard:
     """A Tk window over a ``recon --jsonl`` child process."""
 
     def __init__(
-        self, root: tk.Tk, command: list[str], state: DashboardState | None = None
+        self,
+        root: tk.Tk,
+        command: list[str],
+        state: DashboardState | None = None,
+        language: str = "en",
     ) -> None:
         self.root = root
-        self.state = state if state is not None else DashboardState()
+        self.state = state if state is not None else DashboardState(language=language)
+        self.language = self.state.language
         self.receiver = ReceiverProcess(command, self._queue_line, self._queue_exit)
         self.inbox: queue.SimpleQueue[tuple[str, object]] = queue.SimpleQueue()
         self.paused = False
@@ -66,6 +83,9 @@ class DesktopDashboard:
         root.after(POLL_MS, self._poll)
         root.after(TICK_MS, self._tick)
 
+    def _t(self, message: str, **values: object) -> str:
+        return tk_text(translate(self.language, message, **values))
+
     def _build(self) -> None:
         root = self.root
         root.title("rdsclock recon")
@@ -82,13 +102,15 @@ class DesktopDashboard:
         ttk.Label(header, textvariable=self.status, font=fixed).pack(
             side="left", expand=True, anchor="w"
         )
-        self.rescan_button = ttk.Button(header, text="Rescan", command=self.rescan)
-        self.pause_button = ttk.Button(header, text="Pause view", command=self.toggle_pause)
-        quit_button = ttk.Button(header, text="Quit", command=self.quit)
+        self.rescan_button = ttk.Button(header, text=self._t("Rescan"), command=self.rescan)
+        self.pause_button = ttk.Button(
+            header, text=self._t("Pause view"), command=self.toggle_pause
+        )
+        quit_button = ttk.Button(header, text=self._t("Quit"), command=self.quit)
         for button in (quit_button, self.pause_button, self.rescan_button):
             button.pack(side="right", padx=(6, 0))
 
-        panel = ttk.LabelFrame(frame, text="Consensus", padding=10)
+        panel = ttk.LabelFrame(frame, text=self._t("Consensus"), padding=10)
         panel.pack(fill="x", pady=(10, 0))
         self.clock = tk.StringVar()
         self.clock_label = ttk.Label(panel, textvariable=self.clock, font=clock_font)
@@ -105,20 +127,22 @@ class DesktopDashboard:
         ttk.Label(panel, textvariable=self.offset, font=fixed).pack(anchor="w", pady=(4, 0))
         self.outliers = tk.StringVar()
         ttk.Label(panel, textvariable=self.outliers, font=fixed, foreground=_ALERT).pack(anchor="w")
-        ttk.Label(panel, text=UNCERTAINTY_NOTE, foreground=_MUTED).pack(anchor="w", pady=(4, 0))
+        ttk.Label(panel, text=self._t(UNCERTAINTY_NOTE), foreground=_MUTED).pack(
+            anchor="w", pady=(4, 0)
+        )
 
-        stations = ttk.LabelFrame(frame, text="Stations", padding=10)
+        stations = ttk.LabelFrame(frame, text=self._t("Stations"), padding=10)
         stations.pack(fill="both", expand=True, pady=(10, 0))
         self.table = ttk.Treeview(stations, columns=COLUMNS, show="headings", height=7)
         for name in COLUMNS:
-            self.table.heading(name, text=name, anchor="w")
+            self.table.heading(name, text=self._t(name), anchor="w")
             self.table.column(name, width=78, minwidth=48, stretch=True, anchor="w")
         self.table.tag_configure("ok", foreground=_TRUST_COLOURS["HIGH"])
         self.table.tag_configure("outlier", foreground=_ALERT)
         self.table.tag_configure("muted", foreground=_MUTED)
         self.table.pack(fill="both", expand=True)
 
-        history = ttk.LabelFrame(frame, text="Log", padding=10)
+        history = ttk.LabelFrame(frame, text=self._t("Log"), padding=10)
         history.pack(fill="both", pady=(10, 0))
         self.log = tk.Text(history, height=8, wrap="none", font=fixed, state="disabled")
         scrollbar = ttk.Scrollbar(history, orient="vertical", command=self.log.yview)
@@ -178,21 +202,20 @@ class DesktopDashboard:
         if self.paused:
             return
         view = self.state.view()
-        self.status.set(view.status)
+        self.status.set(tk_text(view.status))
         self._show_consensus(view.consensus)
         self.table.delete(*self.table.get_children())
         for row in view.rows:
             tag = _STATUS_TAGS.get(row.status)
-            self.table.insert(
-                "", "end", values=(*row.cells, row.status), tags=(tag,) if tag else ()
-            )
+            cells = (*(tk_text(cell) for cell in row.cells), self._t(row.status))
+            self.table.insert("", "end", values=cells, tags=(tag,) if tag else ())
         ready = self.state.can_rescan() and self.receiver.running
         self.rescan_button.state(["!disabled"] if ready else ["disabled"])
 
     def _show_consensus(self, consensus: ConsensusView | None) -> None:
         clock, trust, assessed, facts, offset, outliers = "", "", "", "", "", ""
         if consensus is None:
-            clock = "Waiting for the first completed cycle…"
+            clock = self._t("Waiting for the first completed cycle…")
         else:
             trust, assessed, outliers = (
                 consensus.trust_level,
@@ -200,20 +223,20 @@ class DesktopDashboard:
                 consensus.outliers,
             )
             if consensus.utc is None:
-                clock, facts = "TIME UNAVAILABLE", consensus.notes
+                clock, facts = self._t("TIME UNAVAILABLE"), consensus.notes
             else:
                 clock = f"UTC {consensus.utc}"
                 parts = (consensus.uncertainty, consensus.sources, consensus.age)
                 facts = "   ".join(part for part in parts if part)
                 offset = consensus.host_offset or ""
-        self.clock.set(clock)
+        self.clock.set(tk_text(clock))
         alert = consensus is not None and (consensus.utc is None or trust == "STALE")
         self.clock_label.configure(foreground=_ALERT if alert else "")
-        self.trust_label.configure(text=trust, foreground=_TRUST_COLOURS.get(trust, ""))
-        self.assessed_label.configure(text=assessed)
-        self.facts.set(facts)
-        self.offset.set(offset)
-        self.outliers.set(outliers or "")
+        self.trust_label.configure(text=self._t(trust), foreground=_TRUST_COLOURS.get(trust, ""))
+        self.assessed_label.configure(text=tk_text(assessed))
+        self.facts.set(tk_text(facts))
+        self.offset.set(tk_text(offset))
+        self.outliers.set(tk_text(outliers or ""))
 
     def _log(self, messages: list[str]) -> None:
         if self.paused:
@@ -223,7 +246,7 @@ class DesktopDashboard:
             return
         self.log.configure(state="normal")
         for message in messages:
-            self.log.insert("end", message + "\n")
+            self.log.insert("end", tk_text(message) + "\n")
         excess = int(self.log.index("end-1c").split(".")[0]) - 1 - LOG_LINES
         if excess > 0:
             self.log.delete("1.0", f"{excess + 1}.0")
@@ -235,15 +258,15 @@ class DesktopDashboard:
 
     def rescan(self) -> None:
         if not self.state.can_rescan() or not self.receiver.send_signal(signal.SIGUSR1):
-            self._log(["The receiver is not ready for a rescan."])
+            self._log([self._t("The receiver is not ready for a rescan.")])
             return
-        self._log(["Rescan requested; it starts after the current cycle."])
+        self._log([self._t("Rescan requested; it starts after the current cycle.")])
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
-        self.pause_button.configure(text="Resume view" if self.paused else "Pause view")
+        self.pause_button.configure(text=self._t("Resume view" if self.paused else "Pause view"))
         if self.paused:
-            self.status.set("VIEW PAUSED · the receiver keeps running")
+            self.status.set(self._t("VIEW PAUSED · the receiver keeps running"))
             return
         held = list(self.held)
         self.held.clear()
@@ -266,14 +289,16 @@ class DesktopDashboard:
         self.root.destroy()
 
 
-def run_gui(command: list[str]) -> int:
+def run_gui(command: list[str], language: str = "en") -> int:
     """Show the window until it is closed; return the exit status."""
     try:
         root = tk.Tk()
     except tk.TclError as exc:
-        print(f"error: cannot open a window: {exc}", file=sys.stderr)
+        print(
+            translate(language, "error: cannot open a window: {error}", error=exc), file=sys.stderr
+        )
         return 2
-    dashboard = DesktopDashboard(root, command)
+    dashboard = DesktopDashboard(root, command, language=language)
     try:
         root.mainloop()
     finally:

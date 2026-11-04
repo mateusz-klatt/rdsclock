@@ -33,6 +33,7 @@ from .dashboard import (
     Row,
     View,
 )
+from .i18n import translate
 
 _TRUST_STYLES = {
     "HIGH": "bold green",
@@ -79,26 +80,32 @@ async def _drop_line(reader: asyncio.StreamReader, consumed: int) -> bool:
             return True
 
 
-def status_text(view: View) -> Text:
+def status_text(view: View, language: str = "en") -> Text:
     text = Text(view.status)
-    text.stylize("bold", 0, len(view.phase))
+    text.stylize("bold", 0, len(translate(language, view.phase)))
     return text
 
 
-def consensus_text(consensus: ConsensusView | None) -> Text:
+def consensus_text(consensus: ConsensusView | None, language: str = "en") -> Text:
     """The consensus panel, with the same caveats as the text display."""
     if consensus is None:
-        text = Text("Waiting for the first completed cycle…", style="dim")
+        text = Text(translate(language, "Waiting for the first completed cycle…"), style="dim")
     elif consensus.utc is None:
-        text = Text("TIME UNAVAILABLE", style="bold red")
-        text.append("   trust ")
-        text.append(consensus.trust_level, style=_TRUST_STYLES.get(consensus.trust_level, ""))
+        text = Text(translate(language, "TIME UNAVAILABLE"), style="bold red")
+        text.append("   " + translate(language, "Trust") + " ")
+        text.append(
+            translate(language, consensus.trust_level),
+            style=_TRUST_STYLES.get(consensus.trust_level, ""),
+        )
         text.append(f" ({consensus.assessed})", style="dim")
         text.append(f"   {consensus.notes}")
     else:
         text = Text(f"UTC {consensus.utc}", style="bold")
         text.append(f"   {consensus.uncertainty}   ")
-        text.append(consensus.trust_level, style=_TRUST_STYLES.get(consensus.trust_level, ""))
+        text.append(
+            translate(language, consensus.trust_level),
+            style=_TRUST_STYLES.get(consensus.trust_level, ""),
+        )
         text.append(f" ({consensus.assessed})", style="dim")
         text.append(f"   {consensus.sources}")
         if consensus.age is not None:
@@ -107,12 +114,12 @@ def consensus_text(consensus: ConsensusView | None) -> Text:
             text.append(f"\n{consensus.host_offset}")
     if consensus is not None and consensus.outliers is not None:
         text.append(f"\n{consensus.outliers}", style="red")
-    text.append(f"\n{UNCERTAINTY_NOTE}", style="dim")
+    text.append("\n" + translate(language, UNCERTAINTY_NOTE), style="dim")
     return text
 
 
-def row_cells(row: Row) -> tuple[Text, ...]:
-    status = Text(row.status, style=_STATUS_STYLES.get(row.status, ""))
+def row_cells(row: Row, language: str = "en") -> tuple[Text, ...]:
+    status = Text(translate(language, row.status), style=_STATUS_STYLES.get(row.status, ""))
     return (*(Text(cell) for cell in row.cells), status)
 
 
@@ -193,7 +200,7 @@ class ReconDashboard(App[None]):
     #stations { height: 1fr; margin-top: 1; }
     #log { height: 8; border-top: solid $panel; }
     """
-    BINDINGS = [
+    CONTROL_BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "rescan", "Rescan"),
         Binding("p", "pause", "Pause view"),
@@ -201,15 +208,23 @@ class ReconDashboard(App[None]):
 
     stop_timeout_s = 5.0
 
-    def __init__(self, command: list[str], state: DashboardState | None = None) -> None:
+    def __init__(
+        self, command: list[str], state: DashboardState | None = None, language: str = "en"
+    ) -> None:
         super().__init__()
         self.command = command
-        self.state = state if state is not None else DashboardState()
+        self.state = state if state is not None else DashboardState(language=language)
+        self.language = self.state.language
+        for binding in self.CONTROL_BINDINGS:
+            self.bind(binding.key, binding.action, description=self._t(binding.description))
         self.child: ReconChild | None = None
         self.paused = False
         self.failed = False
         self.held: deque[str] = deque(maxlen=LOG_LINES)
         self._stop_requested = False
+
+    def _t(self, message: str, **values: object) -> str:
+        return translate(self.language, message, **values)
 
     def compose(self) -> ComposeResult:
         yield Static(id="status")
@@ -219,7 +234,7 @@ class ReconDashboard(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one(DataTable).add_columns(*COLUMNS)
+        self.query_one(DataTable).add_columns(*(self._t(name) for name in COLUMNS))
         # Live recon rescans on SIGUSR1; the dashboard forwards it instead of dying.
         asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, self.action_rescan)
         self.run_worker(self._follow_receiver(), exclusive=True)
@@ -248,12 +263,12 @@ class ReconDashboard(App[None]):
         if self.paused:
             return
         view = self.state.view()
-        self.query_one("#status", Static).update(status_text(view))
-        self.query_one("#consensus", Static).update(consensus_text(view.consensus))
+        self.query_one("#status", Static).update(status_text(view, self.language))
+        self.query_one("#consensus", Static).update(consensus_text(view.consensus, self.language))
         table = self.query_one(DataTable)
         table.clear()
         for row in view.rows:
-            table.add_row(*row_cells(row))
+            table.add_row(*row_cells(row, self.language))
 
     def _log_all(self, messages: list[str]) -> None:
         if self.paused:
@@ -268,7 +283,14 @@ class ReconDashboard(App[None]):
             return
         self._stop_requested = True
         if not await self.child.stop(self.stop_timeout_s):
-            self._log_all([f"The receiver did not stop within {self.stop_timeout_s:g} s; killed."])
+            self._log_all(
+                [
+                    self._t(
+                        "The receiver did not stop within {timeout:g} s; killed.",
+                        timeout=self.stop_timeout_s,
+                    )
+                ]
+            )
 
     async def action_quit(self) -> None:
         """Stop the receiver as Ctrl+C would, then leave."""
@@ -277,14 +299,14 @@ class ReconDashboard(App[None]):
 
     def action_rescan(self) -> None:
         if self.child is None or not self.state.can_rescan():
-            self._log_all(["The receiver is not ready for a rescan."])
+            self._log_all([self._t("The receiver is not ready for a rescan.")])
         elif self.child.send_signal(signal.SIGUSR1):
-            self._log_all(["Rescan requested; it starts after the current cycle."])
+            self._log_all([self._t("Rescan requested; it starts after the current cycle.")])
 
     def action_pause(self) -> None:
         self.paused = not self.paused
         if self.paused:
-            banner = "VIEW PAUSED · the receiver keeps running · p resumes"
+            banner = self._t("VIEW PAUSED · the receiver keeps running · p resumes")
             self.query_one("#status", Static).update(Text(banner, style="reverse"))
             return
         held = list(self.held)
@@ -298,11 +320,11 @@ class ReconDashboard(App[None]):
         await self._stop_receiver()
 
 
-def run_dashboard(command: list[str]) -> int:
+def run_dashboard(command: list[str], language: str = "en") -> int:
     """Run the dashboard until the operator quits; return the exit status.
 
     The status is 1 when the receiver failed on its own, otherwise the app's.
     """
-    app = ReconDashboard(command)
+    app = ReconDashboard(command, language=language)
     app.run()
     return 1 if app.failed else (app.return_code or 0)

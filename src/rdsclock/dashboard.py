@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import IO, Any
 
+from .i18n import normalize_language, translate
 from .time_consensus import STALE_AGE_S
 
 SUPPORTED_SCHEMA = 1
@@ -292,21 +293,32 @@ class DashboardState:
     hops_done: int = 0
     n_stations: int = 0
     schema_warned: bool = False
+    language: str = "en"
+
+    def __post_init__(self) -> None:
+        self.language = normalize_language(self.language)
+
+    def _t(self, message: str, **values: object) -> str:
+        return translate(self.language, message, **values)
 
     def apply_line(self, line: str) -> list[str]:
         """Apply one JSON Lines record; return messages for the operator log."""
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
-            return ["Ignored a line that is not JSON."]
+            return [self._t("Ignored a line that is not JSON.")]
         if not isinstance(record, dict):
-            return ["Ignored a JSON value that is not an event."]
+            return [self._t("Ignored a JSON value that is not an event.")]
         messages = []
         if record.get("schema") != SUPPORTED_SCHEMA and not self.schema_warned:
             self.schema_warned = True
             messages.append(
-                f"Event schema {record.get('schema')} is not {SUPPORTED_SCHEMA}; "
-                "showing what this version understands."
+                self._t(
+                    "Event schema {schema} is not {supported}; "
+                    "showing what this version understands.",
+                    schema=record.get("schema"),
+                    supported=SUPPORTED_SCHEMA,
+                )
             )
         kind = record.get("event")
         handler = _HANDLERS.get(kind) if isinstance(kind, str) else None
@@ -314,7 +326,7 @@ class DashboardState:
             try:
                 messages.extend(handler(self, record))
             except (ArithmeticError, AttributeError, KeyError, TypeError, ValueError):
-                messages.append(f"Ignored a malformed {kind} event.")
+                messages.append(self._t("Ignored a malformed {kind} event.", kind=kind))
         return [printable(message) for message in messages]
 
     # Each handler validates the whole record before it changes any state.
@@ -322,7 +334,11 @@ class DashboardState:
     def _on_recon_started(self, record: Record) -> list[str]:
         tuner, gains = _integer(record["tuner_type"]), _integer(record["gain_count"])
         self.ready = True
-        return [f"Receiver ready: tuner type {tuner}, {gains} gain steps."]
+        return [
+            self._t(
+                "Receiver ready: tuner type {tuner}, {gains} gain steps.", tuner=tuner, gains=gains
+            )
+        ]
 
     def _on_acquisition_started(self, record: Record) -> list[str]:
         iteration = _integer(record["iteration"])
@@ -335,17 +351,35 @@ class DashboardState:
         self.scan_points, self.scan_freq_hz, self.scan_total = 0, None, listed
         if wide is None and listed is not None:
             return [
-                f"Acquisition #{iteration}: checking {listed} listed stations, "
-                f"{band[0]:.2f}-{band[1]:.2f} MHz."
+                self._t(
+                    "Acquisition #{iteration}: checking {listed} listed stations, "
+                    "{start:.2f}-{end:.2f} MHz.",
+                    iteration=iteration,
+                    listed=listed,
+                    start=band[0],
+                    end=band[1],
+                )
             ]
         if wide is not None:
             return [
-                f"Acquisition #{iteration}: one WIDE capture at {wide[0] / 1e6:.2f} MHz "
-                f"covers {band[0]:.2f}-{band[1]:.2f} MHz."
+                self._t(
+                    "Acquisition #{iteration}: one WIDE capture at {center:.2f} MHz "
+                    "covers {start:.2f}-{end:.2f} MHz.",
+                    iteration=iteration,
+                    center=wide[0] / 1e6,
+                    start=band[0],
+                    end=band[1],
+                )
             ]
         return [
-            f"Acquisition #{iteration}: scanning {band[0]:.2f}-{band[1]:.2f} MHz "
-            f"in {band[2]:.2f} MHz steps."
+            self._t(
+                "Acquisition #{iteration}: scanning {start:.2f}-{end:.2f} MHz "
+                "in {step:.2f} MHz steps.",
+                iteration=iteration,
+                start=band[0],
+                end=band[1],
+                step=band[2],
+            )
         ]
 
     def _on_scan_step(self, record: Record) -> list[str]:
@@ -358,8 +392,14 @@ class DashboardState:
             return []
         ct = ", CT" if candidate.get("has_ct") is True else ""
         return [
-            f"  {freq_hz / 1e6:6.2f} MHz  {_db(station.rssi_db)} dB  "
-            f"{station.n_groups} groups{ct}  {station.ps_name}".rstrip()
+            self._t(
+                "  {freq:6.2f} MHz  {db} dB  {groups} groups{ct}  {ps}",
+                freq=freq_hz / 1e6,
+                db=_db(station.rssi_db),
+                groups=station.n_groups,
+                ct=ct,
+                ps=station.ps_name,
+            ).rstrip()
         ]
 
     def _on_watchlist_updated(self, record: Record) -> list[str]:
@@ -372,9 +412,9 @@ class DashboardState:
         for station in watchlist:
             self._confirm(_tuning(station.freq_hz), station.pi)
         if not watchlist:
-            return ["Watchlist empty: no RDS station found in this scan."]
+            return [self._t("Watchlist empty: no RDS station found in this scan.")]
         freqs = ", ".join(f"{station.freq_hz / 1e6:.2f}" for station in watchlist)
-        return [f"Watchlist: {freqs} MHz."]
+        return [self._t("Watchlist: {freqs} MHz.", freqs=freqs)]
 
     def _on_maintenance_started(self, record: Record) -> list[str]:
         iteration, n_stations = _integer(record["iteration"]), _integer(record["n_stations"])
@@ -384,8 +424,13 @@ class DashboardState:
         if wide is None or not n_stations:
             return []
         return [
-            f"WIDE capture at {wide[0] / 1e6:.2f} MHz, {wide[1] / 1e6:.2f} MS/s: "
-            f"{n_stations} stations at once."
+            self._t(
+                "WIDE capture at {center:.2f} MHz, {rate:.2f} MS/s: "
+                "{n_stations} stations at once.",
+                center=wide[0] / 1e6,
+                rate=wide[1] / 1e6,
+                n_stations=n_stations,
+            )
         ]
 
     def _on_hop_result(self, record: Record) -> list[str]:
@@ -394,16 +439,29 @@ class DashboardState:
         key = _tuning(freq_hz)
         self._confirm(key, hop.pi)
         self.hops[key] = hop
-        # CT is missing from many captures: keep the latest one until another
-        # transmitter is confirmed on this tuning.
-        if hop.ct_utc is not None:
+        # CT is missing from many captures: retain the last confirmed source.
+        # An unconfirmed PI cannot replace it and later masquerade as that PI.
+        # Its CT remains visible in the current hop, without entering the cache.
+        if hop.ct_utc is not None and hop.pi is not None:
             self.last_ct[key] = hop
         self.hops_done += 1
         label = f"{freq_hz / 1e6:.2f} MHz {hop.ps_name}".rstrip()
-        groups = f"{hop.n_groups} groups, {hop.n_groups_corrected} corrected"
+        groups = self._t(
+            "{n_groups} groups, {corrected} corrected",
+            n_groups=hop.n_groups,
+            corrected=hop.n_groups_corrected,
+        )
         if hop.ct_utc is None:
-            return [f"{label}: no CT, {groups}."]
-        return [f"{label}: CT {hop.ct_utc:%H:%M}Z (LTO {_lto(hop.lto_minutes)}), {groups}."]
+            return [self._t("{label}: no CT, {groups}.", label=label, groups=groups)]
+        return [
+            self._t(
+                "{label}: CT {utc:%H:%M}Z (LTO {lto}), {groups}.",
+                label=label,
+                utc=hop.ct_utc,
+                lto=_lto(hop.lto_minutes),
+                groups=groups,
+            )
+        ]
 
     def _on_cycle_completed(self, record: Record) -> list[str]:
         iteration = _integer(record["iteration"])
@@ -427,14 +485,24 @@ class DashboardState:
         self.next_rescan_in_s = next_rescan_in_s
         self.cycle_at = self.clock()
         return [
-            f"Cycle #{iteration}: {new_observations} new CT observation(s); "
-            f"trust {consensus.trust_level}, N={consensus.n_sources}."
+            self._t(
+                "Cycle #{iteration}: {observations} new CT observation(s); "
+                "trust {trust}, N={sources}.",
+                iteration=iteration,
+                observations=new_observations,
+                trust=self._t(consensus.trust_level),
+                sources=consensus.n_sources,
+            )
         ]
 
     def _on_recon_stopped(self, record: Record) -> list[str]:
         reason = printable(record["reason"])
         self.stopped, self.phase = True, "STOPPED"
-        return [f"Receiver stopped: {_STOP_REASONS.get(reason, reason)}."]
+        return [
+            self._t(
+                "Receiver stopped: {reason}.", reason=self._t(_STOP_REASONS.get(reason, reason))
+            )
+        ]
 
     def receiver_exited(
         self, returncode: int, stderr_tail: Iterable[str], requested: bool
@@ -444,9 +512,11 @@ class DashboardState:
         if returncode == 0 and (self.stopped or requested):
             return []
         if returncode == 0:
-            messages = ["The receiver stream ended without recon_stopped."]
+            messages = [self._t("The receiver stream ended without recon_stopped.")]
         else:
-            messages = [f"Receiver process exited with status {returncode}."]
+            messages = [
+                self._t("Receiver process exited with status {returncode}.", returncode=returncode)
+            ]
         messages.extend(f"  {line}" for line in stderr_tail)
         return [printable(message) for message in messages]
 
@@ -468,7 +538,7 @@ class DashboardState:
 
     def start_failed(self, error: OSError) -> list[str]:
         self.phase = "STOPPED"
-        return [printable(f"Could not start the receiver: {error}")]
+        return [printable(self._t("Could not start the receiver: {error}", error=error))]
 
     def elapsed(self) -> float:
         """Seconds since the latest ``cycle_completed`` event arrived."""
@@ -488,7 +558,7 @@ class DashboardState:
         )
 
     def _status_line(self) -> str:
-        status = self.phase
+        status = self._t(self.phase)
         if self.iteration:
             status += f" #{self.iteration}"
         if self.phase == "ACQUISITION" and self.wide is not None:
@@ -496,41 +566,51 @@ class DashboardState:
         elif self.phase == "ACQUISITION" and self.band is not None:
             start, end, step = self.band
             total = math.floor((end - start) / step + 1e-6) + 1 if step > 0 else 0
-            unit = "points"
+            progress = " · {completed}/{total} points"
             if self.scan_total is not None:
-                total, unit = self.scan_total, "stations"
+                total, progress = self.scan_total, " · {completed}/{total} stations"
             if self.scan_freq_hz is not None:
                 status += f" · {self.scan_freq_hz / 1e6:.2f} MHz"
-            status += f" · {self.scan_points}/{total} {unit}"
+            status += self._t(progress, completed=self.scan_points, total=total)
         elif self.phase == "MAINTENANCE":
             status += self._hop_progress() if self.wide is None else self._wide_progress()
         if self.next_rescan_in_s is not None and self.phase != "STOPPED":
             remaining = max(0.0, self.next_rescan_in_s - self.elapsed())
-            status += f" · next rescan in {remaining:.0f} s"
+            status += self._t(" · next rescan in {remaining:.0f} s", remaining=remaining)
         return status
 
     def _hop_progress(self) -> str:
         if not self.n_stations:
-            return " · no stations to visit"
-        progress = f" · hop {min(self.hops_done + 1, self.n_stations)}/{self.n_stations}"
+            return self._t(" · no stations to visit")
+        progress = self._t(
+            " · hop {current}/{total}",
+            current=min(self.hops_done + 1, self.n_stations),
+            total=self.n_stations,
+        )
         if self.hops_done < min(self.n_stations, len(self.watchlist)):
-            progress += f" · recording {self.watchlist[self.hops_done].freq_hz / 1e6:.2f} MHz"
+            progress += self._t(
+                " · recording {freq:.2f} MHz", freq=self.watchlist[self.hops_done].freq_hz / 1e6
+            )
         return progress
 
     def _wide_progress(self) -> str:
         if not self.n_stations:
-            return " · no stations to record"
+            return self._t(" · no stations to record")
         progress = f" · WIDE {self.wide[0] / 1e6:.2f} MHz"
         if self.hops_done < self.n_stations:
-            return progress + f" · recording {self.n_stations} stations at once"
-        return progress + f" · {self.n_stations} stations from one capture"
+            return progress + self._t(
+                " · recording {stations} stations at once", stations=self.n_stations
+            )
+        return progress + self._t(
+            " · {stations} stations from one capture", stations=self.n_stations
+        )
 
     def _consensus_view(self) -> ConsensusView | None:
         consensus = self.consensus
         if consensus is None:
             return None
         elapsed = self.elapsed()
-        assessed = f"assessed {elapsed:.0f} s ago"
+        assessed = self._t("assessed {elapsed:.0f} s ago", elapsed=elapsed)
         sources = f"N={consensus.n_sources}"
         age_s = None if consensus.median_age_s is None else consensus.median_age_s + elapsed
         if consensus.utc is not None and age_s is not None and age_s > STALE_AGE_S:
@@ -543,21 +623,23 @@ class DashboardState:
                 age=None,
                 host_offset=None,
                 outliers=None,
-                notes=f"the last estimate expired: its CT is {age_s:.0f} s old",
+                notes=self._t("the last estimate expired: its CT is {age:.0f} s old", age=age_s),
                 assessed=assessed,
             )
         outliers = None
         if consensus.outliers_mhz:
-            outliers = f"Outliers: {', '.join(f'{f:.2f}' for f in consensus.outliers_mhz)} MHz"
+            outliers = self._t(
+                "Outliers: {freqs} MHz", freqs=", ".join(f"{f:.2f}" for f in consensus.outliers_mhz)
+            )
         uncertainty = "?" if consensus.uncertainty_s is None else f"{consensus.uncertainty_s:.0f}"
         utc = age = host_offset = None
         if consensus.utc is not None:
             now = consensus.utc + timedelta(seconds=elapsed)
             utc = f"{now:%Y-%m-%d %H:%M:%S}"
             if age_s is not None:
-                age = f"age {age_s:.0f} s"
+                age = self._t("age {age:.0f} s", age=age_s)
             delta = (self.wall_clock() - now).total_seconds()
-            host_offset = f"Host clock minus consensus: {delta:+.1f} s"
+            host_offset = self._t("Host clock minus consensus: {delta:+.1f} s", delta=delta)
         return ConsensusView(
             trust_level=consensus.trust_level,
             utc=utc,
@@ -566,7 +648,7 @@ class DashboardState:
             age=age,
             host_offset=host_offset,
             outliers=outliers,
-            notes=consensus.notes,
+            notes=self._t(consensus.notes),
             assessed=assessed,
         )
 
@@ -574,6 +656,8 @@ class DashboardState:
         key = _tuning(station.freq_hz)
         hop = self.hops.get(key)
         last_ct = self.last_ct.get(key)
+        if hop is not None and hop.pi is None and hop.ct_utc is not None:
+            last_ct = hop
         track = self.tracks.get(key)
         identity = self.identity.get(key)
         if track is not None and None not in (track.pi, identity) and track.pi != identity:
@@ -592,7 +676,7 @@ class DashboardState:
         if last_ct is not None:
             ct, lto = f"{last_ct.ct_utc:%H:%M}Z", _lto(last_ct.lto_minutes)
         elif hop is not None:
-            ct = "none"
+            ct = self._t("none")
         age = trust = "—"
         if track is not None:
             trust = f"{track.trust_score:.2f}"
@@ -612,7 +696,7 @@ class DashboardState:
             return "ok"
         if track is not None:
             return "not counted"
-        if hop is not None and key not in self.last_ct:
+        if hop is not None and hop.ct_utc is None and key not in self.last_ct:
             return "no CT"
         return ""
 

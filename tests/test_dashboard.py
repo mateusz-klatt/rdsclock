@@ -270,6 +270,26 @@ class TestDashboardState:
         assert state.view().rows[0].cells[2] == "0xB202"
         assert state.view().rows[0].cells[6] == "none"
 
+    def test_unconfirmed_ct_cannot_replace_the_confirmed_transmitters_history(self):
+        unconfirmed = ClockTime(CT.replace(hour=13), 120)
+        state, _, _ = _state(
+            [*session()[:6], _hop(0xA101, ClockTime(CT, 60)), _hop(None, unconfirmed)]
+        )
+        # Show this observation while its identity is explicitly unknown.
+        assert state.view().rows[0].cells[2] == "—"
+        assert state.view().rows[0].cells[6:8] == ("13:00Z", "+02:00")
+        state.apply_line(_hop(0xA101, None))
+        assert state.view().rows[0].cells[2] == "0xA101"
+        assert state.view().rows[0].cells[6:8] == ("12:00Z", "+01:00")
+
+    def test_unconfirmed_ct_without_prior_history_is_not_reassigned_on_confirmation(self):
+        state, _, _ = _state([*session()[:6], _hop(None, ClockTime(CT, 60))])
+        assert state.view().rows[0].cells[6] == "12:00Z"
+        assert state.view().rows[0].status != "no CT"
+        state.apply_line(_hop(0xA101, None))
+        assert state.view().rows[0].cells[6:8] == ("none", "")
+        assert state.view().rows[0].status == "no CT"
+
     def test_a_rescan_that_confirms_another_pi_drops_the_tuning_caches(self):
         moved = recon.StationCandidate(102.4e6, -30.0, 90, True, 0xB202, "OTHER")
         state, _, _ = _state([*session(), line(recon.WatchlistUpdated(2, (moved,)))])

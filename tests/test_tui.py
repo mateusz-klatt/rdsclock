@@ -46,7 +46,7 @@ class TestRendering:
     def test_unavailable_and_waiting_panels(self):
         unavailable = tui.consensus_text(_view([*session()[:-1], line(cycle(utc=None))]).consensus)
         assert unavailable.plain.startswith(
-            "TIME UNAVAILABLE   trust STALE (assessed 0 s ago)   no active sources"
+            "TIME UNAVAILABLE   Trust STALE (assessed 0 s ago)   no active sources"
         )
         assert tui.consensus_text(None).plain.startswith("Waiting for the first completed cycle")
 
@@ -308,7 +308,7 @@ class TestReconDashboard:
     )
     def test_run_dashboard_exit_status(self, monkeypatch, failed, return_code, status):
         class FinishedApp:
-            def __init__(self, command):
+            def __init__(self, command, language="en"):
                 self.failed, self.return_code = failed, return_code
 
             def run(self):
@@ -321,7 +321,9 @@ class TestReconDashboard:
 class TestReconTuiCli:
     def test_child_runs_jsonl_with_the_same_settings(self, monkeypatch):
         commands: list[list[str]] = []
-        monkeypatch.setattr(tui, "run_dashboard", lambda command: commands.append(command) or 0)
+        monkeypatch.setattr(
+            tui, "run_dashboard", lambda command, language="en": commands.append(command) or 0
+        )
         argv = [
             "recon",
             "--start=98",
@@ -343,7 +345,18 @@ class TestReconTuiCli:
 
     def test_child_receives_every_receiver_setting(self):
         dests = set(vars(cli.build_parser().parse_args(["recon"])))
-        local = {"command", "func", "verbose", "jsonl", "tui", "web", "web_host", "web_port", "gui"}
+        local = {
+            "command",
+            "func",
+            "verbose",
+            "jsonl",
+            "tui",
+            "web",
+            "web_host",
+            "web_port",
+            "lang",
+            "gui",
+        }
         local |= {"from_dir", "limit_files"}
         assert {dest for _, dest in cli._RECON_CHILD_OPTIONS} == dests - local
 
@@ -361,3 +374,32 @@ class TestReconTuiCli:
         monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: None)
         assert cli.main(["recon", "--tui"]) == 2
         assert "pip install 'rdsclock[tui]'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "language,trust,rescan,paused",
+    [
+        ("en", "HIGH", "Rescan", "VIEW PAUSED"),
+        ("pl", "WYSOKIE", "Skanuj ponownie", "WIDOK WSTRZYMANY"),
+        ("fr", "ÉLEVÉE", "Relancer le balayage", "AFFICHAGE SUSPENDU"),
+    ],
+)
+def test_dashboard_language_reaches_widgets_and_preserves_style(
+    tmp_path, language, trust, rescan, paused
+):
+    app = tui.ReconDashboard(receiver_command(tmp_path), language=language)
+
+    async def scenario(pilot):
+        await _until(pilot, lambda: app.state.consensus is not None)
+        panel = str(app.query_one("#consensus", Static).render())
+        assert trust in panel
+        assert app._bindings.key_to_bindings["r"][0].description == rescan
+        cells = tui.row_cells(app.state.view().rows[2], language)
+        assert cells[1].plain == MARKUP_PS
+        assert cells[-1].style == "bold red"
+        await pilot.press("p")
+        assert paused in str(app.query_one("#status", Static).render())
+        await pilot.press("q")
+
+    _drive(app, scenario)
+    assert app.child.process.returncode == 0
