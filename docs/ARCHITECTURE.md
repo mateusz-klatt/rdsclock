@@ -154,11 +154,14 @@ that started more than two transfers, and at least 0.25 s, behind.
 The earliest bound dates the first sample only once the stream has caught up
 with real time. A backlog longer than the capture arrives ahead of real time
 throughout, and the samples are then older than the bound by an unknown amount.
-A backlogged capture counts as caught up once, for the last four backlog
-thresholds of the read (1 s at 2.4 MS/s, 4.2 s at 250 kS/s), no read moved its
-start back by more than a fifth of a threshold. That recognises a stream
-running more than 5 % ahead of real time. Otherwise `caught_up` is false, and
-recon reports the capture's Clock-Time without adding it to the consensus.
+A backlogged capture counts as caught up only when the last four backlog
+thresholds of its read (1 s at 2.4 MS/s, 4.2 s at 250 kS/s) show the stream in
+real time. The earliest bound of their second half may lie at most a fifth of
+a threshold before that of their first half, which delivery more than 10 %
+ahead of real time prevents, also after a stall. The last read must lie within
+a threshold of the earliest bound, which a stall before it prevents. Otherwise
+`caught_up` is false, and recon reports the capture's Clock-Time without
+adding it to the consensus.
 
 Dating the first sample at the capture end minus its duration gives the same
 start when samples queue only before the capture, but samples lost during the
