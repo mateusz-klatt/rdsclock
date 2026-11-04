@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the built distributions, and attach assets to a draft before publishing
   the GitHub release. The release becomes public only after PyPI succeeds.
   Reject publication dispatched from a branch or conflicting published assets.
+  The release job builds no dependency from source, and its smoke test
+  installs the wheel and the locked dependencies by hash.
 - Document the release procedure and preserve the published 1.1.0 artifacts.
   Its PyPI upload succeeded; the original GitHub job failed because the release
   had already been created manually.

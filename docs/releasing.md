@@ -23,8 +23,10 @@ page containing the resulting files; these are separate steps.
 
 4. Follow the **publish** Actions run. It validates the tag against all three
    version declarations, builds a wheel and sdist, checks metadata and installs
-   the wheel in an isolated environment. The installed package must include
-   EN/PL/FR catalogs and web assets and run the synthetic multi-station demo.
+   the wheel in an isolated environment. No dependency is built from source:
+   the wheel and the locked dependencies are installed by SHA-256 hash. The
+   installed package must include EN/PL/FR catalogs and web assets and run the
+   synthetic multi-station demo.
 5. The workflow prepares a **draft** GitHub release with SHA-256-verified assets,
    publishes those same files to PyPI, checks PyPI's hashes, and only then makes
    the GitHub release public and latest. Do not manually publish an empty
