@@ -191,5 +191,6 @@ def test_actions_publish_only_the_canonical_repository_and_dist(source, monkeypa
         dist,
         ("mateusz-klatt/rdsclock", "v2.0.0", {"w": "a"}),
     ]
-    with pytest.raises(SystemExit):  # neither the repository nor the directory is an argument
-        _main(monkeypatch, "stage", "--tag", "v2.0.0", "--repo", "--clobber")
+    for option in ("--repo", "--dist"):  # neither is chosen on the command line
+        with pytest.raises(SystemExit):
+            _main(monkeypatch, "stage", "--tag", "v2.0.0", option, "--clobber")
