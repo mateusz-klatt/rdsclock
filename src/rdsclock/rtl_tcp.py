@@ -5,6 +5,7 @@ import select
 import socket
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -52,8 +53,8 @@ class FreshCapture:
     The earliest bound dates the first sample only once the stream has caught
     up with real time. A backlog longer than the capture can deliver all of it
     ahead of real time, and the samples are then older than the bound by an
-    unknown amount. ``caught_up`` is false for such a capture: it began behind
-    and its reads were still moving the start back near the end.
+    unknown amount. ``caught_up`` is false for such a capture: it began behind,
+    and its last reads did not show the stream arriving in real time.
 
     Samples lost during a capture only loosen the later bounds. The start
     stays right for the samples before the loss, and later samples are early
@@ -77,6 +78,24 @@ class FreshCapture:
 
 class RtlTcpDrainTimeoutError(TimeoutError):
     """No fresh capture boundary could be established within the deadline."""
+
+
+def _arrived_in_real_time(
+    recent: deque[tuple[int, int]], start_ns: int, middle_ns: int, threshold_ns: int
+) -> bool:
+    """Whether the reads ``(arrival, bound)`` of a window show the stream in real time.
+
+    In real time the earliest bound stays put. Delivery ahead of real time
+    moves it back between the halves of the window, also after a stall, and a
+    stall leaves the last read well behind the earliest bound of the capture.
+    """
+    first = [bound for arrival, bound in recent if arrival < middle_ns]
+    second = [bound for arrival, bound in recent if arrival >= middle_ns]
+    if not first or not second:
+        return False
+    return (
+        min(first) - min(second) <= threshold_ns // 5 and recent[-1][1] - start_ns <= threshold_ns
+    )
 
 
 class RtlTcpClient:
@@ -256,10 +275,13 @@ class RtlTcpClient:
         tuning. ``backlogged`` is set when the first sample had queued for
         longer than ``backlog_threshold_s``; the default allows two rtl_tcp
         transfers, and at least 0.25 s. A backlogged capture has caught up
-        once, for the last four thresholds of the read (1 s at 2.4 MS/s), no
-        read moved its start back by more than a fifth of a threshold. That
-        recognises a stream that runs more than 5 % ahead of real time; a
-        link barely faster than the stream can still hide a backlog.
+        once the last four thresholds of its read (1 s at 2.4 MS/s) showed the
+        stream in real time. The earliest bound of their second half may lie
+        at most a fifth of a threshold before that of their first half, which
+        delivery more than 10 % ahead of real time prevents, also after a
+        stall. The last read must lie within a threshold of the earliest
+        bound, which a stall before it prevents. A link barely faster than the
+        stream can still hide a backlog.
 
         Any failure or interruption after draining starts closes the socket:
         a partial read can otherwise leave the next attempt between I and Q.
@@ -284,8 +306,8 @@ class RtlTcpClient:
             raise ValueError("max_drain_s must exceed settle_s and quiet_s")
         if backlog_threshold_s is None:
             backlog_threshold_s = max(0.25, 2 * RTL_TCP_TRANSFER_SAMPLES / sample_rate)
-        if not math.isfinite(backlog_threshold_s) or backlog_threshold_s < 0:
-            raise ValueError("backlog_threshold_s must be finite and nonnegative")
+        if not math.isfinite(backlog_threshold_s) or backlog_threshold_s <= 0:
+            raise ValueError("backlog_threshold_s must be finite and positive")
         n_samples = int(round(duration_s * sample_rate))
         if n_samples < 1:
             raise ValueError("capture must contain at least one sample")
@@ -308,16 +330,13 @@ class RtlTcpClient:
         sock = self._sock
         if sock is None:
             raise RuntimeError("not connected")
-        # A read that moves the start back by more than ``step_ns`` shows the
-        # stream still running ahead of real time; ``window_ns`` without one
-        # shows that it has caught up.
-        step_ns = round(backlog_threshold_s / 5 * 1e9)
-        window_ns = round(4 * backlog_threshold_s * 1e9)
+        threshold_ns = round(backlog_threshold_s * 1e9)
+        window_ns = 4 * threshold_ns
         data = bytearray(2 * n_samples)
         view = memoryview(data)
         received = 0
-        read_start_ns = start_ns = level_ns = end_ns = time.monotonic_ns()
-        ran_ahead_ns: int | None = None
+        read_start_ns = start_ns = end_ns = time.monotonic_ns()
+        recent: deque[tuple[int, int]] = deque()  # (arrival, bound) of the last window
         while received < len(data):
             count = sock.recv_into(view[received:])
             if not count:
@@ -327,11 +346,15 @@ class RtlTcpClient:
             # k samples take k / sample_rate to produce: the first existed that long ago.
             bound_ns = end_ns - round(received // 2 * 1e9 / sample_rate)
             start_ns = min(start_ns, bound_ns)
-            if bound_ns < level_ns - step_ns:
-                level_ns, ran_ahead_ns = bound_ns, end_ns
+            recent.append((end_ns, bound_ns))
+            while recent[0][0] < end_ns - window_ns:
+                recent.popleft()
         queued_s = (read_start_ns - start_ns) / 1e9
         backlogged = queued_s > backlog_threshold_s
-        still_ahead = ran_ahead_ns is not None and end_ns - ran_ahead_ns < window_ns
+        caught_up = not backlogged or (
+            end_ns - read_start_ns >= window_ns
+            and _arrived_in_real_time(recent, start_ns, end_ns - window_ns // 2, threshold_ns)
+        )
         return FreshCapture(
             self._iq_from_bytes(data),
             start_ns,
@@ -339,7 +362,7 @@ class RtlTcpClient:
             capture_end_monotonic_ns=end_ns,
             queued_s=queued_s,
             backlogged=backlogged,
-            caught_up=not (backlogged and still_ahead),
+            caught_up=caught_up,
         )
 
     def _discard_until_quiet(self, settle_s: float, max_drain_s: float, quiet_s: float) -> int:

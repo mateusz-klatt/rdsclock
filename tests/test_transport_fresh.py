@@ -101,10 +101,13 @@ def _send_on_capture(monkeypatch, client, sender, *bursts):
 FRESH_PAIR = bytes([200, 130])
 
 
-def _real_time(n_samples, sample_rate, *, after_s=0.0, chunk=10):
-    """Bursts of ``chunk`` samples, each sent once its last sample exists."""
+def _stream(n_samples, sample_rate, *, speed=1.0, after_s=0.0, chunk=10):
+    """Bursts of ``chunk`` samples, each sent once its last sample exists.
+
+    ``speed`` above 1 delivers a queue faster than real time.
+    """
     return [
-        (after_s + (first + chunk) / sample_rate, FRESH_PAIR * chunk)
+        (after_s + (first + chunk) / (sample_rate * speed), FRESH_PAIR * chunk)
         for first in range(0, n_samples, chunk)
     ]
 
@@ -242,7 +245,7 @@ def test_a_capture_that_ends_ahead_of_real_time_has_not_caught_up(socket_client,
     # A backlog longer than the capture: 0.5 s of samples arrive in 0.1 s, so
     # every read moves the start back and the true start stays unknown.
     client, sender = socket_client
-    bursts = [((first + 50) / 5000, FRESH_PAIR * 50) for first in range(0, 500, 50)]
+    bursts = _stream(500, 1000, speed=5, chunk=50)
     capture, _ = _capture(monkeypatch, client, sender, 0.5, *bursts)
     assert capture.backlogged
     assert not capture.caught_up
@@ -252,7 +255,7 @@ def test_a_capture_that_ends_ahead_of_real_time_has_not_caught_up(socket_client,
 def test_a_stream_that_keeps_up_is_dated_from_the_read(socket_client, monkeypatch):
     client, sender = socket_client
     before = time.monotonic_ns()
-    capture, span_s = _capture(monkeypatch, client, sender, 0.5, *_real_time(500, 1000))
+    capture, span_s = _capture(monkeypatch, client, sender, 0.5, *_stream(500, 1000))
     assert capture.queued_s < 0.005
     assert not capture.backlogged
     assert capture.caught_up
@@ -264,7 +267,7 @@ def test_samples_lost_mid_capture_do_not_move_the_start(socket_client, monkeypat
     # 300 samples never arrive. Dating the capture from its end would make the
     # 250 samples before the gap 0.3 s late.
     client, sender = socket_client
-    bursts = _real_time(250, 1000) + _real_time(250, 1000, after_s=0.55)
+    bursts = _stream(250, 1000) + _stream(250, 1000, after_s=0.55)
     capture, span_s = _capture(monkeypatch, client, sender, 0.5, *bursts)
     assert capture.queued_s < 0.005
     assert capture.caught_up
@@ -272,20 +275,44 @@ def test_samples_lost_mid_capture_do_not_move_the_start(socket_client, monkeypat
 
 
 def test_a_backlog_moves_the_start_back_and_a_later_loss_does_not(socket_client, monkeypatch):
-    # 200 queued samples arrive together, the stream keeps up, then 100 samples
+    # 200 queued samples arrive together, the stream keeps up, then 50 samples
     # are lost. Only the backlog dates the capture: its end would leave every
-    # sample 0.1 s late.
+    # sample 0.05 s late.
     client, sender = socket_client
     bursts = [
         (0.0, FRESH_PAIR * 200),
-        *_real_time(300, 1000),
-        *_real_time(200, 1000, after_s=0.4),
+        *_stream(300, 1000),
+        *_stream(200, 1000, after_s=0.35),
     ]
     capture, span_s = _capture(monkeypatch, client, sender, 0.7, *bursts)
     assert 0.15 <= capture.queued_s <= 0.201
     assert capture.backlogged
-    assert capture.caught_up  # 0.6 s at real time after the backlog
-    assert span_s - 0.7 >= 0.05
+    assert capture.caught_up  # 0.55 s at real time after the backlog
+    assert span_s - 0.7 >= 0.04
+
+
+@pytest.mark.parametrize(
+    "bursts",
+    [
+        # Twice real time, a 0.6 s stall, twice real time again: the bound
+        # never falls below its old low, but the queue is still draining.
+        [
+            *_stream(800, 1000, speed=2, chunk=20),
+            *_stream(800, 1000, speed=2, chunk=20, after_s=1.0),
+        ],
+        # A backlog, 0.4 s in real time, then the last samples 0.3 s late.
+        [(0.0, FRESH_PAIR * 200), *_stream(400, 1000), (0.71, FRESH_PAIR * 10)],
+        # A stall long enough to leave half of the final window without reads.
+        [(0.0, FRESH_PAIR * 200), *_stream(300, 1000), (0.81, FRESH_PAIR * 10)],
+    ],
+    ids=["ahead_again_after_a_stall", "stall_before_the_end", "stall_through_the_window"],
+)
+def test_a_stall_is_not_taken_for_catching_up(socket_client, monkeypatch, bursts):
+    client, sender = socket_client
+    n_samples = sum(len(data) for _, data in bursts) // 2
+    capture, _ = _capture(monkeypatch, client, sender, n_samples / 1000, *bursts)
+    assert capture.backlogged
+    assert not capture.caught_up
 
 
 def _capture_behind_a_backlog(rtl_tcp_factory, duration_s):
@@ -410,7 +437,12 @@ def test_capture_interruption_closes_connection(socket_client, monkeypatch, phas
 
 @pytest.mark.parametrize(
     ("argument", "value"),
-    [("duration_s", -1), ("backlog_threshold_s", -0.1), ("backlog_threshold_s", float("nan"))],
+    [
+        ("duration_s", -1),
+        ("backlog_threshold_s", 0.0),
+        ("backlog_threshold_s", -0.1),
+        ("backlog_threshold_s", float("nan")),
+    ],
 )
 def test_invalid_capture_arguments_leave_connection_usable(socket_client, argument, value):
     client, sender = socket_client
