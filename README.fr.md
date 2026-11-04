@@ -26,8 +26,8 @@ utilise toutefois une connexion réseau.
 **Le décodage en réception réelle est validé ; l'exactitude absolue de l'heure
 UTC ne l'est pas.** Les derniers essais sur antenne ont récupéré des messages CT
 de trois services, dont les heures annoncées étaient en avance d'environ une
-heure sur l'UTC de l'hôte. L'accord entre les sources et la validité des CRC ne
-garantissent ni l'exactitude ni l'authenticité de l'heure.
+heure sur l'UTC de l'hôte. La concordance entre les sources et la validité des
+CRC ne garantissent ni l'exactitude ni l'authenticité de l'heure.
 
 [Scénario de démonstration](docs/demo.md) ·
 [Démonstration matérielle sur toute la bande](docs/full-band-demo-2026-11-02.md) ·
@@ -283,7 +283,8 @@ minutes ; celui de ces captures s'est terminé au niveau ÉLEVÉE :
 
 *Réception réelle à Varsovie le 4 novembre 2026. Les heures UTC reçues
 étaient en avance d'environ une heure sur l'UTC de l'hôte. Il s'agit d'un écart
-observé ; l'accord des sources n'en établit ni la cause ni l'exactitude absolue.*
+observé ; la concordance des sources n'en établit ni la cause ni l'exactitude
+absolue.*
 
 ## Fonctionnement
 
@@ -308,8 +309,8 @@ restent séparées.
 Le consensus utilise l'instant de réception estimé plutôt que l'instant de fin
 du décodage, rejette les observations périmées et déduplique les canaux et les PI
 confirmés. Une médiane et des contrôles des valeurs aberrantes permettent le
-maintien autonome à partir de l'horloge monotone de l'hôte. `HIGH` indique un
-accord selon ce modèle ; des PI distincts peuvent néanmoins partager une même
+maintien autonome à partir de l'horloge monotone de l'hôte. `HIGH` indique une
+concordance selon ce modèle ; des PI distincts peuvent néanmoins partager une même
 horloge amont erronée. L'incertitude annoncée décrit la dispersion des sources
 et le maintien autonome, pas une borne étalonnée de l'erreur absolue sur l'UTC.
 L'API expérimentale à résolution inférieure à la seconde présente la même
