@@ -74,8 +74,9 @@ def verify_pypi(version: str, expected: dict[str, str], complete: bool) -> None:
     verify_files(expected, actual, complete)
 
 
+# Both capture stdout only: on failure, the tool's own message reaches the log.
 def gh(*args: str) -> str:
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.check_output(["gh", *args], text=True)
 
 
 def git(*args: str) -> str:
