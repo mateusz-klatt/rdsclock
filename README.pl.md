@@ -222,8 +222,11 @@ z tego polecenia, z `--web` lub `--gui` zamiast `--tui`:
 Z opcją `--hop` polecenie `recon` odwiedza podane stacje w dowolnym miejscu
 pasma, jedno 75-sekundowe przechwycenie po drugim. Radio ZET, PR Jedynka
 i PR Trójka podają każda inną minutę, a wszystkie trzy się zgadzają (N=3).
-Zaufanie jest HIGH, dopóki mediana wieku CT nie przekroczy dwóch minut, a potem
-MEDIUM, więc zmienia się w trakcie cyklu trzech przechwyceń:
+Odbiornik ocenia zaufanie raz na cykl, a panele pokazują tę ocenę aż do
+następnej. HIGH wymaga trzech potwierdzonych stacji z medianą wieku CT poniżej
+dwóch minut w chwili oceny, a MEDIUM dwóch stacji poniżej trzech minut. Cykl
+trzech 75-sekundowych przechwyceń może się skończyć po obu stronach granicy
+dwóch minut, dlatego okno aplikacji poniżej pokazuje MEDIUM:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
