@@ -61,6 +61,14 @@ class TestHopList:
         record = json.loads(recon.event_to_json(acquisition))
         assert record["n_points"] == 3
 
+    def test_a_list_longer_than_max_stations_keeps_every_station(self, monkeypatch):
+        listed = tuple(f * 1e6 for f in (88.4, 91.0, 98.8, 102.4, 105.6, 107.5))
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(None))
+        cfg = _cfg(hop_freqs_hz=listed)
+        assert len(listed) > cfg.max_watchlist
+        watchlist = recon._acquire(_Receiver([1.0] * 6), cfg, 1, recon._Outputs(lambda m: None))
+        assert sorted(s.freq_hz for s in watchlist) == sorted(listed)
+
     def test_band_scans_leave_n_points_empty(self):
         record = json.loads(recon.event_to_json(recon.AcquisitionStarted(1, 98.0, 108.0, 0.1)))
         assert record["n_points"] is None

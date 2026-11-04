@@ -111,6 +111,15 @@ class TestWideEngine:
         assert messages[0].startswith("  wide 102.00 MHz: CT=")
         assert messages[1] == "  wide 102.40 MHz: no CT (groups=2)"
 
+    def test_a_list_longer_than_max_stations_keeps_every_station(self, monkeypatch):
+        listed = tuple(f * 1e6 for f in (101.6, 101.9, 102.0, 102.4, 102.7, 103.0))
+        results = {f: _decode_result(None) for f in listed}
+        monkeypatch.setattr(recon, "decode_channels", _channels(results))
+        cfg = _cfg(wide_freqs_hz=listed, wide_center_hz=102.3e6)
+        assert len(listed) > cfg.max_watchlist
+        watchlist = recon._acquire(_Receiver(), cfg, 1, recon._Outputs(lambda m: None))
+        assert sorted(s.freq_hz for s in watchlist) == sorted(listed)
+
     def test_an_empty_watchlist_records_nothing(self):
         receiver = _Receiver()
         assert recon.wide_collect_ct(receiver, [], _cfg(), TimeConsensus()) == 0

@@ -672,7 +672,7 @@ def _acquire(
         )
         ranked = rank_candidates(wide_scan(client, cfg, out.progress, out.event))
         # One capture records them all, so every station with RDS stays.
-        return [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
+        return [c for c in ranked if c.n_groups > 0]
 
     if cfg.hop_freqs_hz:
         out.status(f"\n[#{iteration}] ACQUISITION (check {len(cfg.hop_freqs_hz)} listed stations)…")
@@ -686,8 +686,8 @@ def _acquire(
             )
         )
         ranked = rank_candidates(quick_scan_band(client, cfg, out.progress, out.event))
-        # The operator chose these stations: keep every one with RDS.
-        return [c for c in ranked if c.n_groups > 0][: cfg.max_watchlist]
+        # The operator chose these stations: keep every one with RDS, uncapped.
+        return [c for c in ranked if c.n_groups > 0]
 
     out.status(f"\n[#{iteration}] ACQUISITION (scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…")
     out.publish(

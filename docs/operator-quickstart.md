@@ -116,9 +116,9 @@ rdsclock recon --hop 98.8,102.4,107.5 --gain 28 --dwell 75
 
 An acquisition then checks only these stations, for `--scan-dwell` seconds
 each, and the watchlist keeps every one with RDS, with or without Clock-Time in
-that short check; `--rssi-threshold` does not apply. HOP reaches stations
-anywhere in the band but records them one after another: a cycle of three
-stations takes three dwells.
+that short check; `--rssi-threshold` and `--max-stations` do not apply. HOP
+reaches stations anywhere in the band but records them one after another: a
+cycle of three stations takes three dwells.
 
 ### WIDE: several stations at once
 
@@ -148,7 +148,7 @@ A 75-second capture at 2.4 MS/s takes about 1.4 GB, and decoding one station
 at a time adds as much again: plan for about 5 GB of memory. `rtl_tcp` sends
 4.8 MB/s, so a remote receiver needs a link that sustains it. Set the gain
 explicitly, since the stations share one 8-bit converter. `--start`, `--end`,
-`--step` and `--rssi-threshold` apply to band scans only.
+`--step`, `--rssi-threshold` and `--max-stations` apply to band scans only.
 
 ### Terminal dashboard
 
