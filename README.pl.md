@@ -190,32 +190,52 @@ lub Ubuntu dostaje tkinter z pakietu `python3-tk`. Z opcją `--jsonl` polecenie
 innych programów; wszystkie tryby opisuje
 [przewodnik operatora](docs/operator-quickstart.md).
 
+#### Język interfejsu
+
+W wersji 2.0.0 wszystkie trzy panele obsługują angielski, polski i francuski.
+Dodaj `--lang en`, `--lang pl` lub `--lang fr` do polecenia z `--tui`, `--web`
+lub `--gui`; domyślny jest angielski. Przykład polskiego panelu w przeglądarce:
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --wide 98.3,98.8 --gain 28 --dwell 75 --web --lang pl
+```
+
+Wybrany język obejmuje przyciski, nagłówki, komunikaty stanu i dziennik
+operatora. Odebrane wartości PS/PI/CT i nazwy pól JSON Lines pozostają
+niezmienione. Każdy panel uruchamia własny proces odbiornika; z jednym serwerem
+RTL-TCP używaj jednego takiego polecenia naraz. Poniższe zrzuty z odbioru na żywo
+pokazują polski interfejs.
+
+[Opis wydania 2.0.0 — EN / PL / FR](docs/releases/2.0.0.md) ·
+[Procedura wydania](docs/releasing.md)
+
 #### WIDE: dwie stacje z jednego przechwycenia
 
 Z opcją `--wide` polecenie `recon` nagrywa stacje mieszczące się w paśmie
 odbiornika w jednym przechwyceniu, więc panele pokazują je wszystkie naraz, bez
 przeskakiwania między stacjami. Tutaj RMF Classic i PR Trójka, które obie
 nadają czas (CT), dzielą każde 75-sekundowe przechwycenie przy 2,4 MS/s: podają
-tę samą minutę, a konsensus łączy obie (N=2, zaufanie MEDIUM). Zrzuty pochodzą
+tę samą minutę, a konsensus łączy obie (N=2, zaufanie ŚREDNIE). Zrzuty pochodzą
 z tego polecenia, z `--web` lub `--gui` zamiast `--tui`:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
   --wide 98.3,98.8 --gain 28 --scan-dwell 3 --dwell 75 \
-  --settle-seconds 1 --tui
+  --settle-seconds 1 --tui --lang pl
 ```
 
 **Terminal** (`--tui`)
 
-![Panel w terminalu podczas odbioru WIDE na żywo: zaufanie MEDIUM z dwóch stacji w jednym przechwyceniu, obu z CT](docs/images/dashboard-wide-tui.png)
+![Panel w terminalu podczas odbioru WIDE na żywo: zaufanie ŚREDNIE z dwóch stacji w jednym przechwyceniu, obu z CT](docs/images/dashboard-wide-tui-pl.png)
 
 **Przeglądarka** (`--web`)
 
-![Panel w przeglądarce podczas odbioru WIDE na żywo RMF Classic i PR Trójki, z przyciskami Rescan i Pause view](docs/images/dashboard-wide-web.png)
+![Panel w przeglądarce podczas odbioru WIDE na żywo RMF Classic i PR Trójki, z przyciskami Skanuj ponownie i Wstrzymaj widok](docs/images/dashboard-wide-web-pl.png)
 
 **Okno aplikacji** (`--gui`)
 
-![Okno aplikacji podczas odbioru WIDE na żywo RMF Classic i PR Trójki, z przyciskami Rescan, Pause view i Quit](docs/images/dashboard-wide-gui.png)
+![Okno aplikacji podczas odbioru WIDE na żywo RMF Classic i PR Trójki, z przyciskami Skanuj ponownie, Wstrzymaj widok i Zakończ](docs/images/dashboard-wide-gui-pl.png)
 
 #### HOP: trzy stacje po kolei
 
@@ -223,31 +243,32 @@ Z opcją `--hop` polecenie `recon` odwiedza podane stacje w dowolnym miejscu
 pasma, jedno 75-sekundowe przechwycenie po drugim. Radio ZET, PR Jedynka
 i PR Trójka podają każda inną minutę, a wszystkie trzy się zgadzają (N=3).
 Odbiornik ocenia zaufanie raz na cykl, a panele pokazują tę ocenę aż do
-następnej. HIGH wymaga trzech potwierdzonych stacji z medianą wieku CT poniżej
-dwóch minut w chwili oceny, a MEDIUM dwóch stacji poniżej trzech minut. Cykl
-trzech 75-sekundowych przechwyceń może się skończyć po obu stronach granicy
-dwóch minut, dlatego okno aplikacji poniżej pokazuje MEDIUM:
+następnej. WYSOKIE (HIGH) wymaga trzech potwierdzonych stacji z medianą wieku CT
+poniżej dwóch minut w chwili oceny, a ŚREDNIE (MEDIUM) dwóch stacji poniżej
+trzech minut. Cykl trzech 75-sekundowych przechwyceń może się skończyć po obu
+stronach granicy dwóch minut; cykl na tych zrzutach zakończył się oceną WYSOKIE:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
   --hop 98.8,102.4,107.5 --gain 19.7 --scan-dwell 3 --dwell 75 \
-  --settle-seconds 1 --tui
+  --settle-seconds 1 --tui --lang pl
 ```
 
 **Terminal** (`--tui`)
 
-![Panel w terminalu podczas odbioru HOP na żywo: zaufanie HIGH z trzech stacji, każdej z CT](docs/images/dashboard-hop-tui.png)
+![Panel w terminalu podczas odbioru HOP na żywo: zaufanie WYSOKIE z trzech stacji, każdej z CT](docs/images/dashboard-hop-tui-pl.png)
 
 **Przeglądarka** (`--web`)
 
-![Panel w przeglądarce podczas odbioru HOP na żywo Radia ZET, PR Jedynki i PR Trójki](docs/images/dashboard-hop-web.png)
+![Panel w przeglądarce podczas odbioru HOP na żywo Radia ZET, PR Jedynki i PR Trójki](docs/images/dashboard-hop-web-pl.png)
 
 **Okno aplikacji** (`--gui`)
 
-![Okno aplikacji podczas odbioru HOP na żywo Radia ZET, PR Jedynki i PR Trójki](docs/images/dashboard-hop-gui.png)
+![Okno aplikacji podczas odbioru HOP na żywo Radia ZET, PR Jedynki i PR Trójki](docs/images/dashboard-hop-gui-pl.png)
 
-*Odbiór na żywo w Warszawie 3 i 4 listopada 2026. Te stacje podają w polu UTC
-polski czas lokalny, dlatego konsensus wyprzedza zegar hosta o godzinę.*
+*Odbiór na żywo w Warszawie 4 listopada 2026. Odebrane deklaracje UTC
+wyprzedzały UTC hosta o około godzinę. To zaobserwowana rozbieżność; zgodność
+źródeł nie ustala jej przyczyny ani bezwzględnej dokładności czasu.*
 
 ## Jak to działa
 

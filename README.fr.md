@@ -201,6 +201,28 @@ obtient tkinter avec `apt install python3-tk`. Avec `--jsonl`, `recon` écrit
 plutôt un événement JSON par ligne pour d'autres programmes ; le
 [guide opérateur](docs/operator-quickstart.md) décrit tous ces modes.
 
+#### Langue du tableau de bord
+
+Dans la version 2.0.0, les trois interfaces prennent en charge l'anglais, le
+polonais et le français. Ajoutez `--lang en`, `--lang pl` ou `--lang fr` à la
+commande avec `--tui`, `--web` ou `--gui` ; l'anglais est la langue par défaut.
+Par exemple, pour ouvrir le tableau de bord web en polonais :
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --wide 98.3,98.8 --gain 28 --dwell 75 --web --lang pl
+```
+
+La langue choisie s'applique aux commandes, aux titres, aux messages d'état et
+au journal opérateur. Les valeurs PS/PI/CT reçues et les noms des champs JSON
+Lines restent inchangés. Chaque tableau de bord lance son propre processus de
+réception ; utilisez une seule de ces commandes à la fois avec un même serveur
+RTL-TCP. Les captures d'écran de réception réelle ci-dessous montrent
+l'interface en français.
+
+[Notes de version 2.0.0 — EN / PL / FR](docs/releases/2.0.0.md) ·
+[Procédure de publication](docs/releasing.md)
+
 #### WIDE : deux stations dans une même capture
 
 Avec `--wide`, `recon` enregistre en une seule capture les stations qui tiennent
@@ -208,26 +230,26 @@ dans la bande du récepteur ; les tableaux de bord les montrent alors toutes
 ensemble, sans sauter d'une station à l'autre. Ici, RMF Classic et PR Trójka,
 qui diffusent toutes deux l'heure (CT), partagent chaque capture de 75 secondes
 à 2,4 MS/s : elles donnent la même minute, et le consensus les combine (N=2,
-confiance MEDIUM). Les captures proviennent de cette commande, avec `--web` ou
+confiance MOYENNE). Les captures proviennent de cette commande, avec `--web` ou
 `--gui` à la place de `--tui` :
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
   --wide 98.3,98.8 --gain 28 --scan-dwell 3 --dwell 75 \
-  --settle-seconds 1 --tui
+  --settle-seconds 1 --tui --lang fr
 ```
 
 **Terminal** (`--tui`)
 
-![Tableau de bord en terminal pendant une réception WIDE réelle : confiance MEDIUM avec deux stations d'une même capture, toutes deux avec CT](docs/images/dashboard-wide-tui.png)
+![Tableau de bord en terminal pendant une réception WIDE réelle : confiance MOYENNE avec deux stations d'une même capture, toutes deux avec CT](docs/images/dashboard-wide-tui-fr.png)
 
 **Navigateur** (`--web`)
 
-![Tableau de bord web pendant une réception WIDE réelle de RMF Classic et PR Trójka, avec les boutons Rescan et Pause view](docs/images/dashboard-wide-web.png)
+![Tableau de bord web pendant une réception WIDE réelle de RMF Classic et PR Trójka, avec les boutons Relancer le balayage et Suspendre l’affichage](docs/images/dashboard-wide-web-fr.png)
 
 **Fenêtre de bureau** (`--gui`)
 
-![Fenêtre de bureau pendant une réception WIDE réelle de RMF Classic et PR Trójka, avec les boutons Rescan, Pause view et Quit](docs/images/dashboard-wide-gui.png)
+![Fenêtre de bureau pendant une réception WIDE réelle de RMF Classic et PR Trójka, avec les boutons Relancer le balayage, Suspendre l’affichage et Quitter](docs/images/dashboard-wide-gui-fr.png)
 
 #### HOP : trois stations l'une après l'autre
 
@@ -235,33 +257,33 @@ Avec `--hop`, `recon` visite les stations indiquées, où qu'elles soient dans l
 bande, une capture de 75 secondes après l'autre. Radio ZET, PR Jedynka et
 PR Trójka donnent chacune une minute différente, et toutes trois concordent
 (N=3). Le récepteur évalue la confiance une fois par cycle, et les tableaux de
-bord conservent ce niveau jusqu'à l'évaluation suivante. HIGH exige trois
-stations confirmées dont l'âge médian du CT est inférieur à deux minutes à ce
-moment ; MEDIUM en exige deux sous trois minutes. Un cycle de trois captures de
-75 secondes peut se terminer de part et d'autre de la limite de deux minutes,
-d'où le niveau MEDIUM de la fenêtre de bureau ci-dessous :
+bord conservent ce niveau jusqu'à l'évaluation suivante. ÉLEVÉE (HIGH) exige
+trois stations confirmées dont l'âge médian du CT est inférieur à deux minutes à
+ce moment ; MOYENNE (MEDIUM) en exige deux sous trois minutes. Un cycle de trois
+captures de 75 secondes peut se terminer de part et d'autre de la limite de deux
+minutes ; celui de ces captures s'est terminé au niveau ÉLEVÉE :
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
   --hop 98.8,102.4,107.5 --gain 19.7 --scan-dwell 3 --dwell 75 \
-  --settle-seconds 1 --tui
+  --settle-seconds 1 --tui --lang fr
 ```
 
 **Terminal** (`--tui`)
 
-![Tableau de bord en terminal pendant une réception HOP réelle : confiance HIGH avec trois stations, chacune avec CT](docs/images/dashboard-hop-tui.png)
+![Tableau de bord en terminal pendant une réception HOP réelle : confiance ÉLEVÉE avec trois stations, chacune avec CT](docs/images/dashboard-hop-tui-fr.png)
 
 **Navigateur** (`--web`)
 
-![Tableau de bord web pendant une réception HOP réelle de Radio ZET, PR Jedynka et PR Trójka](docs/images/dashboard-hop-web.png)
+![Tableau de bord web pendant une réception HOP réelle de Radio ZET, PR Jedynka et PR Trójka](docs/images/dashboard-hop-web-fr.png)
 
 **Fenêtre de bureau** (`--gui`)
 
-![Fenêtre de bureau pendant une réception HOP réelle de Radio ZET, PR Jedynka et PR Trójka](docs/images/dashboard-hop-gui.png)
+![Fenêtre de bureau pendant une réception HOP réelle de Radio ZET, PR Jedynka et PR Trójka](docs/images/dashboard-hop-gui-fr.png)
 
-*Réception réelle à Varsovie les 3 et 4 novembre 2026. Ces stations envoient
-l'heure locale polonaise dans le champ UTC, d'où l'avance d'une heure du
-consensus sur l'horloge de l'hôte.*
+*Réception réelle à Varsovie le 4 novembre 2026. Les heures UTC reçues
+étaient en avance d'environ une heure sur l'UTC de l'hôte. Il s'agit d'un écart
+observé ; l'accord des sources n'en établit ni la cause ni l'exactitude absolue.*
 
 ## Fonctionnement
 

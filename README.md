@@ -185,6 +185,26 @@ gets tkinter from `apt install python3-tk`. With `--jsonl`, `recon` instead
 writes one JSON event per line for other programs; the
 [operator guide](docs/operator-quickstart.md) describes all these modes.
 
+#### Dashboard language
+
+All three dashboards support English, Polish and French in 2.0.0. Use
+`--lang en`, `--lang pl` or `--lang fr` with `--tui`, `--web` or `--gui`;
+English is the default. For example, to open a Polish browser dashboard:
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --wide 98.3,98.8 --gain 28 --dwell 75 --web --lang pl
+```
+
+The selected language applies to controls, headings, status messages and the
+operator log. Broadcast PS/PI/CT values and JSON Lines field names remain
+unchanged. Each dashboard owns one receiver process; run one of these commands
+at a time against a single RTL-TCP server. The live screenshots below show the
+English interface; the Polish and French READMEs show their own.
+
+[2.0.0 release notes — EN / PL / FR](docs/releases/2.0.0.md) ·
+[Release procedure](docs/releasing.md)
+
 #### WIDE: two stations from one capture
 
 With `--wide`, `recon` records stations that fit in the receiver bandwidth
@@ -202,15 +222,15 @@ come from this command, with `--web` or `--gui` in place of `--tui`:
 
 **Terminal** (`--tui`)
 
-![Terminal dashboard during live WIDE reception: trust MEDIUM from two stations in one capture, both with Clock-Time](docs/images/dashboard-wide-tui.png)
+![Terminal dashboard during live WIDE reception: trust MEDIUM from two stations in one capture, both with Clock-Time](docs/images/dashboard-wide-tui-en.png)
 
 **Browser** (`--web`)
 
-![Browser dashboard during live WIDE reception of RMF Classic and PR Trójka, with Rescan and Pause view buttons](docs/images/dashboard-wide-web.png)
+![Browser dashboard during live WIDE reception of RMF Classic and PR Trójka, with Rescan and Pause view buttons](docs/images/dashboard-wide-web-en.png)
 
 **Desktop window** (`--gui`)
 
-![Desktop window during live WIDE reception of RMF Classic and PR Trójka, with Rescan, Pause view and Quit buttons](docs/images/dashboard-wide-gui.png)
+![Desktop window during live WIDE reception of RMF Classic and PR Trójka, with Rescan, Pause view and Quit buttons](docs/images/dashboard-wide-gui-en.png)
 
 #### HOP: three stations, one after another
 
@@ -220,8 +240,8 @@ each report a different minute, and all three agree (N=3). The receiver
 assesses trust once per cycle, and the dashboards keep that label until the next
 assessment. HIGH needs three confirmed stations whose median Clock-Time is under
 two minutes old at that moment; MEDIUM needs two under three minutes. A cycle of
-three 75-second captures can end on either side of the two-minute limit, which
-is why the window below shows MEDIUM:
+three 75-second captures can end on either side of the two-minute limit; the
+cycle in these screenshots ended at HIGH:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
@@ -231,19 +251,19 @@ is why the window below shows MEDIUM:
 
 **Terminal** (`--tui`)
 
-![Terminal dashboard during live HOP reception: trust HIGH from three stations, each with Clock-Time](docs/images/dashboard-hop-tui.png)
+![Terminal dashboard during live HOP reception: trust HIGH from three stations, each with Clock-Time](docs/images/dashboard-hop-tui-en.png)
 
 **Browser** (`--web`)
 
-![Browser dashboard during live HOP reception of Radio ZET, PR Jedynka and PR Trójka](docs/images/dashboard-hop-web.png)
+![Browser dashboard during live HOP reception of Radio ZET, PR Jedynka and PR Trójka](docs/images/dashboard-hop-web-en.png)
 
 **Desktop window** (`--gui`)
 
-![Desktop window during live HOP reception of Radio ZET, PR Jedynka and PR Trójka](docs/images/dashboard-hop-gui.png)
+![Desktop window during live HOP reception of Radio ZET, PR Jedynka and PR Trójka](docs/images/dashboard-hop-gui-en.png)
 
-*Live reception in Warsaw on 3 and 4 November 2026. These stations send Polish
-local time in the UTC field, which is why the consensus runs an hour ahead of
-the host clock.*
+*Live reception in Warsaw on 4 November 2026. Received UTC declarations
+were approximately one hour ahead of host UTC. This is an observed disagreement;
+source agreement does not establish the cause or calibrate absolute accuracy.*
 
 ## How it works
 
