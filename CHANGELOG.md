@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-11-04
+
+### Added
+
+- English, Polish and French interfaces for the terminal, browser and desktop
+  dashboards. `recon --lang en|pl|fr` selects the language; English remains
+  the default. A shared catalog translates controls, status and operator logs
+  while preserving received station data and JSON Lines field names.
+- Release notes and a release announcement in all three languages, with
+  matching README instructions for WIDE, HOP and language selection. Each
+  README shows live screenshots of the three dashboards in its own language.
+
+### Fixed
+
+- Dashboard CT history no longer assigns an observation without confirmed PI
+  to a previously identified transmitter.
+- The desktop window spells ellipses, typographic apostrophes, dashes and
+  quotation marks in ASCII. Tk's bundled fonts have no glyphs for them and drew
+  nothing, or unrelated symbols for the ellipsis: the French window showed
+  "Suspendre laffichage", and missing values left table cells empty.
+
+- Validate release tags against package, runtime and lockfile versions, test
+  the built distributions, and attach assets to a draft before publishing
+  the GitHub release. The release becomes public only after PyPI succeeds.
+  Reject publication dispatched from a branch or conflicting published assets.
+- Document the release procedure and preserve the published 1.1.0 artifacts.
+  Its PyPI upload succeeded; the original GitHub job failed because the release
+  had already been created manually.
+
 ## [1.1.0] — 2026-11-04
 
 ### Added
