@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-04
+
 ### Added
 
 - `rdsclock recon --jsonl` writes the live loop as JSON Lines on stdout and
@@ -84,6 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Anchor consensus to estimated CT reception and deduplicate channels and
   confirmed PI codes before assigning votes. Unconfirmed sources cannot create
   a HIGH-confidence result; stale/future samples are excluded.
+- Use a timezone-aware UTC timestamp for settling measurement filenames.
+- Close fake receiver sockets and join their threads during test cleanup;
+  execute the CLI entrypoint without reusing an imported module. CI now treats
+  test warnings as errors.
 
 ### Documentation
 
@@ -113,13 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory after canonical path resolution, while preserving external baselines.
 - Restrict the settling measurement helper to numeric loopback endpoints and
   standard port 1234, mapping `localhost` without a DNS lookup.
-
-### Fixed
-
-- Use a timezone-aware UTC timestamp for settling measurement filenames.
-- Close fake receiver sockets and join their threads during test cleanup;
-  execute the CLI entrypoint without reusing an imported module. CI now treats
-  test warnings as errors.
 
 ## [1.0.1] — 2026-05-18
 
