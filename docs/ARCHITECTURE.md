@@ -156,21 +156,21 @@ with real time. A backlog longer than the capture arrives ahead of real time
 throughout, and the samples are then older than the bound by an unknown amount.
 Any capture that began more than one transfer and 50 ms behind must therefore
 show that it caught up, whether or not that counts as `backlogged`. The end of
-its read is divided into four segments of two transfers each (0.44 s in all at
-2.4 MS/s, 4.2 s at 250 kS/s). In real time every transfer brings the bound
-back to the same level. So each segment must contain reads, the lowest bounds
-of the segments must lie within 50 ms of each other, and they must lie within
-the backlog threshold of the earliest bound. Each of these conditions fails
-for a different cause:
-- delivery ahead of real time lowers the bound from segment to segment, also
-  after a stall;
+its read is divided into four segments of two transfers each, but at least a
+sixth of a second each (0.67 s in all at 2.4 MS/s, 4.2 s at 250 kS/s). In real
+time every transfer brings the bound back to the same level. So each segment
+must contain reads, the lowest bounds of the segments must lie within 50 ms of
+each other, and all of them must lie within the backlog threshold of the
+earliest bound. Each of these conditions fails for a different cause:
+- delivery 10 % or more ahead of real time lowers the bound from segment to
+  segment, also after a stall;
 - a stall leaves a segment without reads;
 - a queue that stays keeps the level late.
 
 Otherwise `caught_up` is false, and recon reports the capture's Clock-Time
-without adding it to the consensus. No client can tell a capture of less than
-about one transfer, or one over a link barely faster than the stream, from a
-fresh one.
+without adding it to the consensus. No client can tell a fresh capture from
+one whose queue stays within one transfer and 50 ms, or from one over a link
+barely faster than the stream.
 
 Dating the first sample at the capture end minus its duration gives the same
 start when samples queue only before the capture, but samples lost during the
