@@ -9,46 +9,80 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build sdist and wheel
+    name: Test and build distributions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - name: Validate tag and versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/release.py validate --tag "$RELEASE_TAG"
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.11.2"
           enable-cache: true
-
-      - name: Install build tooling
+      - name: Install test and build dependencies
         run: |
-          uv sync --frozen --group release --no-install-project --no-build
-
-      - name: Build distributions
-        run: uv run --no-sync --no-build python -m build --no-isolation
-
-      - name: Validate metadata
-        run: uv run --no-sync --no-build twine check dist/*
-
-      - name: Upload artefacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk libportaudio2
+          uv sync --frozen --group release --extra dev --extra tui --extra audio --extra plot
+      - name: Test without radio hardware
+        run: xvfb-run -a uv run --no-sync pytest -m "not slow and not real_sdr" -W error
+      - name: Build and validate distributions
+        run: |
+          uv run --no-sync python -m build --no-isolation
+          uv run --no-sync twine check dist/*
+      - name: Verify installed wheel
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          uv venv build/wheel-smoke
+          uv pip install --python build/wheel-smoke/bin/python dist/*.whl
+          build/wheel-smoke/bin/python -I tools/release_smoke.py "${RELEASE_TAG#v}"
+          build/wheel-smoke/bin/python -I -m rdsclock demo --time 2026-11-04T12:00:00+00:00 --seed 42
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist
           path: dist/
           if-no-files-found: error
 
+  stage-release:
+    name: Stage GitHub draft with verified assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist
+          path: dist/
+      - name: Verify existing PyPI files and stage GitHub assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python tools/release.py pypi --tag "$RELEASE_TAG"
+          python tools/release.py stage --tag "$RELEASE_TAG"
+
   publish-pypi:
     name: Publish to PyPI
-    needs: build
+    needs: stage-release
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -56,43 +90,33 @@ jobs:
       name: pypi
       url: https://pypi.org/project/rdsclock/
     steps:
-      - name: Download build artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist
           path: dist/
-
-      - name: Publish to PyPI
-        # Uses the OIDC trusted-publisher flow when configured at
-        # https://pypi.org/manage/account/publishing/. Falls back to the
-        # PYPI_API_TOKEN secret if the project is set up the classic way.
+      - name: Publish verified distributions
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
 
   github-release:
-    name: Create GitHub Release
+    name: Publish completed GitHub release
     needs: publish-pypi
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          fetch-depth: 0
-
-      - name: Download build artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist
           path: dist/
-
-      - name: Create release with notes
+      - name: Verify PyPI and publish the prepared release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${GITHUB_REF##*/}"
-          gh release create "$tag" \
-            --title "$tag" \
-            --notes "See [CHANGELOG.md](CHANGELOG.md) for the full notes." \
-            dist/*
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/release.py finalize --tag "$RELEASE_TAG"
