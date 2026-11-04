@@ -185,32 +185,62 @@ gets tkinter from `apt install python3-tk`. With `--jsonl`, `recon` instead
 writes one JSON event per line for other programs; the
 [operator guide](docs/operator-quickstart.md) describes all these modes.
 
+#### WIDE: two stations from one capture
+
 With `--wide`, `recon` records stations that fit in the receiver bandwidth
 from one capture, so the dashboards show them all at once instead of hopping
-from one to the next. The screenshots below show live reception in Warsaw on
-3 November 2026: Eska ROCK, Jedynka and Radio Kolor decoded together from
-75-second captures at 2.4 MS/s, with this command and `--web` or `--gui` in
-place of `--tui`:
+from one to the next. Here RMF Classic and PR Trójka, both broadcasting
+Clock-Time, share each 75-second capture at 2.4 MS/s: they report the same
+minute, and the consensus combines them (N=2, trust MEDIUM). The screenshots
+come from this command, with `--web` or `--gui` in place of `--tui`:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
-  --wide 102.0,102.4,103.0 --gain 28 --scan-dwell 3 --dwell 75 \
+  --wide 98.3,98.8 --gain 28 --scan-dwell 3 --dwell 75 \
   --settle-seconds 1 --tui
 ```
 
 **Terminal** (`--tui`)
 
-![Terminal dashboard during live WIDE reception: consensus time and trust above three stations decoded from one capture, and a log](docs/images/dashboard-tui.png)
+![Terminal dashboard during live WIDE reception: trust MEDIUM from two stations in one capture, both with Clock-Time](docs/images/dashboard-wide-tui.png)
 
 **Browser** (`--web`)
 
-![Browser dashboard during live WIDE reception, with the same consensus, stations and log, and Rescan and Pause view buttons](docs/images/dashboard-web.png)
+![Browser dashboard during live WIDE reception of RMF Classic and PR Trójka, with Rescan and Pause view buttons](docs/images/dashboard-wide-web.png)
 
 **Desktop window** (`--gui`)
 
-![Desktop window during live WIDE reception, with the same view and Rescan, Pause view and Quit buttons](docs/images/dashboard-gui.png)
+![Desktop window during live WIDE reception of RMF Classic and PR Trójka, with Rescan, Pause view and Quit buttons](docs/images/dashboard-wide-gui.png)
 
-*Live reception in Warsaw on 3 November 2026. Of these three stations only Jedynka broadcasts Clock-Time, so the consensus rests on one source (N=1, trust LOW or STALE). Jedynka sends Polish local time in the UTC field, which is why the consensus runs an hour ahead of the host clock.*
+#### HOP: three stations, one after another
+
+With `--hop`, `recon` visits the listed stations wherever they are in the
+band, one 75-second capture after another. Radio ZET, PR Jedynka and PR Trójka
+each report a different minute, and all three agree (N=3). Trust is HIGH while
+the median Clock-Time is under two minutes old and MEDIUM after that, so it
+changes during a cycle of three captures:
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 98.8,102.4,107.5 --gain 19.7 --scan-dwell 3 --dwell 75 \
+  --settle-seconds 1 --tui
+```
+
+**Terminal** (`--tui`)
+
+![Terminal dashboard during live HOP reception: trust HIGH from three stations, each with Clock-Time](docs/images/dashboard-hop-tui.png)
+
+**Browser** (`--web`)
+
+![Browser dashboard during live HOP reception of Radio ZET, PR Jedynka and PR Trójka](docs/images/dashboard-hop-web.png)
+
+**Desktop window** (`--gui`)
+
+![Desktop window during live HOP reception of Radio ZET, PR Jedynka and PR Trójka](docs/images/dashboard-hop-gui.png)
+
+*Live reception in Warsaw on 3 and 4 November 2026. These stations send Polish
+local time in the UTC field, which is why the consensus runs an hour ahead of
+the host clock.*
 
 ## How it works
 

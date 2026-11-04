@@ -201,32 +201,63 @@ obtient tkinter avec `apt install python3-tk`. Avec `--jsonl`, `recon` écrit
 plutôt un événement JSON par ligne pour d'autres programmes ; le
 [guide opérateur](docs/operator-quickstart.md) décrit tous ces modes.
 
+#### WIDE : deux stations dans une même capture
+
 Avec `--wide`, `recon` enregistre en une seule capture les stations qui tiennent
 dans la bande du récepteur ; les tableaux de bord les montrent alors toutes
-ensemble, sans sauter d'une station à l'autre. Les captures ci-dessous montrent
-une réception réelle à Varsovie le 3 novembre 2026 : Eska ROCK, Jedynka et
-Radio Kolor décodées ensemble à partir de captures de 75 secondes à 2,4 MS/s,
-avec cette commande et `--web` ou `--gui` à la place de `--tui` :
+ensemble, sans sauter d'une station à l'autre. Ici, RMF Classic et PR Trójka,
+qui diffusent toutes deux l'heure (CT), partagent chaque capture de 75 secondes
+à 2,4 MS/s : elles donnent la même minute, et le consensus les combine (N=2,
+confiance MEDIUM). Les captures proviennent de cette commande, avec `--web` ou
+`--gui` à la place de `--tui` :
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
-  --wide 102.0,102.4,103.0 --gain 28 --scan-dwell 3 --dwell 75 \
+  --wide 98.3,98.8 --gain 28 --scan-dwell 3 --dwell 75 \
   --settle-seconds 1 --tui
 ```
 
 **Terminal** (`--tui`)
 
-![Tableau de bord en terminal pendant une réception WIDE réelle : heure du consensus et confiance au-dessus de trois stations issues d'une même capture, et journal](docs/images/dashboard-tui.png)
+![Tableau de bord en terminal pendant une réception WIDE réelle : confiance MEDIUM avec deux stations d'une même capture, toutes deux avec CT](docs/images/dashboard-wide-tui.png)
 
 **Navigateur** (`--web`)
 
-![Tableau de bord web pendant une réception WIDE réelle, avec le même consensus, les stations, le journal et les boutons Rescan et Pause view](docs/images/dashboard-web.png)
+![Tableau de bord web pendant une réception WIDE réelle de RMF Classic et PR Trójka, avec les boutons Rescan et Pause view](docs/images/dashboard-wide-web.png)
 
 **Fenêtre de bureau** (`--gui`)
 
-![Fenêtre de bureau pendant une réception WIDE réelle, avec la même vue et les boutons Rescan, Pause view et Quit](docs/images/dashboard-gui.png)
+![Fenêtre de bureau pendant une réception WIDE réelle de RMF Classic et PR Trójka, avec les boutons Rescan, Pause view et Quit](docs/images/dashboard-wide-gui.png)
 
-*Réception réelle à Varsovie le 3 novembre 2026. Parmi ces trois stations, seule Jedynka diffuse l'heure (CT) : le consensus repose donc sur une seule source (N=1, confiance LOW ou STALE). Jedynka envoie l'heure locale polonaise dans le champ UTC, d'où l'avance d'une heure du consensus sur l'horloge de l'hôte.*
+#### HOP : trois stations l'une après l'autre
+
+Avec `--hop`, `recon` visite les stations indiquées, où qu'elles soient dans la
+bande, une capture de 75 secondes après l'autre. Radio ZET, PR Jedynka et
+PR Trójka donnent chacune une minute différente, et toutes trois concordent
+(N=3). La confiance est HIGH tant que l'âge médian du CT reste sous deux
+minutes, puis MEDIUM : elle change donc au cours d'un cycle de trois captures :
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 98.8,102.4,107.5 --gain 19.7 --scan-dwell 3 --dwell 75 \
+  --settle-seconds 1 --tui
+```
+
+**Terminal** (`--tui`)
+
+![Tableau de bord en terminal pendant une réception HOP réelle : confiance HIGH avec trois stations, chacune avec CT](docs/images/dashboard-hop-tui.png)
+
+**Navigateur** (`--web`)
+
+![Tableau de bord web pendant une réception HOP réelle de Radio ZET, PR Jedynka et PR Trójka](docs/images/dashboard-hop-web.png)
+
+**Fenêtre de bureau** (`--gui`)
+
+![Fenêtre de bureau pendant une réception HOP réelle de Radio ZET, PR Jedynka et PR Trójka](docs/images/dashboard-hop-gui.png)
+
+*Réception réelle à Varsovie les 3 et 4 novembre 2026. Ces stations envoient
+l'heure locale polonaise dans le champ UTC, d'où l'avance d'une heure du
+consensus sur l'horloge de l'hôte.*
 
 ## Fonctionnement
 
