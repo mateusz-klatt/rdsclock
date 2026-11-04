@@ -216,9 +216,12 @@ come from this command, with `--web` or `--gui` in place of `--tui`:
 
 With `--hop`, `recon` visits the listed stations wherever they are in the
 band, one 75-second capture after another. Radio ZET, PR Jedynka and PR Trójka
-each report a different minute, and all three agree (N=3). Trust is HIGH while
-the median Clock-Time is under two minutes old and MEDIUM after that, so it
-changes during a cycle of three captures:
+each report a different minute, and all three agree (N=3). The receiver
+assesses trust once per cycle, and the dashboards keep that label until the next
+assessment. HIGH needs three confirmed stations whose median Clock-Time is under
+two minutes old at that moment; MEDIUM needs two under three minutes. A cycle of
+three 75-second captures can end on either side of the two-minute limit, which
+is why the window below shows MEDIUM:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \

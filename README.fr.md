@@ -234,8 +234,12 @@ confiance MEDIUM). Les captures proviennent de cette commande, avec `--web` ou
 Avec `--hop`, `recon` visite les stations indiquées, où qu'elles soient dans la
 bande, une capture de 75 secondes après l'autre. Radio ZET, PR Jedynka et
 PR Trójka donnent chacune une minute différente, et toutes trois concordent
-(N=3). La confiance est HIGH tant que l'âge médian du CT reste sous deux
-minutes, puis MEDIUM : elle change donc au cours d'un cycle de trois captures :
+(N=3). Le récepteur évalue la confiance une fois par cycle, et les tableaux de
+bord conservent ce niveau jusqu'à l'évaluation suivante. HIGH exige trois
+stations confirmées dont l'âge médian du CT est inférieur à deux minutes à ce
+moment ; MEDIUM en exige deux sous trois minutes. Un cycle de trois captures de
+75 secondes peut se terminer de part et d'autre de la limite de deux minutes,
+d'où le niveau MEDIUM de la fenêtre de bureau ci-dessous :
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
