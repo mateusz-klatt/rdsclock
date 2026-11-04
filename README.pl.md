@@ -190,32 +190,61 @@ lub Ubuntu dostaje tkinter z pakietu `python3-tk`. Z opcją `--jsonl` polecenie
 innych programów; wszystkie tryby opisuje
 [przewodnik operatora](docs/operator-quickstart.md).
 
+#### WIDE: dwie stacje z jednego przechwycenia
+
 Z opcją `--wide` polecenie `recon` nagrywa stacje mieszczące się w paśmie
 odbiornika w jednym przechwyceniu, więc panele pokazują je wszystkie naraz, bez
-przeskakiwania między stacjami. Zrzuty poniżej to odbiór na żywo w Warszawie
-3 listopada 2026: Eska ROCK, Jedynka i Radio Kolor dekodowane razem
-z 75-sekundowych przechwyceń przy 2,4 MS/s. Panele uruchomiono tym poleceniem,
-z `--web` lub `--gui` zamiast `--tui`:
+przeskakiwania między stacjami. Tutaj RMF Classic i PR Trójka, które obie
+nadają czas (CT), dzielą każde 75-sekundowe przechwycenie przy 2,4 MS/s: podają
+tę samą minutę, a konsensus łączy obie (N=2, zaufanie MEDIUM). Zrzuty pochodzą
+z tego polecenia, z `--web` lub `--gui` zamiast `--tui`:
 
 ```bash
 .venv/bin/python -m rdsclock recon --host 127.0.0.1 \
-  --wide 102.0,102.4,103.0 --gain 28 --scan-dwell 3 --dwell 75 \
+  --wide 98.3,98.8 --gain 28 --scan-dwell 3 --dwell 75 \
   --settle-seconds 1 --tui
 ```
 
 **Terminal** (`--tui`)
 
-![Panel w terminalu podczas odbioru WIDE na żywo: czas konsensusu i wiarygodność nad trzema stacjami z jednego przechwycenia oraz dziennik zdarzeń](docs/images/dashboard-tui.png)
+![Panel w terminalu podczas odbioru WIDE na żywo: zaufanie MEDIUM z dwóch stacji w jednym przechwyceniu, obu z CT](docs/images/dashboard-wide-tui.png)
 
 **Przeglądarka** (`--web`)
 
-![Panel w przeglądarce podczas odbioru WIDE na żywo, z tym samym konsensusem, stacjami i dziennikiem oraz przyciskami Rescan i Pause view](docs/images/dashboard-web.png)
+![Panel w przeglądarce podczas odbioru WIDE na żywo RMF Classic i PR Trójki, z przyciskami Rescan i Pause view](docs/images/dashboard-wide-web.png)
 
 **Okno aplikacji** (`--gui`)
 
-![Okno aplikacji podczas odbioru WIDE na żywo, z tym samym widokiem i przyciskami Rescan, Pause view i Quit](docs/images/dashboard-gui.png)
+![Okno aplikacji podczas odbioru WIDE na żywo RMF Classic i PR Trójki, z przyciskami Rescan, Pause view i Quit](docs/images/dashboard-wide-gui.png)
 
-*Odbiór na żywo w Warszawie 3 listopada 2026. Z tych trzech stacji czas (CT) nadaje tylko Jedynka, więc konsensus opiera się na jednym źródle (N=1, zaufanie LOW lub STALE). Jedynka podaje w polu UTC polski czas lokalny, dlatego konsensus wyprzedza zegar hosta o godzinę.*
+#### HOP: trzy stacje po kolei
+
+Z opcją `--hop` polecenie `recon` odwiedza podane stacje w dowolnym miejscu
+pasma, jedno 75-sekundowe przechwycenie po drugim. Radio ZET, PR Jedynka
+i PR Trójka podają każda inną minutę, a wszystkie trzy się zgadzają (N=3).
+Zaufanie jest HIGH, dopóki mediana wieku CT nie przekroczy dwóch minut, a potem
+MEDIUM, więc zmienia się w trakcie cyklu trzech przechwyceń:
+
+```bash
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 98.8,102.4,107.5 --gain 19.7 --scan-dwell 3 --dwell 75 \
+  --settle-seconds 1 --tui
+```
+
+**Terminal** (`--tui`)
+
+![Panel w terminalu podczas odbioru HOP na żywo: zaufanie HIGH z trzech stacji, każdej z CT](docs/images/dashboard-hop-tui.png)
+
+**Przeglądarka** (`--web`)
+
+![Panel w przeglądarce podczas odbioru HOP na żywo Radia ZET, PR Jedynki i PR Trójki](docs/images/dashboard-hop-web.png)
+
+**Okno aplikacji** (`--gui`)
+
+![Okno aplikacji podczas odbioru HOP na żywo Radia ZET, PR Jedynki i PR Trójki](docs/images/dashboard-hop-gui.png)
+
+*Odbiór na żywo w Warszawie 3 i 4 listopada 2026. Te stacje podają w polu UTC
+polski czas lokalny, dlatego konsensus wyprzedza zegar hosta o godzinę.*
 
 ## Jak to działa
 
