@@ -36,19 +36,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb python3-tk libportaudio2
-          uv sync --frozen --group release --extra dev --extra tui --extra audio --extra plot
+          uv sync --frozen --group release --extra dev --extra tui --extra audio --extra plot --no-install-project --no-build
       - name: Test without radio hardware
-        run: xvfb-run -a uv run --no-sync pytest -m "not slow and not real_sdr" -W error
+        run: xvfb-run -a uv run --no-sync --no-build pytest -m "not slow and not real_sdr" -W error
       - name: Build and validate distributions
         run: |
-          uv run --no-sync python -m build --no-isolation
-          uv run --no-sync twine check dist/*
+          uv run --no-sync --no-build python -m build --no-isolation
+          uv run --no-sync --no-build twine check dist/*
       - name: Verify installed wheel
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          # The locked runtime dependencies and this build's wheel, each with its
+          # hash: nothing is resolved afresh and nothing is built from source.
+          uv export --frozen --no-dev --no-emit-project --no-build -o build/wheel-smoke.txt
+          for wheel in dist/*.whl; do
+            echo "$PWD/$wheel --hash=sha256:$(sha256sum "$wheel" | cut -d' ' -f1)" >> build/wheel-smoke.txt
+          done
           uv venv build/wheel-smoke
-          uv pip install --python build/wheel-smoke/bin/python dist/*.whl
+          uv pip install --python build/wheel-smoke/bin/python --no-build --require-hashes -r build/wheel-smoke.txt
           build/wheel-smoke/bin/python -I tools/release_smoke.py "${RELEASE_TAG#v}"
           build/wheel-smoke/bin/python -I -m rdsclock demo --time 2026-11-04T12:00:00+00:00 --seed 42
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

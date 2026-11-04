@@ -1,4 +1,8 @@
-"""Release guards and idempotent staging; never replace published files."""
+"""Release guards and idempotent staging; never replace published files.
+
+Commands receive only checked values: the canonical repository, the dist
+directory and the version read from pyproject.toml, never a raw argument.
+"""
 
 import argparse
 import hashlib
@@ -10,6 +14,10 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Releases go to this repository alone, as distributions go to PyPI's rdsclock.
+REPOSITORY = "mateusz-klatt/rdsclock"
+DIST = Path("dist")
 
 
 def validate(tag: str, ref_type: str, root: Path = Path(".")) -> str:
@@ -26,7 +34,9 @@ def validate(tag: str, ref_type: str, root: Path = Path(".")) -> str:
         raise ValueError("Tag, project, runtime and lock versions must agree.")
     if not (root / f"docs/releases/{version}.md").is_file():
         raise ValueError("Missing reviewed release notes.")
-    return version
+    # The same string as the tag's, but read from the checkout: the commands
+    # built from it never carry the command-line argument itself.
+    return project
 
 
 def distributions(directory: Path, version: str) -> dict[str, str]:
@@ -66,6 +76,10 @@ def verify_pypi(version: str, expected: dict[str, str], complete: bool) -> None:
 
 def gh(*args: str) -> str:
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+
+
+def git(*args: str) -> str:
+    return subprocess.check_output(["git", *args], text=True).strip()
 
 
 def release_info(repo: str, tag: str) -> dict | None:
@@ -132,27 +146,22 @@ def main() -> None:
     parser.add_argument("action", choices=("validate", "pypi", "stage", "finalize"))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--ref-type", default=os.environ.get("GITHUB_REF_TYPE", ""))
-    parser.add_argument(
-        "--repo", default=os.environ.get("GITHUB_REPOSITORY", "mateusz-klatt/rdsclock")
-    )
-    parser.add_argument("--dist", type=Path, default=Path("dist"))
     args = parser.parse_args()
     version = validate(args.tag, args.ref_type)
+    tag = f"v{version}"
     if args.action == "validate":
-        head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-        tagged = subprocess.check_output(
-            ["git", "rev-parse", f"{args.tag}^{{commit}}"], text=True
-        ).strip()
+        head = git("rev-parse", "--verify", "HEAD")
+        tagged = git("rev-parse", "--verify", "--end-of-options", f"{tag}^{{commit}}")
         if head != tagged:
             raise ValueError("Checkout does not match the selected tag.")
         return
-    expected = distributions(args.dist, version)
+    expected = distributions(DIST, version)
     if args.action == "pypi":
         verify_pypi(version, expected, complete=False)
     elif args.action == "stage":
-        stage(args.repo, args.tag, args.dist, expected)
+        stage(REPOSITORY, tag, DIST, expected)
     else:
-        finalize(args.repo, args.tag, expected)
+        finalize(REPOSITORY, tag, expected)
 
 
 if __name__ == "__main__":

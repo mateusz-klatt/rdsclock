@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -144,3 +145,51 @@ def test_release_lookup_paginates(monkeypatch):
     monkeypatch.setattr(release, "gh", lookup)
     assert release.release_info("owner/repo", "v2.0.0") == draft
     assert calls[-1] == ("api", "repos/owner/repo/releases?per_page=100&page=2")
+
+
+def _main(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["release.py", *argv, "--ref-type", "tag"])
+    release.main()
+
+
+def test_validate_action_compares_the_checkout_with_the_tag(source, monkeypatch):
+    monkeypatch.chdir(source)
+    calls = []
+
+    def git(*args):
+        calls.append(args)
+        return "abc123"
+
+    monkeypatch.setattr(release, "git", git)
+    _main(monkeypatch, "validate", "--tag", "v2.0.0")
+    assert calls == [
+        ("rev-parse", "--verify", "HEAD"),
+        ("rev-parse", "--verify", "--end-of-options", "v2.0.0^{commit}"),
+    ]
+    monkeypatch.setattr(release, "git", lambda *args: "abc123" if args[-1] == "HEAD" else "def456")
+    with pytest.raises(ValueError, match="does not match"):
+        _main(monkeypatch, "validate", "--tag", "v2.0.0")
+
+
+def test_actions_publish_only_the_canonical_repository_and_dist(source, monkeypatch):
+    monkeypatch.chdir(source)
+    calls = []
+    monkeypatch.setattr(
+        release, "distributions", lambda directory, version: calls.append(directory) or {"w": "a"}
+    )
+    monkeypatch.setattr(release, "verify_pypi", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(release, "stage", lambda *args: calls.append(args))
+    monkeypatch.setattr(release, "finalize", lambda *args: calls.append(args))
+    for action in ("pypi", "stage", "finalize"):
+        _main(monkeypatch, action, "--tag", "v2.0.0")
+    dist = Path("dist")
+    assert calls == [
+        dist,
+        ("2.0.0", {"w": "a"}),
+        dist,
+        ("mateusz-klatt/rdsclock", "v2.0.0", dist, {"w": "a"}),
+        dist,
+        ("mateusz-klatt/rdsclock", "v2.0.0", {"w": "a"}),
+    ]
+    with pytest.raises(SystemExit):  # neither the repository nor the directory is an argument
+        _main(monkeypatch, "stage", "--tag", "v2.0.0", "--repo", "--clobber")
