@@ -139,7 +139,7 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "Acquisition #{iteration}: checking {listed} listed stations, {start:.2f}-{end:.2f} MHz.": (
         "Wyszukiwanie #{iteration}: sprawdzanie stacji z listy ({listed}), {start:.2f}-{end:.2f} MHz.",
-        "Recherche n°{iteration} : vérification de {listed} stations de la liste, {start:.2f}-{end:.2f} MHz.",
+        "Recherche n°{iteration} : vérification des stations de la liste ({listed}), {start:.2f}-{end:.2f} MHz.",
     ),
     "Acquisition #{iteration}: one WIDE capture at {center:.2f} MHz covers {start:.2f}-{end:.2f} MHz.": (
         "Wyszukiwanie #{iteration}: jeden zapis WIDE przy {center:.2f} MHz obejmuje {start:.2f}-{end:.2f} MHz.",
@@ -151,7 +151,7 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "  {freq:6.2f} MHz  {db} dB  {groups} groups{ct}  {ps}": (
         "  {freq:6.2f} MHz  {db} dB  liczba grup: {groups}{ct}  {ps}",
-        "  {freq:6.2f} MHz  {db} dB  {groups} groupes{ct}  {ps}",
+        "  {freq:6.2f} MHz  {db} dB  groupes : {groups}{ct}  {ps}",
     ),
     "Watchlist empty: no RDS station found in this scan.": (
         "Lista obserwowanych stacji jest pusta: skanowanie nie wykryło stacji RDS.",
@@ -163,11 +163,11 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "WIDE capture at {center:.2f} MHz, {rate:.2f} MS/s: {n_stations} stations at once.": (
         "Zapis WIDE przy {center:.2f} MHz, {rate:.2f} MS/s: liczba stacji odbieranych jednocześnie: {n_stations}.",
-        "Capture WIDE à {center:.2f} MHz, {rate:.2f} Méch/s : {n_stations} stations simultanées.",
+        "Capture WIDE à {center:.2f} MHz, {rate:.2f} Méch/s : stations reçues simultanément : {n_stations}.",
     ),
     "{n_groups} groups, {corrected} corrected": (
         "liczba grup: {n_groups}, po korekcji: {corrected}",
-        "{n_groups} groupes, dont {corrected} corrigés",
+        "groupes : {n_groups}, après correction : {corrected}",
     ),
     "{label}: no CT, {groups}.": ("{label}: brak CT, {groups}.", "{label} : sans CT, {groups}."),
     "{label}: CT {utc:%H:%M}Z (LTO {lto}), {groups}.": (
@@ -176,7 +176,7 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "Cycle #{iteration}: {observations} new CT observation(s); trust {trust}, N={sources}.": (
         "Cykl #{iteration}: nowe obserwacje CT: {observations}; zaufanie {trust}, N={sources}.",
-        "Cycle n°{iteration} : {observations} nouvelles observations CT ; confiance {trust}, N={sources}.",
+        "Cycle n°{iteration} : nouvelles observations CT : {observations} ; confiance {trust}, N={sources}.",
     ),
     "iteration limit reached": ("osiągnięto limit iteracji", "limite d’itérations atteinte"),
     "stopped on request": ("zatrzymano na żądanie", "arrêt demandé"),
