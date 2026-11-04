@@ -32,6 +32,9 @@ _JITTER_NS = 50_000_000
 # A capture that began behind must end with this many segments of two
 # transfers that each show the stream in real time.
 _CATCH_UP_SEGMENTS = 4
+# Segments last long enough that a stream 10 % ahead of real time moves the
+# lowest bound across them by more than the jitter, whatever the transfer size.
+_MIN_SEGMENT_NS = 10 * _JITTER_NS // (_CATCH_UP_SEGMENTS - 1)
 
 
 @dataclass
@@ -112,7 +115,7 @@ def _arrived_in_real_time(
     return (
         len(levels) == _CATCH_UP_SEGMENTS
         and max(levels) - min(levels) <= _JITTER_NS
-        and min(levels) - start_ns <= level_tolerance_ns
+        and max(levels) - start_ns <= level_tolerance_ns
     )
 
 
@@ -298,15 +301,16 @@ class RtlTcpClient:
 
         Whatever that threshold, a capture that began more than one transfer
         and 50 ms behind must show that it caught up. Its read is divided at
-        the end into four segments of two transfers each (0.44 s in all at
-        2.4 MS/s). Each segment must contain reads, and the lowest bounds of
-        the segments must lie within 50 ms of each other and within
-        ``backlog_threshold_s`` of the earliest bound. Delivery ahead of real
-        time lowers that bound from segment to segment, a stall leaves a
-        segment without reads, and a queue that stays keeps the bound late.
-        Otherwise ``caught_up`` is false. A capture of less than about one
-        transfer cannot reveal a backlog, and neither can a link that is barely
-        faster than the stream.
+        the end into four segments of two transfers each, but at least a sixth
+        of a second each (0.67 s in all at 2.4 MS/s, 4.2 s at 250 kS/s). Each
+        segment must contain reads. The lowest bounds of the segments must all
+        lie within 50 ms of each other and within ``backlog_threshold_s`` of
+        the earliest bound. Delivery 10 % or more ahead of real time lowers
+        that bound from segment to segment, a stall leaves a segment without
+        reads, and a queue that stays keeps the bound late. Otherwise
+        ``caught_up`` is false. A capture whose queue stays within one
+        transfer and 50 ms cannot reveal a backlog, and neither can a link
+        that is barely faster than the stream.
 
         Any failure or interruption after draining starts closes the socket:
         a partial read can otherwise leave the next attempt between I and Q.
@@ -366,7 +370,7 @@ class RtlTcpClient:
         if sock is None:
             raise RuntimeError("not connected")
         transfer_ns = round(transfer_s * 1e9)
-        segment_ns = 2 * transfer_ns
+        segment_ns = max(2 * transfer_ns, _MIN_SEGMENT_NS)
         window_ns = _CATCH_UP_SEGMENTS * segment_ns
         data = bytearray(2 * n_samples)
         view = memoryview(data)

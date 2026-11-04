@@ -217,11 +217,14 @@ def test_high_rate_capture_uses_short_gaps_in_a_continuous_stream(socket_client)
         assert not worker.is_alive()
 
 
-def _capture(monkeypatch, client, sender, duration_s, *bursts, threshold_s=0.1):
-    """Capture at 1 kS/s with 50 ms transfers.
+def _capture(
+    monkeypatch, client, sender, duration_s, *bursts, threshold_s=0.1, transfer_samples=50
+):
+    """Capture at 1 kS/s, with 50 ms transfers by default.
 
-    A queue of more than 0.1 s then has to be seen draining: the last 0.4 s of
-    the read must show the stream in real time.
+    A queue of more than 0.1 s then has to be seen draining: the last 0.67 s
+    of the read (four segments of a sixth of a second) must show the stream
+    in real time.
     """
     worker = _send_on_capture(monkeypatch, client, sender, *bursts)
     capture = client.capture_fresh(
@@ -230,7 +233,7 @@ def _capture(monkeypatch, client, sender, duration_s, *bursts, threshold_s=0.1):
         settle_s=0,
         quiet_s=0.01,
         backlog_threshold_s=threshold_s,
-        transfer_samples=50,
+        transfer_samples=transfer_samples,
     )
     worker.join(1)
     assert not worker.is_alive()
@@ -302,14 +305,42 @@ def test_a_backlog_moves_the_start_back_and_a_later_loss_does_not(socket_client,
     client, sender = socket_client
     bursts = [
         (0.0, FRESH_PAIR * 200),
-        *_stream(300, 1000),
-        *_stream(200, 1000, after_s=0.32),
+        *_stream(400, 1000),
+        *_stream(400, 1000, after_s=0.42),
     ]
-    capture, span_s = _capture(monkeypatch, client, sender, 0.7, *bursts)
+    capture, span_s = _capture(monkeypatch, client, sender, 1.0, *bursts)
     assert 0.15 <= capture.queued_s <= 0.201
     assert capture.backlogged
-    assert capture.caught_up  # 0.5 s in real time after the backlog
-    assert span_s - 0.7 >= 0.015
+    assert capture.caught_up  # 0.8 s in real time after the backlog
+    assert span_s - 1.0 >= 0.015
+
+
+def test_every_segment_must_reach_the_level_of_the_earliest_bound(socket_client, monkeypatch):
+    # After a 0.5 s backlog the stream loses 0.24 s, then another 0.04 s
+    # 0.3 s before the end. The lowest bounds of the final segments then lie
+    # 0.24 and 0.28 s after the earliest one: within 50 ms of each other, but
+    # some are later than the 0.25 s threshold allows.
+    client, sender = socket_client
+    bursts = [
+        (0.0, FRESH_PAIR * 500),
+        *_stream(100, 1000),
+        *_stream(400, 1000, after_s=0.34),
+        *_stream(300, 1000, after_s=0.78),
+    ]
+    capture, _ = _capture(monkeypatch, client, sender, 1.3, *bursts, threshold_s=0.25)
+    assert capture.backlogged
+    assert not capture.caught_up
+
+
+def test_small_transfers_still_need_a_long_enough_window(socket_client, monkeypatch):
+    # 0.88 s delivered at twice real time over 7 ms transfers: segments of
+    # two transfers would make a 56 ms window, in which a 2x stream drifts by
+    # less than the 50 ms jitter.
+    client, sender = socket_client
+    bursts = _stream(880, 1000, speed=2, chunk=10)
+    capture, _ = _capture(monkeypatch, client, sender, 0.88, *bursts, transfer_samples=7)
+    assert capture.backlogged
+    assert not capture.caught_up
 
 
 @pytest.mark.parametrize(
