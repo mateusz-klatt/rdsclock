@@ -8,14 +8,17 @@ import struct
 import threading
 import time
 from dataclasses import replace
+from datetime import timedelta
 
 import numpy as np
 import pytest
 
 import rdsclock.cli as cli
 import rdsclock.recon as recon
+from rdsclock.rds_clock import ClockTime
 from rdsclock.rds_groups import StationInfo
 from rdsclock.rtl_tcp import RtlTcpAddress
+from rdsclock.time_consensus import StationObservation, TimeConsensus
 from tests.conftest import _make_fake_rtl_tcp
 from tests.fake_receiver import line
 from tests.test_dashboard import _state
@@ -819,6 +822,103 @@ class TestDashboardReceivers:
             # Each row shows the metrics of the transmitter that its receiver heard.
             assert cells["Trust"] != "—" and cells["Age"] != "—"
             assert rows[name].status == "ok"
+
+    @staticmethod
+    def _heard(consensus, receiver, freq_hz, pi, mono, wrong_s=0.0, caught_up=True):
+        """A hop of ``receiver`` and, when it caught up, its CT in ``consensus``."""
+        ct = _clock()
+        if caught_up:
+            utc = ct.utc + timedelta(seconds=wrong_s)
+            consensus.record(
+                StationObservation(freq_hz, pi, utc, received_monotonic=mono, receiver=receiver)
+            )
+        clock_time = ClockTime(ct.utc + timedelta(seconds=wrong_s), 0)
+        hop = recon.HopResult(
+            freq_hz, pi, "", -20.0, 4, 4, 0, clock_time, caught_up=caught_up, receiver=receiver
+        )
+        return line(hop)
+
+    @staticmethod
+    def _cycle(consensus, iteration, watchlist, now):
+        result = consensus.consensus(now)
+        tracks = recon._track_snapshots(consensus, now)
+        return line(recon.CycleCompleted(iteration, 1, result, watchlist, tracks, 540.0))
+
+    @staticmethod
+    def _rows(state):
+        return {
+            (row.cells[0], row.cells[1]): dict(
+                zip(state.columns(), [*row.cells, row.status], strict=True)
+            )
+            for row in state.view().rows
+        }
+
+    def test_co_channel_transmitters_get_their_own_status(self):
+        # A hears a wrong clock on 98.8, B the right one there, C sets the majority.
+        a, b, c = "10.0.0.1:1234", "10.0.0.2:1234", "10.0.0.3:1234"
+        watchlist = (
+            recon.StationCandidate(98.8e6, -20.0, 4, True, 0x1001, "", a),
+            recon.StationCandidate(98.8e6, -20.0, 4, True, 0x1002, "", b),
+            recon.StationCandidate(102.4e6, -20.0, 4, True, 0x1003, "", c),
+        )
+        consensus = TimeConsensus()
+        lines = [
+            line(recon.ReconStarted(5, 29, receivers=(a, b, c))),
+            line(recon.WatchlistUpdated(1, watchlist)),
+            line(recon.MaintenanceStarted(1, 3)),
+            self._heard(consensus, a, 98.8e6, 0x1001, 100.0, wrong_s=3600.0),
+            self._heard(consensus, b, 98.8e6, 0x1002, 100.0),
+            self._heard(consensus, c, 102.4e6, 0x1003, 100.0),
+            self._cycle(consensus, 1, watchlist, 101.0),
+        ]
+        record = json.loads(lines[-1])
+        assert record["consensus"]["outlier_freqs_mhz"] == [98.8]
+        assert 98.8 in record["consensus"]["contributing_freqs_mhz"]  # both lists, as before
+
+        state, _, _ = _state(lines)
+        rows = self._rows(state)
+        assert rows[(a, "98.80")]["Status"] == "OUTLIER"
+        assert rows[(b, "98.80")]["Status"] == "ok"
+        assert rows[(c, "102.40")]["Status"] == "ok"
+
+        # Streams from before the per-track status keep using the frequency lists.
+        for entry in record["tracks"]:
+            del entry["consensus_status"]
+        old, _, _ = _state([*lines[:-1], json.dumps(record)])
+        assert {row["Status"] for row in self._rows(old).values() if row["MHz"] == "98.80"} == {
+            "OUTLIER"
+        }
+
+    @pytest.mark.parametrize("caught_up", [True, False])
+    def test_an_unconfirmed_ct_does_not_borrow_the_confirmed_metrics(self, caught_up):
+        a, b = "10.0.0.1:1234", "10.0.0.2:1234"
+        watchlist = (
+            recon.StationCandidate(98.8e6, -20.0, 4, True, 0x1001, "", a),
+            recon.StationCandidate(102.4e6, -20.0, 4, True, 0x1002, "", b),
+        )
+        consensus = TimeConsensus()
+        lines = [
+            line(recon.ReconStarted(5, 29, receivers=(a, b))),
+            line(recon.WatchlistUpdated(1, watchlist)),
+            line(recon.MaintenanceStarted(1, 2)),
+            self._heard(consensus, a, 98.8e6, 0x1001, 98.0),
+            self._heard(consensus, b, 102.4e6, 0x1002, 99.0),
+            self._cycle(consensus, 1, watchlist, 100.0),
+            line(recon.MaintenanceStarted(2, 2)),
+            # Later the row's CT arrives without a confirmed PI.
+            self._heard(consensus, a, 98.8e6, None, 168.0, caught_up=caught_up),
+            self._heard(consensus, b, 102.4e6, 0x1002, 169.0),
+            self._cycle(consensus, 2, watchlist, 170.0),
+        ]
+        state, _, _ = _state(lines)
+        row = self._rows(state)[(a, "98.80")]
+        assert row["PI"] == "—"
+        if caught_up:
+            # The consensus counts the unconfirmed track: its metrics, not P's (age 72 s).
+            assert (row["Age"], row["Status"]) == ("2 s", "ok")
+        else:
+            # This CT never entered the consensus: no track holds its metrics.
+            assert (row["Age"], row["Trust"], row["Status"]) == ("—", "—", "")
 
     def test_a_failed_receiver_is_logged_until_it_is_back(self):
         failed = line(recon.ReceiverFailed(2, "10.0.0.2:1235", "Connection refused"))

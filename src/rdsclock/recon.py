@@ -159,6 +159,10 @@ class TrackSnapshot:
     """One row of :meth:`TimeConsensus.summary` as data.
 
     ``freq_hz`` is the tuning of the track's latest observation.
+    ``consensus_status`` is its part in the cycle's consensus:
+    ``"contributing"``, ``"outlier"`` or ``None`` (not counted). Unlike the
+    frequency lists of the consensus, it tells apart two transmitters that
+    different receivers hear on one frequency.
     """
 
     freq_hz: float
@@ -168,6 +172,7 @@ class TrackSnapshot:
     consecutive_outliers: int
     age_s: float
     estimated_utc: datetime | None
+    consensus_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -834,6 +839,7 @@ def _track_snapshots(consensus: TimeConsensus, monotonic_now: float) -> tuple[Tr
             consecutive_outliers=t.consecutive_outliers,
             age_s=t.age_s(monotonic_now),
             estimated_utc=t.estimated_utc_now(monotonic_now),
+            consensus_status=t.consensus_status,
         )
         for t in sorted(consensus.tracks.values(), key=lambda x: -x.trust_score)
     )

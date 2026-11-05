@@ -25,15 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deliver a capture within its duration plus `max(15 s, 25 %)` of it fails
   the same way, so it cannot hold up the others. The run ends only when every
   receiver has failed. Ctrl+C stops every receiver at once, including one that
-  is still connecting, even when the output is blocked.
+  is still connecting; a JSON Lines record being written is finished first.
 - With several receivers, each one votes for the transmitter it last heard on a
   channel: receivers in different places that hear different transmitters on
   one frequency count as two sources, and the dashboards show each one's
   metrics in its own row.
 - JSON Lines: `recon_started` gains `receivers` (`host:port`), `hop_result`,
   `scan_step` candidates and watchlist entries gain `receiver`, and a new
-  `receiver_failed` event carries `iteration`, `receiver` and `error`. Existing
-  keys keep their meaning.
+  `receiver_failed` event carries `iteration`, `receiver` and `error`. Each
+  `cycle_completed` track gains `consensus_status` (`contributing`, `outlier`
+  or `null`), since one frequency can carry a contributing and an outlying
+  transmitter; with several receivers the dashboards take a row's status from
+  it. Existing keys keep their meaning.
 - The terminal, browser and desktop dashboards add a *Receiver* column when
   more than one receiver is configured, show in the status what each receiver
   is recording (for example

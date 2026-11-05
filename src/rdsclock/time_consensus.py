@@ -109,7 +109,9 @@ class StationTrack:
 
     ``observations`` are ordered by reception time, so that ``last`` is the
     latest reception even when receivers working in parallel report an older
-    one later.
+    one later. ``consensus_status`` is the track's part in the latest
+    :meth:`TimeConsensus.consensus`: ``"contributing"``, ``"outlier"``, or
+    ``None`` when it was not counted.
     """
 
     freq_hz: float
@@ -119,6 +121,7 @@ class StationTrack:
     consecutive_outliers: int = 0
     fingerprint_baseline: StationFingerprint | None = None
     tx_latency_ns: int | None = None
+    consensus_status: str | None = None
 
     @property
     def label(self) -> str:
@@ -243,7 +246,9 @@ def _latest_by_receiver(track: "StationTrack") -> dict[str | None, float]:
     return latest
 
 
-def _distinct_source_tracks(tracks: list["StationTrack"]) -> list["StationTrack"]:
+def _distinct_source_tracks(
+    tracks: list["StationTrack"], monotonic_now: float, max_age_s: float = STALE_AGE_S
+) -> list["StationTrack"]:
     """Conservatively give one vote per channel of each receiver and then per known PI.
 
     Several frequencies can carry one programme clock, or capture the same
@@ -253,14 +258,18 @@ def _distinct_source_tracks(tracks: list["StationTrack"]) -> list["StationTrack"
     A channel changing PI, including an unconfirmed/confirmed transition,
     contributes only its freshest observation, without favouring known PI.
     That holds per receiver: receivers in different places may hear different
-    transmitters on one channel, and each keeps what it heard last. With one
-    receiver this is one vote per channel.
+    transmitters on one channel, and each keeps what it heard last. A
+    receiver votes only with its own receptions within ``max_age_s`` of
+    ``monotonic_now``: another receiver keeping a shared track active must not
+    revive an expired vote. With one receiver this is one vote per channel.
     """
     by_channel: dict[tuple[str | None, int], tuple[StationTrack, float]] = {}
     for track in tracks:
         channel_hz = round(track.freq_hz / 100_000) * 100_000
         # A track without observations has no receiver and never votes.
         for receiver, heard in _latest_by_receiver(track).items():
+            if not 0 <= monotonic_now - heard <= max_age_s:
+                continue
             previous = by_channel.get((receiver, channel_hz))
             if previous is None or heard >= previous[1]:
                 by_channel[(receiver, channel_hz)] = (track, heard)
@@ -450,7 +459,10 @@ class TimeConsensus:
         wall_now_epoch_ns: int,
     ) -> list[int]:
         station_estimates: list[int] = []
-        tracks = _distinct_source_tracks(self.active_tracks(monotonic_now_ns / 1_000_000_000))
+        monotonic_now = monotonic_now_ns / 1_000_000_000
+        tracks = _distinct_source_tracks(
+            self.active_tracks(monotonic_now), monotonic_now, self.stale_age_s
+        )
         for track in tracks:
             if track.pi is None:
                 continue
@@ -483,7 +495,11 @@ class TimeConsensus:
     def consensus(self, monotonic_now: float | None = None) -> ConsensusResult:
         if monotonic_now is None:
             monotonic_now = time.monotonic()
-        active = _distinct_source_tracks(self.active_tracks(monotonic_now))
+        for track in self.tracks.values():
+            track.consensus_status = None
+        active = _distinct_source_tracks(
+            self.active_tracks(monotonic_now), monotonic_now, self.stale_age_s
+        )
         if not active:
             return _empty_consensus_result()
 
@@ -531,10 +547,12 @@ class TimeConsensus:
             if abs(epoch - median_epoch) > OUTLIER_THRESHOLD_S:
                 t.consecutive_outliers += 1
                 t.trust_score = max(0.0, t.trust_score - OUTLIER_PENALTY)
+                t.consensus_status = "outlier"
                 outliers.append(t.latest_freq_hz / 1e6)
             else:
                 t.consecutive_outliers = 0
                 t.trust_score = min(1.0, t.trust_score + AGREEMENT_BONUS)
+                t.consensus_status = "contributing"
                 contributing.append(t.latest_freq_hz / 1e6)
         return contributing, outliers
 

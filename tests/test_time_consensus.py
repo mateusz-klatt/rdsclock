@@ -512,3 +512,75 @@ class TestParallelReceivers:
         c.record(self._heard(0x1001, 100.0, "a:1"))
         c.record(self._heard(0x1001, 101.0, "b:1"))
         assert c.consensus(monotonic_now=102.0).n_sources == 1
+
+    def test_an_expired_reception_does_not_keep_a_receivers_vote(self):
+        # At 1000: A heard P at 0 (expired), B heard P at 990 and then an
+        # unconfirmed PI at 995. P is active only through B, and B's vote is
+        # now the unconfirmed PI; A's old reception must not revive P.
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 0.0, "a:1"))
+        c.record(self._heard(0x1001, 990.0, "b:1"))
+        c.record(replace(self._heard(0x1001, 995.0, "b:1"), pi=None))
+        c.record(self._heard(0x2002, 999.0, "c:1", freq_mhz=102.4))
+        result = c.consensus(monotonic_now=1000.0)
+        assert result.n_sources == 2  # the unconfirmed PI and Q
+        assert result.trust_level == TrustLevel.LOW  # not MEDIUM: one confirmed PI
+        statuses = {track.pi: track.consensus_status for track in c.tracks.values()}
+        assert statuses == {0x1001: None, None: "contributing", 0x2002: "contributing"}
+
+    def test_a_fresh_reception_by_another_receiver_still_counts(self):
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 0.0, "a:1"))
+        c.record(self._heard(0x1001, 990.0, "b:1"))
+        c.record(self._heard(0x2002, 999.0, "c:1", freq_mhz=102.4))
+        result = c.consensus(monotonic_now=1000.0)
+        assert result.n_sources == 2
+        assert result.trust_level == TrustLevel.MEDIUM
+
+    def test_an_expired_reception_does_not_keep_a_sub_second_vote(self):
+        base = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
+        origin_ns = 10_000_000_000
+
+        def timestamped(freq_mhz, pi, minute, latency_ns, receiver):
+            obs = _timestamped_obs(
+                freq_mhz, pi, base + timedelta(minutes=minute), latency_ns, origin_ns, base
+            )
+            return replace(obs, receiver=receiver)
+
+        def estimate(unconfirmed_too: bool):
+            c = TimeConsensus()
+            for minute in range(3):  # A's receptions of P expire by minute 8
+                c.record(timestamped(92.0, 0x3201, minute, 5_000_000_000, "a:1"))
+            for minute in (5, 6, 7):
+                c.record(timestamped(98.3, 0x4321, minute, 8_000_000_000, "c:1"))
+            c.record(timestamped(92.0, 0x3201, 7, 5_000_000_000, "b:1"))
+            if unconfirmed_too:
+                later_s = (origin_ns + 450_000_000_000) / 1e9  # minute 7.5
+                c.record(
+                    replace(
+                        _obs(92.0, None, base + timedelta(minutes=7.5), later_s), receiver="b:1"
+                    )
+                )
+            return c.sub_second_consensus(
+                monotonic_now_ns=origin_ns + 480_000_000_000,
+                wall_now_utc=base + timedelta(minutes=8),
+            )
+
+        assert estimate(unconfirmed_too=False).station_count == 2  # P counts through B
+        assert estimate(unconfirmed_too=True) is None  # B now votes for the unconfirmed PI
+
+    def test_each_transmitter_on_a_shared_frequency_is_classified(self):
+        # A hears a wrong clock on 98.8, B the right one there, C sets the majority.
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 100.0, "a:1"))
+        wrong = self._heard(0x1002, 100.0, "b:1")
+        c.record(replace(wrong, ct_utc=wrong.ct_utc + timedelta(hours=1)))
+        c.record(self._heard(0x1003, 100.0, "c:1", freq_mhz=102.4))
+        result = c.consensus(monotonic_now=101.0)
+        assert result.contributing_freqs_mhz == [98.8, 102.4]
+        assert result.outlier_freqs_mhz == [98.8]
+        statuses = {track.pi: track.consensus_status for track in c.tracks.values()}
+        assert statuses == {0x1001: "contributing", 0x1002: "outlier", 0x1003: "contributing"}
+        # Every evaluation classifies afresh: an expired track is no longer counted.
+        c.consensus(monotonic_now=1000.0)
+        assert {track.consensus_status for track in c.tracks.values()} == {None}
