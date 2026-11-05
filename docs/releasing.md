@@ -50,8 +50,24 @@ all its expected assets already match.
 PyPI publication skips files already present, but staging first checks their
 SHA-256 hashes and finalization requires a complete matching set. A mismatch
 stops the workflow: investigate and publish a new version rather than replacing
-files. If the final check fails because PyPI metadata is not yet visible,
-rerun that failed job. If the original artifact has expired, recover the
+files. Both registries list new items with a delay, so the workflow waits:
+after creating the draft it polls the release list for about 30 seconds
+(`gh release create` is run once, even if it reports an error such as HTTP 502,
+because the draft may exist anyway), and finalization rechecks PyPI for about
+two and a half minutes while files are only missing. Mismatched or unexpected
+files fail at once. If the final check still fails because PyPI metadata is not
+yet visible, rerun that failed job.
+
+If several releases use the tag and all but one are empty drafts, typically
+left by a retried create, the workflow names the empty drafts' ids and stops.
+Delete those drafts yourself, then rerun the failed job; it never deletes or
+edits them automatically.
+
+Finalization marks the release **latest** only if its version is the highest
+among published, non-prerelease `vX.Y.Z` releases. Republishing an older tag
+after a newer release uses `--latest=false`.
+
+If the original artifact has expired, recover the
 original distributions and verify their provenance instead of rebuilding and
 attempting to overwrite a published version.
 
