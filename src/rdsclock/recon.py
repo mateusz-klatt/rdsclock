@@ -139,11 +139,17 @@ class TrackSnapshot:
 
 @dataclass(frozen=True)
 class ReconStarted:
-    """``rtl_tcp`` answered; the loop is about to start."""
+    """``rtl_tcp`` answered; the loop is about to start.
+
+    ``ct_timezone_rules`` lists the ``--ct-timezone`` rules in effect, each in
+    a form that parses back to it; it is empty when every station is read as
+    the standard says.
+    """
 
     kind: ClassVar[str] = "recon_started"
     tuner_type: int
     gain_count: int
+    ct_timezone_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -877,7 +883,13 @@ def run_recon(
         with RtlTcpClient(host=cfg.host, port=cfg.port) as client:
             info = client.info
             on_status(f"  rtl_tcp OK: tuner={info.tuner_type}, gains={info.gain_count}")
-            publish(ReconStarted(tuner_type=info.tuner_type, gain_count=info.gain_count))
+            publish(
+                ReconStarted(
+                    tuner_type=info.tuner_type,
+                    gain_count=info.gain_count,
+                    ct_timezone_rules=tuple(str(rule) for rule in cfg.ct_policy.rules),
+                )
+            )
             while True:
                 iteration += 1
                 now_mono = time.monotonic()

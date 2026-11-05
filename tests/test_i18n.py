@@ -3,15 +3,16 @@
 import json
 import sys
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from string import Formatter
 from types import ModuleType
 
 import pytest
 
 from rdsclock import cli
-from rdsclock.dashboard import COLUMNS, UNCERTAINTY_NOTE, DashboardState
+from rdsclock.dashboard import COLUMNS, UNCERTAINTY_NOTE, WHOLE_HOUR_HINT, DashboardState
 from rdsclock.i18n import SUPPORTED_LANGUAGES, TRANSLATIONS, normalize_language, translate
-from tests.fake_receiver import HOST_UTC, MARKUP_PS, cycle, line, session
+from tests.fake_receiver import HOST_UTC, MARKUP_PS, ct_hop, ct_session, cycle, line, session
 
 
 def _placeholders(message):
@@ -176,3 +177,39 @@ def test_cli_language_is_optional_and_rejects_unsupported_values():
 def test_locale_also_applies_to_dashboard_start_errors(flag, capsys):
     assert cli.main(["recon", flag, "--lang", "pl", "--from-dir", "unused"]) == 2
     assert capsys.readouterr().err == f"błąd: {flag} dotyczy odbioru na żywo, nie --from-dir\n"
+
+
+CT_READING_MESSAGES = (
+    WHOLE_HOUR_HINT,
+    "ambiguous",
+    "nonexistent",
+    "{utc:%H:%M}Z ← {zone}",
+    "{local:%H:%M} {zone}: {status}, not used",
+    "{label}: CT {local:%H:%M} read as {zone} local time = {utc:%H:%M}Z (LTO {lto}), {groups}.",
+    "{label}: CT {local:%H:%M} as {zone} local time is {status}, not used (LTO {lto}), {groups}.",
+    "CT read as local time by --ct-timezone: {rules}.",
+)
+
+
+@pytest.mark.parametrize("language", SUPPORTED_LANGUAGES[1:])
+def test_ct_reading_and_whole_hour_hint_are_fully_translated(language):
+    from rdsclock.rds_clock import ClockTime
+    from tests.fake_receiver import STATION_A
+
+    assert set(CT_READING_MESSAGES) <= set(TRANSLATIONS[language])
+    skipped = line(ct_hop(STATION_A, ClockTime(datetime(2026, 3, 29, 2, 30, tzinfo=UTC), 0)))
+    state = DashboardState(language=language, clock=lambda: 100.0, wall_clock=lambda: HOST_UTC)
+    shown = [message for record in ct_session() for message in state.apply_line(record)]
+    shown += [cell for row in state.view().rows for cell in row.cells]
+    shown += state.apply_line(skipped) + list(state.view().rows[0].cells)
+    # Without rules, a host clock an hour behind the consensus brings the hint.
+    hinted = DashboardState(
+        language=language,
+        clock=lambda: 100.0,
+        wall_clock=lambda: HOST_UTC - timedelta(hours=1),
+    )
+    shown += [message for record in session() for message in hinted.apply_line(record)]
+    text = "\n".join(shown)
+    assert "--ct-timezone" in text and "Europe/Warsaw" in text
+    for english in ("read as", "local time", "not used", "ambiguous", "nonexistent", "hint"):
+        assert english not in text, english

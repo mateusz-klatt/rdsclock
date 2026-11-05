@@ -5,7 +5,7 @@ import json
 import signal
 import threading
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -18,6 +18,8 @@ from tests.fake_receiver import (
     HOST_UTC,
     MARKUP_PS,
     STATION_A,
+    ct_hop,
+    ct_session,
     cycle,
     line,
     receiver_command,
@@ -445,7 +447,7 @@ class TestReceiverProcess:
 
 
 def test_hop_results_with_a_ct_reading_still_parse():
-    """``clock_time`` gains effective_utc, ct_timezone and ct_status; older keys still drive the view."""
+    """``clock_time`` gains effective_utc, ct_timezone and ct_status; the raw CT is kept."""
     local = ClockTime(CT + timedelta(hours=1), 0)
     for reading in (
         CTInterpretation(CT, "Europe/Warsaw", "converted"),
@@ -457,9 +459,179 @@ def test_hop_results_with_a_ct_reading_still_parse():
             )
         )
         assert json.loads(record)["clock_time"]["ct_timezone"] == "Europe/Warsaw"
-        state, _, messages = _state([record])
         hop = dashboard.Hop.from_record(json.loads(record))
         assert (hop.ct_utc, hop.lto_minutes) == (local.utc, 0)
-        assert messages == [
-            f"102.40 MHz STACJA A: CT {local.utc:%H:%M}Z (LTO +00:00), 812 groups, 17 corrected."
-        ]
+        assert (hop.effective_utc, hop.ct_timezone, hop.ct_status) == (
+            reading.utc,
+            reading.zone,
+            reading.status,
+        )
+
+
+def _ct_state(lines: list[str], language: str = "en"):
+    clock = _Clock()
+    state = dashboard.DashboardState(clock=clock, wall_clock=clock.wall, language=language)
+    messages = [message for record in lines for message in state.apply_line(record)]
+    return state, clock, messages
+
+
+class TestCtReadAsLocalTime:
+    def test_a_converted_row_shows_effective_utc_and_the_source_zone(self):
+        state, _, messages = _ct_state(ct_session())
+        rows = {row.cells[0]: row for row in state.view().rows}
+        assert rows["102.40"].cells[6:8] == ("12:00Z ← Europe/Warsaw", "+00:00")
+        assert rows["102.40"].status == "ok"
+        # The raw CT stays in the log line.
+        assert (
+            "102.40 MHz STACJA A: CT 13:00 read as Europe/Warsaw local time = 12:00Z "
+            "(LTO +00:00), 812 groups, 17 corrected."
+        ) in messages
+        assert messages[1] == (
+            "CT read as local time by --ct-timezone: "
+            "pi:0xA101=Europe/Warsaw, pi:0xA103=Europe/Warsaw."
+        )
+
+    def test_an_ambiguous_row_says_its_ct_was_not_used(self):
+        state, _, messages = _ct_state(ct_session())
+        row = state.view().rows[2]
+        assert row.cells[6:8] == ("02:30 Europe/Warsaw: ambiguous, not used", "+00:00")
+        assert (
+            f"107.50 MHz {MARKUP_PS}: CT 02:30 as Europe/Warsaw local time is ambiguous, "
+            "not used (LTO +00:00), 812 groups, 17 corrected."
+        ) in messages
+
+    def test_a_nonexistent_row_says_its_ct_was_not_used(self):
+        skipped = ClockTime(datetime(2026, 3, 29, 2, 30, tzinfo=UTC), 0)
+        state, _, messages = _ct_state([*ct_session(), line(ct_hop(STATION_A, skipped))])
+        assert state.view().rows[0].cells[6] == "02:30 Europe/Warsaw: nonexistent, not used"
+        assert messages[-1].startswith(
+            "102.40 MHz STACJA A: CT 02:30 as Europe/Warsaw local time is nonexistent, not used"
+        )
+
+    def test_standard_rows_look_exactly_as_before(self):
+        plain, _, plain_messages = _state(session())
+        read, _, read_messages = _ct_state(ct_session())
+        assert read.view().rows[1] == plain.view().rows[1]
+        hop_b = "98.80 MHz STACJA B: no CT, 643 groups, 3 corrected."
+        assert hop_b in plain_messages and hop_b in read_messages
+        # A rule that names the UTC zone is the standard reading.
+        utc = line(ct_hop(STATION_A, ClockTime(CT, 60), rules=("pi:0xA101=UTC",)))
+        state, _, messages = _state([*session(), utc])
+        assert state.view().rows[0].cells[6:8] == ("12:00Z", "+01:00")
+        assert messages[-1].startswith("102.40 MHz STACJA A: CT 12:00Z (LTO +01:00)")
+
+    @pytest.mark.parametrize(
+        "language,converted,ambiguous,log",
+        [
+            (
+                "pl",
+                "12:00Z ← Europe/Warsaw",
+                "02:30 Europe/Warsaw: niejednoznaczny, nieużyty",
+                "CT 13:00 odczytany jako czas lokalny Europe/Warsaw = 12:00Z",
+            ),
+            (
+                "fr",
+                "12:00Z ← Europe/Warsaw",
+                "02:30 Europe/Warsaw : ambigu, non utilisé",
+                "CT 13:00 lu comme heure locale Europe/Warsaw = 12:00Z",
+            ),
+        ],
+    )
+    def test_rows_and_log_are_translated(self, language, converted, ambiguous, log):
+        state, _, messages = _ct_state(ct_session(), language)
+        rows = state.view().rows
+        assert (rows[0].cells[6], rows[2].cells[6]) == (converted, ambiguous)
+        assert any(log in message for message in messages)
+
+    @pytest.mark.parametrize(
+        "clock_time",
+        [
+            {"ct_status": "converted", "ct_timezone": "Europe/Warsaw", "effective_utc": None},
+            {"ct_status": "converted", "ct_timezone": "Europe/Warsaw"},
+            {"ct_status": 3, "ct_timezone": "Europe/Warsaw", "effective_utc": None},
+            {"ct_status": "ambiguous", "ct_timezone": None, "effective_utc": None},
+        ],
+    )
+    def test_a_malformed_reading_is_ignored(self, clock_time):
+        record = json.loads(line(ct_hop(STATION_A, ClockTime(CT + timedelta(hours=1), 0))))
+        for key in ("ct_status", "ct_timezone", "effective_utc"):
+            del record["clock_time"][key]
+        record["clock_time"].update(clock_time)
+        state, _, messages = _state([json.dumps(record)])
+        assert messages == ["Ignored a malformed hop_result event."]
+        assert not state.hops
+
+    def test_malformed_rules_are_ignored(self):
+        record = json.loads(line(recon.ReconStarted(5, 29)))
+        assert record["ct_timezone_rules"] == []
+        record["ct_timezone_rules"] = "Europe/Warsaw"
+        state, _, messages = _state([json.dumps(record)])
+        assert messages == ["Ignored a malformed recon_started event."]
+        assert not state.ready
+
+
+def _offset_cycle(state: dashboard.DashboardState, clock: _Clock, host_minus_consensus_s: float):
+    """Apply a cycle whose consensus is ``host_minus_consensus_s`` behind the host clock."""
+    # The session's consensus is 10 s behind the host clock.
+    clock.host_step = timedelta(seconds=host_minus_consensus_s - 10.0)
+    return state.apply_line(line(cycle()))[1:]
+
+
+class TestWholeHourHint:
+    HINT = (
+        "Host clock minus consensus is close to -1 h. Some stations may send local time in "
+        "the CT UTC field; if so, name their time zone with --ct-timezone. The host clock is "
+        "only a hint: no time is changed automatically."
+    )
+
+    def test_fires_once_per_change_of_the_whole_hour_offset(self):
+        state, clock, messages = _state(session())
+        assert not any("--ct-timezone" in message for message in messages)
+        assert _offset_cycle(state, clock, -3600.0 + 95) == [self.HINT]
+        assert _offset_cycle(state, clock, -3600.0 - 30) == []  # still the same hour
+        assert _offset_cycle(state, clock, -7200.0)[0].startswith(
+            "Host clock minus consensus is close to -2 h."
+        )
+        assert _offset_cycle(state, clock, 0.4) == []
+        assert _offset_cycle(state, clock, -3600.0) == [self.HINT]  # it came back
+        assert _offset_cycle(state, clock, 3600.0)[0].startswith(
+            "Host clock minus consensus is close to +1 h."
+        )
+
+    def test_an_unavailable_consensus_neither_fires_nor_resets(self):
+        state, clock, _ = _state(session())
+        assert _offset_cycle(state, clock, -3600.0) == [self.HINT]
+        assert state.apply_line(line(cycle(utc=None)))[1:] == []
+        assert _offset_cycle(state, clock, -3600.0) == []
+
+    @pytest.mark.parametrize("offset_s", [0.0, 119.0, 1800.0, -3600.0 + 121, -3600.0 - 121])
+    def test_does_not_fire_without_a_whole_hour_offset(self, offset_s):
+        state, clock, _ = _state(session())
+        assert _offset_cycle(state, clock, offset_s) == []
+
+    def test_does_not_fire_when_the_receiver_has_rules(self):
+        records = session()
+        records[0] = line(recon.ReconStarted(5, 29, ("freq:91.0=Europe/Warsaw",)))
+        state, clock, messages = _state(records)
+        assert messages[1] == "CT read as local time by --ct-timezone: freq:91.0=Europe/Warsaw."
+        assert _offset_cycle(state, clock, -3600.0) == []
+
+    def test_does_not_fire_once_a_ct_was_read_as_local_time(self):
+        # A receiver that predates ct_timezone_rules still reveals its rules by its hops.
+        records = ct_session()
+        records[0] = session()[0]
+        state, clock, _ = _state(records)
+        assert _offset_cycle(state, clock, -3600.0) == []
+
+    @pytest.mark.parametrize(
+        "language,start",
+        [
+            ("pl", "Zegar komputera minus konsensus wynosi blisko -1 h. "),
+            ("fr", "Horloge de l’hôte moins consensus : environ -1 h. "),
+        ],
+    )
+    def test_is_translated(self, language, start):
+        state, clock, _ = _ct_state(session(), language)
+        (hint,) = _offset_cycle(state, clock, -3600.0)
+        assert hint.startswith(start)
+        assert "--ct-timezone" in hint

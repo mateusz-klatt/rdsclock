@@ -13,7 +13,7 @@ tk = pytest.importorskip("tkinter")
 
 import rdsclock.cli as cli  # noqa: E402
 import rdsclock.gui as gui  # noqa: E402
-from tests.fake_receiver import MARKUP_PS, receiver_command  # noqa: E402
+from tests.fake_receiver import MARKUP_PS, ct_session, receiver_command  # noqa: E402
 
 
 @pytest.fixture
@@ -264,4 +264,30 @@ def test_every_widget_spells_general_punctuation_in_ascii(root, tmp_path):
 
 def test_tk_text_replaces_only_what_the_fonts_lack():
     assert gui.tk_text("l’hôte — 2–3 “x” „y” ‘z’…") == 'l\'hôte - 2-3 "x" "y" \'z\'...'
+    assert gui.tk_text("12:00Z ← Europe/Warsaw → 11:00Z") == "12:00Z <- Europe/Warsaw -> 11:00Z"
     assert gui.tk_text("Zażółć · ±1 s · «»") == "Zażółć · ±1 s · «»"
+
+
+def test_table_shows_ct_read_as_local_time_in_a_wide_enough_column(root, tmp_path):
+    dashboard = gui.DesktopDashboard(root, receiver_command(tmp_path, records=ct_session()))
+    try:
+        _pump(root, lambda: dashboard.state.consensus is not None)
+        dashboard._refresh()
+        rows = _rows(dashboard)
+        assert rows[0][0][6] == "12:00Z <- Europe/Warsaw"
+        assert rows[2][0][6] == "02:30 Europe/Warsaw: ambiguous, not used"
+        width = int(dashboard.table.column("Last CT", "width"))
+        assert width >= dashboard.cell_font.measure(rows[2][0][6])
+        assert "read as Europe/Warsaw local time = 12:00Z" in dashboard.log_text()
+    finally:
+        dashboard.quit()
+
+
+def test_standard_rows_keep_the_column_layout(root, tmp_path):
+    dashboard = gui.DesktopDashboard(root, receiver_command(tmp_path))
+    try:
+        _pump(root, lambda: dashboard.state.consensus is not None)
+        dashboard._refresh()
+        assert {int(dashboard.table.column(name, "width")) for name in gui.COLUMNS} == {78}
+    finally:
+        dashboard.quit()

@@ -18,6 +18,7 @@ from rdsclock.dashboard import DashboardState, View  # noqa: E402
 from tests.fake_receiver import (  # noqa: E402
     HOST_UTC,
     MARKUP_PS,
+    ct_session,
     cycle,
     line,
     receiver_command,
@@ -49,6 +50,14 @@ class TestRendering:
             "TIME UNAVAILABLE   Trust STALE (assessed 0 s ago)   no active sources"
         )
         assert tui.consensus_text(None).plain.startswith("Waiting for the first completed cycle")
+
+    def test_ct_read_as_local_time_is_marked_in_plain_cells(self):
+        cells = [tui.row_cells(row) for row in _view(ct_session()).rows]
+        assert cells[0][6].plain == "12:00Z ← Europe/Warsaw"
+        assert cells[2][6].plain == "02:30 Europe/Warsaw: ambiguous, not used"
+        assert not cells[0][6].spans
+        standard = [tui.row_cells(row) for row in _view(session()).rows]
+        assert [cell.plain for cell in cells[1]] == [cell.plain for cell in standard[1]]
 
     def test_status_line_phase_is_bold(self):
         view = _view(session())
@@ -403,3 +412,21 @@ def test_dashboard_language_reaches_widgets_and_preserves_style(
 
     _drive(app, scenario)
     assert app.child.process.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "language,ambiguous", [("en", "ambiguous, not used"), ("pl", "niejednoznaczny, nieużyty")]
+)
+def test_station_table_shows_ct_read_as_local_time(tmp_path, language, ambiguous):
+    app = tui.ReconDashboard(receiver_command(tmp_path, records=ct_session()), language=language)
+
+    async def scenario(pilot):
+        await _until(pilot, lambda: app.state.consensus is not None)
+        app._refresh()
+        table = app.query_one(DataTable)
+        assert str(table.get_row_at(0)[6]) == "12:00Z ← Europe/Warsaw"
+        assert str(table.get_row_at(2)[6]).endswith(ambiguous)
+        assert "CT 13:00 " in _log_text(app) and "= 12:00Z (LTO +00:00)" in _log_text(app)
+        await pilot.press("q")
+
+    _drive(app, scenario)

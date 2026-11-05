@@ -265,6 +265,58 @@ cycle in these screenshots ended at HIGH:
 were approximately one hour ahead of host UTC. This is an observed disagreement;
 source agreement does not establish the cause or calibrate absolute accuracy.*
 
+### Stations that send local time as UTC
+
+IEC 62106 defines the Group 4A hour and minute as UTC; local time is
+UTC + LTO. Measurements in Warsaw from 31 October to 5 November 2026, with the
+host clock checked against NTP to within 0.4 s, found four stations that put
+Central European Time (CET) in the UTC field and send an LTO of zero. Their
+fields were decoded and checked bit by bit:
+
+| Station | MHz | PI | Group 4A "UTC" field | LTO |
+|---|---|---|---|---|
+| PR Jedynka | 102.4 | `0x3211` | CET, UTC + 1 h | +00:00 |
+| PR Trójka | 98.8 | `0x3233` | CET, UTC + 1 h | +00:00 |
+| Radio ZET | 107.5 | `0x3205` | CET, UTC + 1 h | +00:00 |
+| RMF Classic | 98.3 | `0x3245` | CET, UTC + 1 h | +00:00 |
+
+Read as the standard says, they run one hour ahead of UTC, and two hours ahead
+under summer time (CEST); that is the offset in the HOP screenshots above.
+rdsclock still reads the field as UTC by default. If you know that a station
+sends local time there, name its IANA time zone with `recon --ct-timezone`:
+
+```bash
+# Every station sends Warsaw time.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 98.8,102.4,107.5 --ct-timezone Europe/Warsaw --tui
+
+# Only these two; the others stay standard.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 --hop 98.8,102.4,107.5 \
+  --ct-timezone pi:0x3211=Europe/Warsaw --ct-timezone freq:98.8=Europe/Warsaw --tui
+```
+
+`--ct-timezone` takes `ZONE` (every station), `pi:HEX=ZONE` or `freq:MHZ=ZONE`
+and can be repeated; a PI rule wins over a frequency rule, which wins over a
+bare `ZONE`, and `UTC` keeps the standard reading. The decoded hour and minute
+are read as wall-clock time in that zone and converted to UTC with the system
+time-zone database, so daylight saving changes are followed. A time in the
+repeated autumn hour (`ambiguous`) or the skipped spring hour (`nonexistent`)
+is shown but not used. The LTO is kept as received and not applied.
+
+The dashboards show a converted station's CT as its effective UTC with the
+source zone, for example `09:06Z ← Europe/Warsaw`, and keep the broadcast value
+in the log. In JSON Lines, `clock_time` keeps `utc` and `local_offset_minutes`
+as broadcast and adds `effective_utc`, `ct_timezone` and `ct_status`. Without
+a rule, when the consensus differs from the host clock by close to a whole
+number of hours, the dashboard log suggests the option once; the host clock is
+only a hint, and nothing is changed automatically.
+
+A declaration makes such stations agree with standard ones; it does not prove
+that the result is UTC. Stations that share a wrong upstream clock still agree
+with each other. Compare with an independent reference.
+
+[2.1.0 release notes — EN / PL / FR](docs/releases/2.1.0.md)
+
 ## How it works
 
 ```mermaid

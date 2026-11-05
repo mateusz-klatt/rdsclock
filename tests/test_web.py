@@ -15,7 +15,7 @@ import pytest
 import rdsclock.cli as cli
 import rdsclock.web as web
 from rdsclock.dashboard import COLUMNS
-from tests.fake_receiver import MARKUP_PS, receiver_command
+from tests.fake_receiver import MARKUP_PS, ct_session, receiver_command
 
 RESCAN = {"X-Requested-By": "rdsclock"}
 
@@ -345,5 +345,35 @@ def test_web_language_covers_initial_page_and_live_snapshot(language, trust, res
         assert view["rows"][2]["status"] == "OUTLIER"
         assert view["rows"][2]["cells"][1] == MARKUP_PS
         assert dashboard.state.view().consensus.trust_level == "HIGH"
+    finally:
+        dashboard.close()
+
+
+@pytest.mark.parametrize(
+    "language,ambiguous",
+    [
+        ("en", "02:30 Europe/Warsaw: ambiguous, not used"),
+        ("fr", "02:30 Europe/Warsaw : ambigu, non utilisé"),
+    ],
+)
+def test_rows_show_ct_read_as_local_time(tmp_path, language, ambiguous):
+    command = receiver_command(tmp_path, records=ct_session())
+    dashboard = web.WebDashboard(command, host="127.0.0.1", port=0, language=language)
+    try:
+        dashboard.start()
+        deadline = time.monotonic() + 15
+        while dashboard.snapshot("127.0.0.1")[0]["consensus"] is None:
+            assert time.monotonic() < deadline, "the dashboard did not reach the expected state"
+            time.sleep(0.02)
+        view = dashboard.snapshot("127.0.0.1")[0]
+        assert [row["cells"][6] for row in view["rows"]] == [
+            "12:00Z ← Europe/Warsaw",
+            {"en": "none", "fr": "aucun"}[language],
+            ambiguous,
+        ]
+        assert view["rows"][1]["status"] == "ok"
+        assert any("CT 13:00 " in m and "= 12:00Z (LTO" in m for m in view["log"])
+        # Server-Sent Events carry the marker through JSON unchanged.
+        assert json.loads(json.dumps(view))["rows"][0]["cells"][6] == "12:00Z ← Europe/Warsaw"
     finally:
         dashboard.close()

@@ -150,6 +150,41 @@ at a time adds as much again: plan for about 5 GB of memory. `rtl_tcp` sends
 explicitly, since the stations share one 8-bit converter. `--start`, `--end`,
 `--step`, `--rssi-threshold` and `--max-stations` apply to band scans only.
 
+### Stations that send local time as UTC (2.1.0)
+
+IEC 62106 defines the Group 4A hour and minute as UTC; local time is
+UTC + LTO. Some stations send local time in that field instead: in Warsaw,
+Jedynka 102.4 (`0x3211`), Trójka 98.8 (`0x3233`), Radio ZET 107.5 (`0x3205`)
+and RMF Classic 98.3 (`0x3245`) send CET with an LTO of zero (measured
+31 October–5 November 2026). Read as the standard says, they are one hour
+ahead of UTC, two under summer time. If you know a station does this, name its
+time zone:
+
+```bash
+rdsclock recon --hop 98.8,102.4,107.5 --ct-timezone Europe/Warsaw --tui --lang pl
+```
+
+The option takes `ZONE` (every station), `pi:HEX=ZONE` or `freq:MHZ=ZONE` and
+can be repeated; PI rules win over frequency rules, which win over a bare
+zone, and `UTC` keeps the standard reading. The hour and minute are converted
+from that zone's local time to UTC, following daylight saving changes. A time
+in the repeated autumn hour (`ambiguous`) or the skipped spring hour
+(`nonexistent`) is shown but not used for the consensus; the LTO is kept as
+received and not applied. Without the option nothing changes.
+
+The dashboards show a converted CT as UTC with its source zone, for example
+`09:06Z ← Europe/Warsaw` (`09:06Z <- Europe/Warsaw` in the desktop window),
+and the log keeps the value as broadcast. A CT that was not used reads, for
+example, `02:30 Europe/Warsaw: ambiguous, not used`. Without any rule, when the
+consensus differs from the host clock by close to a whole number of hours
+(within 2 minutes), the dashboard log suggests `--ct-timezone` once per change
+of that offset. The host clock is only a hint; no time is changed
+automatically.
+
+A declaration makes these stations agree with the others; it does not prove
+UTC. Stations that share a wrong upstream clock still agree. Compare with an
+independent reference before you trust the result.
+
 ### Interface languages (2.0.0)
 
 All three dashboards support `--lang en`, `--lang pl` and `--lang fr` (English
@@ -268,6 +303,15 @@ a capture is also named in the operator text. `caught_up` is false when the
 queue outlasted the capture: at its end the samples were still arriving faster
 than real time, or had stalled, so their receive times are unknown. The CT of
 such a capture is reported but not used for the consensus.
+
+The `clock_time` object of a `hop_result` keeps `utc` and
+`local_offset_minutes` exactly as broadcast and, since 2.1.0, adds three keys:
+`ct_timezone`, the zone the CT field was read in (`UTC` for the standard
+reading); `ct_status`, one of `standard`, `converted`, `ambiguous` or
+`nonexistent`; and `effective_utc`, the UTC used for the consensus, which is
+`null` when the status is `ambiguous` or `nonexistent`. `recon_started` lists
+the rules in effect as `ct_timezone_rules`, an empty list by default. Consumers
+that ignore unknown keys need no change.
 
 ## 6. Adjusting the Wrist Watch
 

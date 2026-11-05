@@ -15,6 +15,7 @@ flowchart TD
     dsp[dsp.py<br/>filters · FM demod · Costas<br/>Mueller-Müller · pilot estimate]
     channelizer[channelizer.py<br/>wide-band → N narrow channels]
     consensus[time_consensus.py<br/>median + trust + holdover]
+    ct_policy[ct_policy.py<br/>--ct-timezone rules<br/>CT local time → UTC]
     rds_blocks[rds_blocks.py<br/>CRC · offsets · group framing]
     rds_clock[rds_clock.py<br/>MJD ↔ datetime · encode/decode 4A]
     rds_groups[rds_groups.py<br/>PS / RT / CT parser+encoder]
@@ -42,6 +43,7 @@ flowchart TD
     recon --> decoder
     recon --> rtl_tcp
     recon --> consensus
+    recon --> ct_policy
     channelizer --> dsp
     channelizer --> decoder
     rds_groups --> rds_clock
@@ -221,7 +223,12 @@ tuning point (including points below the RSSI threshold),
 `maintenance_started` also carry the capture centre and sample rate, and every
 station of a capture produces a `hop_result`. Each `hop_result` carries the
 `queued_s` of its capture, which its receive times already include, and
-`caught_up`; verbose output names every backlogged capture. `cycle_completed`
+`caught_up`; verbose output names every backlogged capture. Its `clock_time`
+keeps the broadcast `utc` and `local_offset_minutes` and adds the reading of
+`ct_policy.CTPolicy` (CLI `--ct-timezone`): `ct_timezone`, `ct_status`
+(`standard`, `converted`, `ambiguous` or `nonexistent`) and `effective_utc`,
+the UTC passed to the consensus, `null` when the CT is not used.
+`recon_started` lists the rules as `ct_timezone_rules`. `cycle_completed`
 carries the data behind the status block: the consensus result, the watchlist
 and one row per track. The loop evaluates the consensus once per cycle and
 passes the result to both outputs, because every evaluation updates trust
@@ -258,6 +265,11 @@ survives hops without CT until another confirmed PI answers there, and an
 unconfirmed hop PI is shown as unknown rather than borrowed from the scan.
 Strings from broadcasts or the child process are reduced to printable
 characters and rendered as plain text, never as Rich markup.
+A station whose CT was read as local time shows its effective UTC with the
+source zone, a CT that was not used says so, and a standard CT looks as it did
+before 2.1.0. Without `--ct-timezone` rules, the log suggests the option once
+per change when the consensus differs from the host clock by close to a whole
+number of hours; the host clock is only a hint and nothing is adjusted.
 
 ## Browser Dashboard
 
