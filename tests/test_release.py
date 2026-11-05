@@ -10,6 +10,13 @@ import pytest
 from tools import release
 
 
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch):
+    waited = []
+    monkeypatch.setattr(release, "sleep", waited.append)
+    return waited
+
+
 @pytest.fixture
 def source(tmp_path):
     (tmp_path / "src/rdsclock").mkdir(parents=True)
@@ -103,11 +110,23 @@ def test_finalize_requires_matching_pypi_before_publishing(monkeypatch):
         release.finalize("owner/repo", "v2.0.0", {"wheel": "a"})
 
 
+def _registry(calls, published=()):
+    # Answers the release listing; records every mutating gh call.
+    def gh(*args):
+        if args[0] == "api":
+            return json.dumps(
+                [{"tag_name": tag, "draft": False, "prerelease": False} for tag in published]
+            )
+        calls.append(args)
+
+    return gh
+
+
 def test_finalize_is_idempotent_when_both_registries_match(monkeypatch):
     calls = []
     monkeypatch.setattr(release, "verify_pypi", lambda *args, **kwargs: calls.append("pypi"))
     monkeypatch.setattr(release, "release_info", lambda *args: _info(both=True))
-    monkeypatch.setattr(release, "gh", lambda *args: calls.append(args))
+    monkeypatch.setattr(release, "gh", _registry(calls))
     release.finalize("owner/repo", "v2.0.0", {"wheel": "a", "sdist": "b"})
     assert calls == [
         "pypi",
@@ -194,3 +213,137 @@ def test_actions_publish_only_the_canonical_repository_and_dist(source, monkeypa
     for option in ("--repo", "--dist"):  # neither is chosen on the command line
         with pytest.raises(SystemExit):
             _main(monkeypatch, "stage", "--tag", "v2.0.0", option, "--clobber")
+
+
+def _create_then(monkeypatch, create, listings):
+    responses = iter(listings)
+    monkeypatch.setattr(release, "release_info", lambda *args: next(responses))
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        if args[1] == "create":
+            create()
+
+    monkeypatch.setattr(release, "gh", gh)
+    return calls
+
+
+def _bad_gateway():
+    raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502")
+
+
+def test_stage_continues_when_create_fails_but_draft_appears(monkeypatch, sleeps):
+    listings = [None, None, None, _info(), _info(both=True)]
+    calls = _create_then(monkeypatch, _bad_gateway, listings)
+    release.stage("owner/repo", "v2.0.0", Path("dist"), {"wheel": "a", "sdist": "b"})
+    assert [call[1] for call in calls] == ["create", "upload"]
+    assert sleeps == [release.LOOKUP_DELAY] * 2
+
+
+def test_stage_waits_for_a_created_draft_to_be_listed(monkeypatch, sleeps):
+    calls = _create_then(monkeypatch, lambda: None, [None, None, _info(), _info(both=True)])
+    release.stage("owner/repo", "v2.0.0", Path("dist"), {"wheel": "a", "sdist": "b"})
+    assert [call[1] for call in calls] == ["create", "upload"]
+    assert sleeps == [release.LOOKUP_DELAY]
+
+
+@pytest.mark.parametrize(
+    "create,error", [(_bad_gateway, subprocess.CalledProcessError), (lambda: None, ValueError)]
+)
+def test_stage_gives_up_when_the_draft_never_appears(monkeypatch, sleeps, create, error):
+    calls = _create_then(monkeypatch, create, [None] * (release.LOOKUP_ATTEMPTS + 1))
+    with pytest.raises(error) as raised:
+        release.stage("owner/repo", "v2.0.0", Path("dist"), {"wheel": "a"})
+    if error is ValueError:
+        assert "never appeared" in str(raised.value)
+    assert [call[1] for call in calls] == ["create"]  # created once, never retried
+    assert len(sleeps) == release.LOOKUP_ATTEMPTS - 1
+
+
+def test_duplicate_empty_drafts_are_named_not_deleted(monkeypatch):
+    staged = {**_info(), "id": 7, "tag_name": "v2.0.0"}
+    empty = {"id": 9, "tag_name": "v2.0.0", "draft": True, "assets": []}
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        return json.dumps([empty, staged])
+
+    monkeypatch.setattr(release, "gh", gh)
+    with pytest.raises(ValueError, match=r"delete the empty draft release\(s\) 9 and rerun"):
+        release.release_info("owner/repo", "v2.0.0")
+    assert all(call[0] == "api" for call in calls)
+    monkeypatch.setattr(release, "gh", lambda *args: json.dumps([staged, {**staged, "id": 8}]))
+    with pytest.raises(ValueError, match="resolve the ambiguity"):
+        release.release_info("owner/repo", "v2.0.0")
+
+
+def test_finalize_waits_for_pypi_to_list_uploaded_files(monkeypatch, sleeps):
+    pypi = iter([{}, {"wheel": "a"}, {"wheel": "a", "sdist": "b"}])
+    expected = {"wheel": "a", "sdist": "b"}
+    monkeypatch.setattr(
+        release,
+        "verify_pypi",
+        lambda version, expected, complete: release.verify_files(expected, next(pypi), complete),
+    )
+    monkeypatch.setattr(release, "release_info", lambda *args: _info(both=True))
+    calls = []
+    monkeypatch.setattr(release, "gh", _registry(calls))
+    release.finalize("owner/repo", "v2.0.0", expected)
+    assert sleeps == [release.PYPI_DELAY] * 2
+    assert calls[-1][-1] == "--latest"
+
+
+def test_finalize_gives_up_on_pypi_that_stays_incomplete(monkeypatch, sleeps):
+    monkeypatch.setattr(
+        release,
+        "verify_pypi",
+        lambda version, expected, complete: release.verify_files(expected, {}, complete),
+    )
+    monkeypatch.setattr(release, "gh", lambda *args: pytest.fail("must not publish"))
+    with pytest.raises(release.IncompleteError):
+        release.finalize("owner/repo", "v2.0.0", {"wheel": "a"})
+    assert len(sleeps) == release.PYPI_ATTEMPTS - 1
+
+
+def test_finalize_fails_on_pypi_mismatch_without_waiting(monkeypatch, sleeps):
+    attempts = []
+
+    def mismatched(version, expected, complete):
+        attempts.append(version)
+        release.verify_files(expected, {"wheel": "wrong"}, complete)
+
+    monkeypatch.setattr(release, "verify_pypi", mismatched)
+    monkeypatch.setattr(release, "gh", lambda *args: pytest.fail("must not publish"))
+    with pytest.raises(ValueError, match="differs") as raised:
+        release.finalize("owner/repo", "v2.0.0", {"wheel": "a"})
+    assert not isinstance(raised.value, release.IncompleteError)
+    assert attempts == ["2.0.0"] and sleeps == []
+
+
+@pytest.mark.parametrize(
+    "published,latest",
+    [
+        (["v2.0.1", "v1.1.0"], "--latest=false"),
+        (["v1.10.0", "v2.0.0-rc1", "v10.0.0-beta"], "--latest"),
+        (["v1.1.0", "v1.9.9"], "--latest"),
+    ],
+)
+def test_finalize_marks_latest_only_for_the_highest_version(monkeypatch, published, latest):
+    monkeypatch.setattr(release, "verify_pypi", lambda *args, **kwargs: None)
+    monkeypatch.setattr(release, "release_info", lambda *args: _info(both=True))
+    calls = []
+    monkeypatch.setattr(release, "gh", _registry(calls, published))
+    release.finalize("owner/repo", "v2.0.0", {"wheel": "a", "sdist": "b"})
+    assert calls == [("release", "edit", "v2.0.0", "--repo", "owner/repo", "--draft=false", latest)]
+
+
+def test_latest_ignores_drafts_and_prereleases(monkeypatch):
+    listing = [
+        {"tag_name": "v3.0.0", "draft": True, "prerelease": False},
+        {"tag_name": "v2.1.0", "draft": False, "prerelease": True},
+        {"tag_name": "v1.0.0", "draft": False, "prerelease": False},
+    ]
+    monkeypatch.setattr(release, "gh", lambda *args: json.dumps(listing))
+    assert release.is_latest("owner/repo", "v2.0.0")
