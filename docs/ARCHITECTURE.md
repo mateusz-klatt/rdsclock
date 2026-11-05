@@ -279,6 +279,12 @@ an interrupted client never connects again. Output still queued at the stop is
 dropped, so nothing follows `recon_stopped`. Only the TCP connect itself cannot
 be woken; `connect_timeout` (10 s) bounds it.
 
+Known limitation: the CLI's JSON Lines writer (`cli._write_event_line`) blocks
+`SIGINT` while it writes a record, so a record is never cut in half, as with one
+receiver. If the reader stops reading, Ctrl+C therefore takes effect only when
+that write completes; closing the reader ends the run, since the write then
+fails with a broken pipe.
+
 Each read of a capture times out after 15 s, but a receiver that trickles a few
 bytes now and then never trips that, and would hold up every phase. So with
 several receivers each capture must also arrive within its duration plus a
@@ -306,8 +312,22 @@ observation names its receiver, and the consensus gives each receiver one vote
 per channel, its latest transmitter there, before it merges known PIs: two
 receivers in different places that hear different transmitters on one
 frequency count twice, while one receiver whose channel changed PI still counts
-once. The dashboards likewise attribute track metrics by receiver row, tuning
-and the PI that row confirmed. Receivers are not independent sources: a
+once. A vote uses only that receiver's own receptions younger than
+`stale_age_s`, in the consensus and in the sub-second estimate alike: another
+receiver hearing the same transmitter keeps the track active, but it does not
+revive the vote of a receiver whose reception has expired. The dashboards
+likewise attribute track metrics by receiver row, tuning and the PI that row
+confirmed; a row whose latest usable CT came without a confirmed PI shows the
+unconfirmed track of its tuning, or no track metrics if that CT did not enter
+the consensus.
+
+Since one frequency can carry a contributing and an outlying transmitter, the
+`contributing_freqs_mhz` and `outlier_freqs_mhz` lists of a consensus can both
+name it. Each `cycle_completed` track therefore also carries
+`consensus_status`: `contributing`, `outlier`, or `null` when the latest
+evaluation did not count it. With several receivers the dashboards take a row's
+status from its track; records without the key fall back to the frequency
+lists. Receivers are not independent sources: a
 broadcaster's wrong clock reaches every receiver alike.
 
 `tools/replay_rtl_tcp.py` serves a recorded IQ file as an `rtl_tcp` server, so

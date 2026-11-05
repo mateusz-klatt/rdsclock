@@ -197,6 +197,8 @@ class Hop:
     ``ct_timezone`` and ``effective_utc`` say how ``recon --ct-timezone`` read
     it; records without them come from the standard reading. ``receiver``
     is the ``host:port`` that recorded it, when the record names one.
+    ``caught_up`` is false when the capture never caught up with real time;
+    records without it count as caught up.
     """
 
     ps_name: str
@@ -210,6 +212,7 @@ class Hop:
     ct_timezone: str = STANDARD_ZONE
     effective_utc: datetime | None = None
     receiver: str | None = None
+    caught_up: bool = True
 
     @classmethod
     def from_record(cls, record: Record) -> "Hop":
@@ -236,7 +239,13 @@ class Hop:
             ct_timezone=zone,
             effective_utc=effective_utc,
             receiver=_optional_text(record.get("receiver")),
+            caught_up=record.get("caught_up") is not False,
         )
+
+    @property
+    def entered_consensus(self) -> bool:
+        """Whether recon stored this CT in the consensus (see ``_record_station``)."""
+        return self.ct_utc is not None and self.effective_utc is not None and self.caught_up
 
     @property
     def read_as_local(self) -> bool:
@@ -246,11 +255,18 @@ class Hop:
 
 @dataclass(frozen=True)
 class Track:
-    """One consensus track: its PI, the age of its latest CT and its trust score."""
+    """One consensus track: its PI, the age of its latest CT and its trust score.
+
+    ``status`` is its part in the cycle's consensus (``"contributing"``,
+    ``"outlier"`` or ``None``); ``classified`` is false for records from
+    before it was published.
+    """
 
     pi: int | None
     age_s: float | None
     trust_score: float
+    status: str | None = None
+    classified: bool = False
 
 
 def _not_older(track: Track, previous: Track) -> bool:
@@ -636,6 +652,8 @@ class DashboardState:
                 pi=_optional_integer(entry["pi"]),
                 age_s=_optional_number(entry["age_s"]),
                 trust_score=_number(entry["trust_score"]),
+                status=_optional_text(entry.get("consensus_status")),
+                classified="consensus_status" in entry,
             )
             if key not in tracks or _not_older(track, tracks[key]):
                 tracks[key] = track
@@ -877,12 +895,17 @@ class DashboardState:
         key, tuning = station.key, _tuning(station.freq_hz)
         hop = self.hops.get(key)
         last_ct = self.last_ct.get(key)
-        if hop is not None and hop.pi is None and hop.ct_utc is not None:
+        unconfirmed_ct = hop is not None and hop.pi is None and hop.ct_utc is not None
+        if unconfirmed_ct:
             last_ct = hop
         # Consensus tracks follow the transmitter, not the receiver: by tuning.
         track = self.tracks.get(tuning)
         identity = self.identity.get(key)
-        if self.multi_receiver and identity is not None:
+        if self.multi_receiver and unconfirmed_ct and hop is not None:
+            # The CT shown is unconfirmed: only the unconfirmed track can hold
+            # its metrics, and only if it entered the consensus at all.
+            track = self.tracks_by_pi.get((tuning, None)) if hop.entered_consensus else None
+        elif self.multi_receiver and identity is not None:
             # Receivers in different places may hear different transmitters on
             # one tuning: the PI that this receiver confirmed picks the track.
             track = self.tracks_by_pi.get((tuning, identity), track)
@@ -932,6 +955,10 @@ class DashboardState:
         self, key: RowKey, hop: Hop | None, track: Track | None, attributed: bool
     ) -> str:
         tuning = key[1]
+        if self.multi_receiver and track is not None and track.classified:
+            # The frequency lists cannot tell apart two transmitters that
+            # different receivers hear on one frequency; the track can.
+            return {"outlier": "OUTLIER", "contributing": "ok"}.get(track.status, "not counted")
         if attributed and self.consensus is not None and tuning in self.consensus.outliers:
             return "OUTLIER"
         if attributed and self.consensus is not None and tuning in self.consensus.contributing:

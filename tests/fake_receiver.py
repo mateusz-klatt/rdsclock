@@ -33,10 +33,11 @@ def cycle(utc: datetime | None = CT + timedelta(seconds=30)) -> recon.CycleCompl
         median_age_s=41.0 if utc else float("inf"),
         notes="" if utc else "no active sources",
     )
+    agrees, disagrees = ("contributing", "outlier") if utc else (None, None)
     tracks = (
-        recon.TrackSnapshot(102.4e6, 0xA101, 2, 0.6, 0, 41.0, CT),
-        recon.TrackSnapshot(98.8e6, 0xA102, 2, 0.6, 0, 63.0, CT),
-        recon.TrackSnapshot(107.5e6, 0xA103, 2, 0.1, 2, 80.0, CT),
+        recon.TrackSnapshot(102.4e6, 0xA101, 2, 0.6, 0, 41.0, CT, agrees),
+        recon.TrackSnapshot(98.8e6, 0xA102, 2, 0.6, 0, 63.0, CT, agrees),
+        recon.TrackSnapshot(107.5e6, 0xA103, 2, 0.1, 2, 80.0, CT, disagrees),
     )
     return recon.CycleCompleted(1, 3, consensus, (STATION_A, STATION_B, STATION_C), tracks, 412.0)
 
@@ -81,7 +82,7 @@ def multi_session() -> list[str]:
         median_age_s=30.0,
         notes="single-source",
     )
-    track = recon.TrackSnapshot(107.5e6, 0xB201, 1, 0.3, 0, 30.0, ZET_CT)
+    track = recon.TrackSnapshot(107.5e6, 0xB201, 1, 0.3, 0, 30.0, ZET_CT, "contributing")
     zet_hop = recon.HopResult(
         107.5e6, 0xB201, "RADIOZET", -19.0, 790, 780, 10, ClockTime(ZET_CT, 60), receiver=LIVE
     )
