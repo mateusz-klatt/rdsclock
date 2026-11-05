@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-11-05
+
+### Added
+
+- `recon --ct-timezone [pi:HEX=|freq:MHZ=]ZONE` declares that a station sends
+  local time in the Group 4A UTC field. IEC 62106 defines that field as UTC
+  (local time = UTC + LTO), but Jedynka 102.4, Trójka 98.8, Radio ZET 107.5
+  and RMF Classic 98.3, measured in Warsaw from 31 October to 5 November 2026,
+  send CET there with an LTO of zero. The option is repeatable; a PI rule wins
+  over a frequency rule, which wins over a bare zone, and `UTC` keeps the
+  standard reading. The decoded hour and minute are converted from the zone's
+  local time to UTC with the system time-zone database. A time in a repeated
+  (`ambiguous`) or skipped (`nonexistent`) hour is reported but not used, and
+  the LTO is kept but not applied. Without the option nothing changes.
+- JSON Lines: `hop_result.clock_time` gains `effective_utc`, `ct_timezone` and
+  `ct_status` (`standard`, `converted`, `ambiguous` or `nonexistent`);
+  `recon_started` gains `ct_timezone_rules`. Existing keys keep their meaning:
+  `utc` and `local_offset_minutes` stay as broadcast.
+- The terminal, browser and desktop dashboards show a converted CT as its
+  effective UTC with the source zone, for example `09:06Z ← Europe/Warsaw`,
+  log the broadcast value, and mark an ambiguous or nonexistent CT as not
+  used. A standard CT looks as before.
+- Without any `--ct-timezone` rule, when the consensus differs from the host
+  clock by within 2 minutes of a whole number of hours, the dashboard log
+  suggests the option once per change of that offset. The host clock is only a
+  hint; no time is changed automatically.
+- English, Polish and French texts for all of the above, a README section
+  "Stations that send local time as UTC" in each language, the operator
+  quickstart, and release notes in all three languages.
+
+### Changed
+
+- The desktop window widens its "Last CT" column when a converted or unused CT
+  does not fit, and draws the arrow as `<-` because Tk's default fonts may lack
+  the glyph.
+
 ## [2.0.1] — 2026-11-05
 
 ### Fixed
