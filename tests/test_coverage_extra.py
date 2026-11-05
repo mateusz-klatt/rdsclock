@@ -564,7 +564,7 @@ class TestReconCoverage:
         monkeypatch.setattr(
             recon,
             "quick_scan_band",
-            lambda client, cfg, progress=None, on_event=None: [
+            lambda client, cfg, progress=None, on_event=None, receiver=None: [
                 StationCandidate(
                     freq_hz=90.0e6, rssi_db=-10.0, n_groups=2, has_ct=False, pi=0x1001
                 ),
@@ -576,7 +576,7 @@ class TestReconCoverage:
         monkeypatch.setattr(
             recon,
             "hop_collect_ct",
-            lambda client, watchlist, cfg, consensus, progress=None, on_event=None: 0,
+            lambda client, watchlist, cfg, consensus, progress=None, on_event=None, receiver=None: 0,
         )
         monkeypatch.setattr(
             recon, "render_status", lambda consensus, watchlist, next_rescan_in, result: "STATUS"
@@ -601,14 +601,14 @@ class TestReconCoverage:
         monkeypatch.setattr(
             recon,
             "quick_scan_band",
-            lambda client, cfg, progress=None, on_event=None: [
+            lambda client, cfg, progress=None, on_event=None, receiver=None: [
                 StationCandidate(freq_hz=90.0e6, rssi_db=-10.0, n_groups=2, has_ct=True, pi=0x1001)
             ],
         )
         monkeypatch.setattr(
             recon,
             "hop_collect_ct",
-            lambda client, watchlist, cfg, consensus, progress=None, on_event=None: 1,
+            lambda client, watchlist, cfg, consensus, progress=None, on_event=None, receiver=None: 1,
         )
         monkeypatch.setattr(
             recon, "render_status", lambda consensus, watchlist, next_rescan_in, result: "STATUS"

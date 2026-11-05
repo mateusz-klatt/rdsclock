@@ -104,7 +104,7 @@ def _cfg(**overrides) -> recon.ReconConfig:
 
 def test_event_kinds_are_unique():
     kinds = [event.kind for event in get_args(recon.ReconEvent)]
-    assert len(set(kinds)) == len(kinds) == 8
+    assert len(set(kinds)) == len(kinds) == 9
 
 
 def test_tracks_report_the_tuning_of_their_latest_observation():
@@ -170,6 +170,7 @@ class TestEventToJson:
             "has_ct": True,
             "pi": 0xCAFE,
             "ps_name": "TEST",
+            "receiver": None,
         }
         skipped = json.loads(recon.event_to_json(recon.ScanStep(95.6e6, -40.0, None)))
         assert skipped["candidate"] is None
@@ -193,6 +194,7 @@ class TestEventToJson:
             "has_ct": True,
             "pi": 7,
             "ps_name": "",
+            "receiver": None,
         }
 
 

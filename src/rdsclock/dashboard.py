@@ -123,6 +123,22 @@ def _tuning(freq_hz: float) -> int:
     return round(freq_hz)
 
 
+RowKey = tuple[str | None, int]
+
+
+def _optional_text(value: object) -> str | None:
+    return None if value is None else _text(value)
+
+
+def _row_key(receiver: str | None, freq_hz: float) -> RowKey:
+    """A row: one tuning of one receiver.
+
+    Two receivers may watch the same tuning, in different places perhaps
+    with different transmitters. Streams without receivers use ``None``.
+    """
+    return receiver, _tuning(freq_hz)
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -142,13 +158,18 @@ def _db(value: float | None) -> str:
 
 @dataclass(frozen=True)
 class Station:
-    """A watchlist entry, as chosen by the acquisition scan."""
+    """A watchlist entry, as chosen by the acquisition scan.
+
+    ``receiver`` is the ``host:port`` that records it; ``None`` in streams
+    from versions that did not name receivers.
+    """
 
     freq_hz: float
     ps_name: str
     pi: int | None
     rssi_db: float | None
     n_groups: int
+    receiver: str | None = None
 
     @classmethod
     def from_record(cls, record: Record) -> "Station":
@@ -158,7 +179,12 @@ class Station:
             pi=_optional_integer(record["pi"]),
             rssi_db=_optional_number(record["rssi_db"]),
             n_groups=_integer(record["n_groups"]),
+            receiver=_optional_text(record.get("receiver")),
         )
+
+    @property
+    def key(self) -> RowKey:
+        return _row_key(self.receiver, self.freq_hz)
 
 
 @dataclass(frozen=True)
@@ -167,7 +193,8 @@ class Hop:
 
     ``ct_utc`` and ``lto_minutes`` are the CT as broadcast. ``ct_status``,
     ``ct_timezone`` and ``effective_utc`` say how ``recon --ct-timezone`` read
-    it; records without them come from the standard reading.
+    it; records without them come from the standard reading. ``receiver``
+    is the ``host:port`` that recorded it, when the record names one.
     """
 
     ps_name: str
@@ -180,6 +207,7 @@ class Hop:
     ct_status: str = STANDARD_CT
     ct_timezone: str = STANDARD_ZONE
     effective_utc: datetime | None = None
+    receiver: str | None = None
 
     @classmethod
     def from_record(cls, record: Record) -> "Hop":
@@ -205,6 +233,7 @@ class Hop:
             ct_status=status,
             ct_timezone=zone,
             effective_utc=effective_utc,
+            receiver=_optional_text(record.get("receiver")),
         )
 
     @property
@@ -319,9 +348,10 @@ class DashboardState:
     ready: bool = False
     stopped: bool = False
     watchlist: list[Station] = field(default_factory=list)
-    hops: dict[int, Hop] = field(default_factory=dict)
-    last_ct: dict[int, Hop] = field(default_factory=dict)
-    identity: dict[int, int] = field(default_factory=dict)  # last confirmed PI per tuning
+    # Rows are keyed by receiver and tuning (see _row_key).
+    hops: dict[RowKey, Hop] = field(default_factory=dict)
+    last_ct: dict[RowKey, Hop] = field(default_factory=dict)
+    identity: dict[RowKey, int] = field(default_factory=dict)  # last confirmed PI per row
     consensus: Consensus | None = None
     tracks: dict[int, Track] = field(default_factory=dict)
     next_rescan_in_s: float | None = None
@@ -338,6 +368,14 @@ class DashboardState:
     ct_rules: tuple[str, ...] = ()  # the receiver's --ct-timezone rules
     ct_read_as_local: bool = False  # some CT was read as local time
     hinted_hours: int | None = None  # whole-hour host offset last hinted at
+    receivers: tuple[str, ...] = ()  # every receiver of the run, from recon_started
+    failed_receivers: dict[str, str] = field(default_factory=dict)  # latest error of each
+
+    @property
+    def multi_receiver(self) -> bool:
+        """Whether the run uses several receivers, so that rows should name theirs."""
+        named = {station.receiver for station in self.watchlist} - {None}
+        return len(set(self.receivers) | named) > 1
 
     def __post_init__(self) -> None:
         self.language = normalize_language(self.language)
@@ -381,7 +419,11 @@ class DashboardState:
         if not isinstance(listed, list):
             raise ValueError("ct_timezone_rules is not a list")
         rules = tuple(_text(rule) for rule in listed)
-        self.ready, self.ct_rules = True, rules
+        named = record.get("receivers", [])
+        if not isinstance(named, list):
+            raise ValueError("receivers is not a list")
+        receivers = tuple(_text(receiver) for receiver in named)
+        self.ready, self.ct_rules, self.receivers = True, rules, receivers
         messages = [
             self._t(
                 "Receiver ready: tuner type {tuner}, {gains} gain steps.", tuner=tuner, gains=gains
@@ -457,13 +499,13 @@ class DashboardState:
 
     def _on_watchlist_updated(self, record: Record) -> list[str]:
         watchlist = [Station.from_record(entry) for entry in record["watchlist"]]
-        watched = {_tuning(station.freq_hz) for station in watchlist}
+        watched = {station.key for station in watchlist}
         self.watchlist = watchlist
         for cache in (self.hops, self.last_ct, self.identity):
             for key in set(cache) - watched:
                 del cache[key]
         for station in watchlist:
-            self._confirm(_tuning(station.freq_hz), station.pi)
+            self._confirm(station.key, station.pi)
         if not watchlist:
             return [self._t("Watchlist empty: no RDS station found in this scan.")]
         freqs = ", ".join(f"{station.freq_hz / 1e6:.2f}" for station in watchlist)
@@ -489,7 +531,8 @@ class DashboardState:
     def _on_hop_result(self, record: Record) -> list[str]:
         freq_hz = _number(record["freq_hz"])
         hop = Hop.from_record(record)
-        key = _tuning(freq_hz)
+        key = _row_key(hop.receiver, freq_hz)
+        self.failed_receivers.pop(hop.receiver, None)
         self._confirm(key, hop.pi)
         self.hops[key] = hop
         # CT is missing from many captures: retain the last confirmed source.
@@ -591,6 +634,13 @@ class DashboardState:
             return []
         return [self._t(WHOLE_HOUR_HINT, hours=hours)]
 
+    def _on_receiver_failed(self, record: Record) -> list[str]:
+        # Stored only for now: the dashboards do not show it yet.
+        receiver, error = _text(record["receiver"]), _text(record["error"])
+        _integer(record["iteration"])
+        self.failed_receivers[receiver] = error
+        return []
+
     def _on_recon_stopped(self, record: Record) -> list[str]:
         reason = printable(record["reason"])
         self.stopped, self.phase = True, "STOPPED"
@@ -623,7 +673,7 @@ class DashboardState:
         """
         return not requested and (returncode != 0 or not self.stopped)
 
-    def _confirm(self, key: int, pi: int | None) -> None:
+    def _confirm(self, key: RowKey, pi: int | None) -> None:
         """Record a confirmed PI; a different one invalidates the tuning's caches."""
         if pi is None:
             return
@@ -683,7 +733,8 @@ class DashboardState:
             current=min(self.hops_done + 1, self.n_stations),
             total=self.n_stations,
         )
-        if self.hops_done < min(self.n_stations, len(self.watchlist)):
+        # Several receivers record at once, not the watchlist in order.
+        if not self.multi_receiver and self.hops_done < min(self.n_stations, len(self.watchlist)):
             progress += self._t(
                 " · recording {freq:.2f} MHz", freq=self.watchlist[self.hops_done].freq_hz / 1e6
             )
@@ -749,12 +800,13 @@ class DashboardState:
         )
 
     def _row(self, station: Station) -> Row:
-        key = _tuning(station.freq_hz)
+        key, tuning = station.key, _tuning(station.freq_hz)
         hop = self.hops.get(key)
         last_ct = self.last_ct.get(key)
         if hop is not None and hop.pi is None and hop.ct_utc is not None:
             last_ct = hop
-        track = self.tracks.get(key)
+        # Consensus tracks follow the transmitter, not the receiver: by tuning.
+        track = self.tracks.get(tuning)
         identity = self.identity.get(key)
         if track is not None and None not in (track.pi, identity) and track.pi != identity:
             track = None  # its metrics belong to the transmitter that answered before
@@ -780,7 +832,7 @@ class DashboardState:
                 age = f"{track.age_s + self.elapsed():.0f} s"
         cells = (f"{station.freq_hz / 1e6:.2f}", ps, _pi(pi), _db(rssi), str(groups), corrected)
         cells += (ct, lto, age, trust)
-        attributed = track is not None or key not in self.tracks
+        attributed = track is not None or tuning not in self.tracks
         return Row(cells=cells, status=self._station_status(key, hop, track, attributed))
 
     def _ct_cell(self, hop: Hop) -> str:
@@ -797,11 +849,12 @@ class DashboardState:
         )
 
     def _station_status(
-        self, key: int, hop: Hop | None, track: Track | None, attributed: bool
+        self, key: RowKey, hop: Hop | None, track: Track | None, attributed: bool
     ) -> str:
-        if attributed and self.consensus is not None and key in self.consensus.outliers:
+        tuning = key[1]
+        if attributed and self.consensus is not None and tuning in self.consensus.outliers:
             return "OUTLIER"
-        if attributed and self.consensus is not None and key in self.consensus.contributing:
+        if attributed and self.consensus is not None and tuning in self.consensus.contributing:
             return "ok"
         if track is not None:
             return "not counted"
@@ -819,6 +872,7 @@ _HANDLERS: dict[str, Callable[[DashboardState, Record], list[str]]] = {
     "hop_result": DashboardState._on_hop_result,
     "cycle_completed": DashboardState._on_cycle_completed,
     "recon_stopped": DashboardState._on_recon_stopped,
+    "receiver_failed": DashboardState._on_receiver_failed,
 }
 
 

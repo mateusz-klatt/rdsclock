@@ -1,5 +1,6 @@
 """Minimal context-manager client for the ``rtl_tcp`` daemon."""
 
+import contextlib
 import math
 import select
 import socket
@@ -35,6 +36,40 @@ _CATCH_UP_SEGMENTS = 4
 # Segments last long enough that a stream 10 % ahead of real time moves the
 # lowest bound across them by more than the jitter, whatever the transfer size.
 _MIN_SEGMENT_NS = 10 * _JITTER_NS // (_CATCH_UP_SEGMENTS - 1)
+
+
+@dataclass(frozen=True)
+class RtlTcpAddress:
+    """Where one ``rtl_tcp`` receiver listens; ``str()`` gives ``host:port``.
+
+    An IPv6 host is written in brackets, ``[::1]:1234``, as :meth:`parse` expects.
+    """
+
+    host: str
+    port: int
+
+    def __str__(self) -> str:
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"{host}:{self.port}"
+
+    @classmethod
+    def parse(cls, text: str) -> "RtlTcpAddress":
+        """Read ``HOST:PORT`` or ``[IPV6]:PORT``; ``ValueError`` explains a bad one."""
+        if text.startswith("["):
+            host, bracket, port = text[1:].partition("]:")
+            if not bracket:
+                raise ValueError(f"{text!r} is not [IPV6]:PORT")
+        else:
+            host, colon, port = text.rpartition(":")
+            if not colon:
+                raise ValueError(f"{text!r} is not HOST:PORT")
+            if ":" in host:
+                raise ValueError(f"write the IPv6 address of {text!r} in brackets: [{host}]:{port}")
+        if not host.strip() or host != host.strip():
+            raise ValueError(f"{text!r} has no host")
+        if not (port.isascii() and port.isdigit()) or not 1 <= int(port) <= 65535:
+            raise ValueError(f"{text!r} has no TCP port (1-65535)")
+        return cls(host, int(port))
 
 
 @dataclass
@@ -170,6 +205,17 @@ class RtlTcpClient:
                 self._sock.close()
             finally:
                 self._sock = None
+
+    def interrupt(self) -> None:
+        """Make a read that blocks in another thread fail at once.
+
+        Closing alone does not wake a blocked ``recv`` on every platform; a
+        shutdown does. The connection is unusable afterwards: close it.
+        """
+        sock = self._sock
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
 
     # ---- commands ----
     def _send_cmd(self, cmd: int, value: int) -> None:
