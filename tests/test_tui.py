@@ -17,10 +17,13 @@ import rdsclock.tui as tui  # noqa: E402
 from rdsclock.dashboard import DashboardState, View  # noqa: E402
 from tests.fake_receiver import (  # noqa: E402
     HOST_UTC,
+    LIVE,
     MARKUP_PS,
+    REPLAY,
     ct_session,
     cycle,
     line,
+    multi_session,
     receiver_command,
     session,
 )
@@ -427,6 +430,44 @@ def test_station_table_shows_ct_read_as_local_time(tmp_path, language, ambiguous
         assert str(table.get_row_at(0)[6]) == "12:00Z ← Europe/Warsaw"
         assert str(table.get_row_at(2)[6]).endswith(ambiguous)
         assert "CT 13:00 " in _log_text(app) and "= 12:00Z (LTO +00:00)" in _log_text(app)
+        await pilot.press("q")
+
+    _drive(app, scenario)
+
+
+@pytest.mark.parametrize("language,receiver", [("en", "Receiver"), ("pl", "Odbiornik")])
+def test_several_receivers_add_a_column_status_and_log_lines(tmp_path, language, receiver):
+    app = tui.ReconDashboard(receiver_command(tmp_path, records=multi_session()), language=language)
+
+    async def scenario(pilot):
+        await _until(pilot, lambda: app.state.iteration == 2 and app.state.hops_done == 1)
+        await pilot.pause(0.05)
+        table = app.query_one(DataTable)
+        labels = [column.label.plain for column in table.ordered_columns]
+        assert labels[:2] == [receiver, "MHz"]
+        assert len(labels) == 12
+        assert [cell.plain for cell in table.get_row_at(1)][:2] == [REPLAY, "98.80"]
+        status = str(app.query_one("#status", Static).content)
+        assert f"{LIVE}" in status
+        assert f"{REPLAY} → 98.80 MHz" in status
+        log = _log_text(app)
+        assert REPLAY in log and "connection closed by rtl_tcp" in log
+        assert len([text for text in log.splitlines() if REPLAY in text]) >= 3
+        await pilot.press("q")
+
+    _drive(app, scenario)
+    assert app.return_code == 0
+
+
+def test_one_receiver_keeps_the_eleven_columns(tmp_path):
+    app = _dashboard(tmp_path)
+
+    async def scenario(pilot):
+        await _until(pilot, lambda: app.state.consensus is not None)
+        await pilot.pause(0.05)
+        table = app.query_one(DataTable)
+        assert [column.label.plain for column in table.ordered_columns][0] == "MHz"
+        assert len(table.ordered_columns) == 11
         await pilot.press("q")
 
     _drive(app, scenario)

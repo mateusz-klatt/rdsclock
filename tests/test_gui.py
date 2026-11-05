@@ -13,7 +13,14 @@ tk = pytest.importorskip("tkinter")
 
 import rdsclock.cli as cli  # noqa: E402
 import rdsclock.gui as gui  # noqa: E402
-from tests.fake_receiver import MARKUP_PS, ct_session, receiver_command  # noqa: E402
+from tests.fake_receiver import (  # noqa: E402
+    LIVE,
+    MARKUP_PS,
+    REPLAY,
+    ct_session,
+    multi_session,
+    receiver_command,
+)
 
 
 @pytest.fixture
@@ -289,5 +296,28 @@ def test_standard_rows_keep_the_column_layout(root, tmp_path):
         _pump(root, lambda: dashboard.state.consensus is not None)
         dashboard._refresh()
         assert {int(dashboard.table.column(name, "width")) for name in gui.COLUMNS} == {78}
+    finally:
+        dashboard.quit()
+
+
+@pytest.mark.parametrize("language,receiver", [("en", "Receiver"), ("fr", "Récepteur")])
+def test_several_receivers_add_a_column_status_and_log_lines(root, tmp_path, language, receiver):
+    command = receiver_command(tmp_path, records=multi_session())
+    dashboard = gui.DesktopDashboard(root, command, language=language)
+    try:
+        _pump(root, lambda: dashboard.state.iteration == 2 and dashboard.state.hops_done == 1)
+        dashboard._refresh()
+        assert dashboard.columns == ("Receiver", *gui.COLUMNS)
+        assert tuple(dashboard.table["columns"]) == dashboard.columns
+        assert dashboard.table.heading("Receiver", "text") == receiver
+        rows = _rows(dashboard)
+        assert [values[:2] for values, _ in rows] == [(LIVE, "107.50"), (REPLAY, "98.80")]
+        width = int(dashboard.table.column("Receiver", "width"))
+        assert width >= dashboard.cell_font.measure(LIVE)
+        # Tk draws the arrow in ASCII.
+        assert f"{REPLAY} -> 98.80 MHz" in dashboard.status.get()
+        log = dashboard.log_text()
+        assert "connection closed by rtl_tcp" in log
+        assert len([text for text in log.splitlines() if REPLAY in text]) >= 3
     finally:
         dashboard.quit()

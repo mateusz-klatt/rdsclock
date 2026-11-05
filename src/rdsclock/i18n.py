@@ -120,6 +120,7 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     "Age": ("Wiek", "Âge"),
     "Trust": ("Zaufanie", "Confiance"),
     "Status": ("Stan", "État"),
+    "Receiver": ("Odbiornik", "Récepteur"),
     "± is source dispersion and holdover, not a calibrated UTC error.": (
         "± opisuje rozrzut źródeł i podtrzymanie czasu, a nie skalibrowany błąd względem UTC.",
         "± décrit la dispersion des sources et le maintien de l’heure, pas une erreur UTC étalonnée.",
@@ -236,6 +237,24 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     " · recording {freq:.2f} MHz": (
         " · odbiór {freq:.2f} MHz",
         " · acquisition à {freq:.2f} MHz",
+    ),
+    " · HOP · {done}/{total} stations recorded": (
+        " · HOP · odebrane stacje: {done}/{total}",
+        " · HOP · stations reçues : {done}/{total}",
+    ),
+    " · {receiver} → {freq:.2f} MHz": (
+        " · {receiver} → {freq:.2f} MHz",
+        " · {receiver} → {freq:.2f} MHz",
+    ),
+    " · {receiver}: done": (" · {receiver}: zakończono", " · {receiver} : terminé"),
+    " · {receiver}: failed": (" · {receiver}: błąd", " · {receiver} : en échec"),
+    "Receiver {receiver} failed: {error}; reconnecting next cycle.": (
+        "Błąd odbiornika {receiver}: {error}; ponowne połączenie w następnym cyklu.",
+        "Échec du récepteur {receiver} : {error} ; reconnexion au cycle suivant.",
+    ),
+    "Receiver {receiver} is working again.": (
+        "Odbiornik {receiver} znów działa.",
+        "Le récepteur {receiver} fonctionne de nouveau.",
     ),
     " · no stations to record": (" · brak stacji do odbioru", " · aucune station à recevoir"),
     " · recording {stations} stations at once": (

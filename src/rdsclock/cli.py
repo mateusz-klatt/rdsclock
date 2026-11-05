@@ -1025,6 +1025,26 @@ def cmd_recon(args: argparse.Namespace) -> int:
 
 # ---------- main ----------
 
+_RECON_EXAMPLES = """\
+examples:
+  # scan part of the band, then hop through the stations found
+  rdsclock recon --host 127.0.0.1 --start 98.0 --end 108.0 --dwell 75 --tui
+
+  # hop through three listed stations on one receiver
+  rdsclock recon --host 127.0.0.1 --hop 98.8,102.4,107.5 --dwell 75 --tui
+
+  # two receivers at the same time, each listening a full minute to its station
+  rdsclock recon --hop 192.168.5.1:1234@107.5,192.168.5.2:1234@98.8 --dwell 65 --web
+
+  # stations without HOST:PORT@ use --host/--port; IPv6 in brackets
+  rdsclock recon --host 127.0.0.1 --hop 102.4,[::1]:1235@98.8 --dwell 65 --gui
+
+  # a test aid, not a time source: a recording served by tools/replay_rtl_tcp.py
+  # sends its old CT, which the consensus treats as an outlier
+  python tools/replay_rtl_tcp.py trojka.cf32 --port 1235 --loop &
+  rdsclock recon --hop 192.168.5.1:1234@107.5,127.0.0.1:1235@98.8 --dwell 65 --tui
+"""
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rdsclock", description="RDS Clock-Time decoder")
@@ -1157,6 +1177,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser(
         "recon",
         help="Passive time receiver — multi-source consensus + hop scan or WIDE capture",
+        epilog=_RECON_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     pr.add_argument("--start", type=float, default=87.5, help="Band start (MHz)")
     pr.add_argument("--end", type=float, default=108.0, help="Band end (MHz)")

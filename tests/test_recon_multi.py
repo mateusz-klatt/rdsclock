@@ -531,11 +531,13 @@ class TestDashboardReceivers:
         assert not named.multi_receiver
         assert named.view() == plain.view()
 
-    def test_a_failed_receiver_is_stored_without_a_message(self):
+    def test_a_failed_receiver_is_logged_until_it_is_back(self):
         failed = line(recon.ReceiverFailed(2, "10.0.0.2:1235", "Connection refused"))
         state, _, _ = _state([line(recon.ReconStarted(5, 29))])
-        assert state.apply_line(failed) == []
+        assert state.apply_line(failed) == [
+            "Receiver 10.0.0.2:1235 failed: Connection refused; reconnecting next cycle."
+        ]
         assert state.failed_receivers == {"10.0.0.2:1235": "Connection refused"}
         hop = recon.HopResult(98.8e6, 0xCAFE, "A", -20.0, 4, 4, 0, None, receiver="10.0.0.2:1235")
-        state.apply_line(line(hop))
+        assert state.apply_line(line(hop))[0] == "Receiver 10.0.0.2:1235 is working again."
         assert state.failed_receivers == {}

@@ -16,6 +16,7 @@ const CONSENSUS_FIELDS = [
 ];
 let paused = false;
 let latest = null;
+let shownColumns = null;
 
 function setText(id, value) {
   byId(id).textContent = value ?? "";
@@ -51,6 +52,22 @@ function renderConsensus(consensus, note) {
   setText("offset", consensus.host_offset);
 }
 
+// A run with several receivers adds a receiver column.
+function renderColumns(columns) {
+  const key = JSON.stringify(columns);
+  if (key === shownColumns) {
+    return;
+  }
+  shownColumns = key;
+  byId("columns").replaceChildren(
+    ...columns.map((name) => {
+      const th = element("th", name);
+      th.scope = "col";
+      return th;
+    }),
+  );
+}
+
 function renderTable(rows) {
   byId("rows").replaceChildren(
     ...rows.map((row) => {
@@ -77,6 +94,7 @@ function render(view) {
   setText("status", view.status);
   byId("status").dataset.phase = view.phase;
   renderConsensus(view.consensus, view.note);
+  renderColumns(view.columns);
   renderTable(view.rows);
   renderLog(view.log);
   byId("rescan").disabled = !view.can_rescan;

@@ -324,6 +324,71 @@ nadal zgadzają się między sobą. Porównaj czas z niezależnym źródłem.
 
 [Opis wydania 2.1.0 — EN / PL / FR](docs/releases/2.1.0.md)
 
+### Kilka odbiorników
+
+Od wersji 2.2.0 stacja HOP może wskazać odbiornik `rtl_tcp`, który ją
+rejestruje, w postaci `HOST:PORT@MHZ`, z adresem IPv6 w nawiasach
+(`[::1]:1235@98.8`). Stacje bez odbiornika używają `--host` i `--port`:
+
+```bash
+# Dwa odbiorniki, po jednej stacji; oba rejestrują jednocześnie.
+.venv/bin/python -m rdsclock recon \
+  --hop 192.168.5.1:1234@107.5,192.168.5.2:1234@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui --lang pl
+
+# Osobny odbiornik dla 98.8; 102.4 i 107.5 korzystają z --host/--port.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 102.4,107.5,192.168.5.2:1234@98.8 --dwell 65 --web --lang pl
+```
+
+Każdy odbiornik przechodzi przez swoje stacje równolegle z pozostałymi, więc
+cykl trwa tyle, ile najbardziej obciążony odbiornik, a nie jeden czas
+rejestracji na każdą stację. Przy jednej stacji na odbiornik każdą stację można
+słuchać przez pełną minutę, wystarczająco długo na Clock-Time nadawany raz na
+minutę, bez wydłużania cyklu. Stacja podana dwa razy dla jednego odbiornika
+jest błędem, a `--wide` nie przyjmuje odbiorników.
+
+Więcej odbiorników nie czyni źródeł bardziej niezależnymi. Konsensus grupuje
+obserwacje według nadajnika, a nadawca, który nadaje błędny czas, na przykład
+opisany wyżej czas lokalny jako UTC, wysyła ten sam błędny czas do każdego
+odbiornika.
+
+Gdy jeden odbiornik zawiedzie, jego stacje znikają z listy obserwowanych, a
+pozostałe działają dalej; `recon` łączy się z nim ponownie na początku
+następnego cyklu i sprawdza jego stacje, zanim wrócą do przełączania. Praca
+kończy się dopiero wtedy, gdy zawiodą wszystkie odbiorniki. Przy więcej niż
+jednym odbiorniku panele dodają kolumnę *Odbiornik* (`host:port`), status
+podaje, co rejestruje każdy odbiornik, na przykład
+`HOP · odebrane stacje: 1/2 · 192.168.5.1:1234: zakończono · 127.0.0.1:1235 → 98.80 MHz`,
+a dziennik odnotowuje awarię odbiornika i jego powrót. Przy jednym odbiorniku
+panele wyglądają jak dotąd. W JSON Lines `recon_started` wymienia odbiorniki
+(`receivers`), każdy `hop_result` i każda pozycja listy obserwowanych podaje
+swój `receiver`, a zdarzenie `receiver_failed` zgłasza awarię.
+
+#### Odtwarzanie nagrania: pomoc w testach
+
+`tools/replay_rtl_tcp.py` udostępnia nagrany plik IQ (`.cf32` lub `.cu8`, przy
+250 kS/s używanych przez HOP) jako odbiornik `rtl_tcp` na 127.0.0.1, dzięki
+czemu kilka odbiorników i panele można wypróbować z jednym tunerem:
+
+```bash
+python tools/replay_rtl_tcp.py trojka-98.8.cf32 --rate 250000 --port 1235 --loop &
+.venv/bin/python -m rdsclock recon \
+  --hop 192.168.5.1:1234@107.5,127.0.0.1:1235@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui --lang pl
+```
+
+Odtwarzanie nie jest źródłem czasu. Ignoruje strojenie, więc każda podana dla
+niego stacja dostaje to samo nagranie, a jego Clock-Time jest tak stary jak
+nagranie. 5 listopada 2026 o 15:08 UTC to polecenie połączyło odbiornik na żywo
+na Radiu ZET 107,5 z nagraniem Trójki 98,8 z godziny 14:13. Oba przełączenia
+przebiegały równolegle, a cykl trwał około 70 s zamiast około 130 s. CT na żywo
+(15:07Z) i odtworzony (14:13Z) utworzyły dwa równe obozy, więc konsensus nie
+podał czasu, a obie stacje oznaczył jako odstające. Obok dwóch lub więcej
+zgodnych stacji na żywo odtworzenie byłoby po prostu odstające.
+
+[Opis wydania 2.2.0 — EN / PL / FR](docs/releases/2.2.0.md)
+
 ## Jak to działa
 
 ```mermaid

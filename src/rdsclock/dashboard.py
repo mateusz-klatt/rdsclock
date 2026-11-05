@@ -46,6 +46,8 @@ COLUMNS = (
     "Trust",
     "Status",
 )
+# Leads the columns when a run has several receivers.
+RECEIVER_COLUMN = "Receiver"
 
 STANDARD_CT = "standard"
 # Host clock minus consensus this close to a whole, non-zero number of hours
@@ -312,7 +314,11 @@ class ConsensusView:
 
 @dataclass(frozen=True)
 class Row:
-    """One station: the cells under ``COLUMNS[:-1]`` and the status text."""
+    """One station: the cells under the columns but the last, and the status text.
+
+    The columns are :meth:`DashboardState.columns`: ``COLUMNS``, led by
+    ``RECEIVER_COLUMN`` when the run has several receivers.
+    """
 
     cells: tuple[str, ...]
     status: str
@@ -370,12 +376,30 @@ class DashboardState:
     hinted_hours: int | None = None  # whole-hour host offset last hinted at
     receivers: tuple[str, ...] = ()  # every receiver of the run, from recon_started
     failed_receivers: dict[str, str] = field(default_factory=dict)  # latest error of each
+    pass_hops: dict[str | None, int] = field(default_factory=dict)  # this pass, per receiver
 
     @property
     def multi_receiver(self) -> bool:
         """Whether the run uses several receivers, so that rows should name theirs."""
         named = {station.receiver for station in self.watchlist} - {None}
         return len(set(self.receivers) | named) > 1
+
+    def columns(self) -> tuple[str, ...]:
+        """The column names of :attr:`View.rows`, the status last, untranslated."""
+        return (RECEIVER_COLUMN, *COLUMNS) if self.multi_receiver else COLUMNS
+
+    def _receiver_order(self) -> list[str]:
+        """Every receiver: those of ``recon_started``, then any other the watchlist names."""
+        named = [station.receiver for station in self.watchlist if station.receiver is not None]
+        return list(dict.fromkeys([*self.receivers, *named]))
+
+    def _receiver_back(self, receivers: Iterable[str | None]) -> list[str]:
+        """Messages for failed receivers that an event shows working again."""
+        messages = []
+        for receiver in dict.fromkeys(receivers):
+            if receiver is not None and self.failed_receivers.pop(receiver, None) is not None:
+                messages.append(self._t("Receiver {receiver} is working again.", receiver=receiver))
+        return messages
 
     def __post_init__(self) -> None:
         self.language = normalize_language(self.language)
@@ -483,10 +507,12 @@ class DashboardState:
         station = None if candidate is None else Station.from_record(candidate)
         self.scan_points += 1
         self.scan_freq_hz = freq_hz
+        back = self._receiver_back([None if station is None else station.receiver])
         if station is None or not station.n_groups:
-            return []
+            return back
         ct = ", CT" if candidate.get("has_ct") is True else ""
         return [
+            *back,
             self._t(
                 "  {freq:6.2f} MHz  {db} dB  {groups} groups{ct}  {ps}",
                 freq=freq_hz / 1e6,
@@ -494,7 +520,7 @@ class DashboardState:
                 groups=station.n_groups,
                 ct=ct,
                 ps=station.ps_name,
-            ).rstrip()
+            ).rstrip(),
         ]
 
     def _on_watchlist_updated(self, record: Record) -> list[str]:
@@ -506,16 +532,22 @@ class DashboardState:
                 del cache[key]
         for station in watchlist:
             self._confirm(station.key, station.pi)
+        back = self._receiver_back(station.receiver for station in watchlist)
         if not watchlist:
-            return [self._t("Watchlist empty: no RDS station found in this scan.")]
-        freqs = ", ".join(f"{station.freq_hz / 1e6:.2f}" for station in watchlist)
-        return [self._t("Watchlist: {freqs} MHz.", freqs=freqs)]
+            return [*back, self._t("Watchlist empty: no RDS station found in this scan.")]
+        if self.multi_receiver:
+            # As --hop names them: HOST:PORT@MHZ.
+            freqs = ", ".join(f"{s.receiver}@{s.freq_hz / 1e6:.2f}" for s in watchlist)
+        else:
+            freqs = ", ".join(f"{station.freq_hz / 1e6:.2f}" for station in watchlist)
+        return [*back, self._t("Watchlist: {freqs} MHz.", freqs=freqs)]
 
     def _on_maintenance_started(self, record: Record) -> list[str]:
         iteration, n_stations = _integer(record["iteration"]), _integer(record["n_stations"])
         wide = _wide(record)
         self.phase, self.wide = "MAINTENANCE", wide
         self.iteration, self.n_stations, self.hops_done = iteration, n_stations, 0
+        self.pass_hops = {}
         if wide is None or not n_stations:
             return []
         return [
@@ -532,7 +564,7 @@ class DashboardState:
         freq_hz = _number(record["freq_hz"])
         hop = Hop.from_record(record)
         key = _row_key(hop.receiver, freq_hz)
-        self.failed_receivers.pop(hop.receiver, None)
+        back = self._receiver_back([hop.receiver])
         self._confirm(key, hop.pi)
         self.hops[key] = hop
         # CT is missing from many captures: retain the last confirmed source.
@@ -541,7 +573,13 @@ class DashboardState:
         if hop.ct_utc is not None and hop.pi is not None:
             self.last_ct[key] = hop
         self.hops_done += 1
+        self.pass_hops[hop.receiver] = self.pass_hops.get(hop.receiver, 0) + 1
+        return [*back, *self._hop_messages(freq_hz, hop)]
+
+    def _hop_messages(self, freq_hz: float, hop: Hop) -> list[str]:
         label = f"{freq_hz / 1e6:.2f} MHz {hop.ps_name}".rstrip()
+        if self.multi_receiver and hop.receiver is not None:
+            label = f"[{hop.receiver}] {label}"
         groups = self._t(
             "{n_groups} groups, {corrected} corrected",
             n_groups=hop.n_groups,
@@ -635,11 +673,17 @@ class DashboardState:
         return [self._t(WHOLE_HOUR_HINT, hours=hours)]
 
     def _on_receiver_failed(self, record: Record) -> list[str]:
-        # Stored only for now: the dashboards do not show it yet.
         receiver, error = _text(record["receiver"]), _text(record["error"])
         _integer(record["iteration"])
         self.failed_receivers[receiver] = error
-        return []
+        # recon reports no reconnection: the next event naming the receiver shows it.
+        return [
+            self._t(
+                "Receiver {receiver} failed: {error}; reconnecting next cycle.",
+                receiver=receiver,
+                error=error,
+            )
+        ]
 
     def _on_recon_stopped(self, record: Record) -> list[str]:
         reason = printable(record["reason"])
@@ -728,16 +772,40 @@ class DashboardState:
     def _hop_progress(self) -> str:
         if not self.n_stations:
             return self._t(" · no stations to visit")
+        if self.multi_receiver:
+            return self._parallel_hop_progress()
         progress = self._t(
             " · hop {current}/{total}",
             current=min(self.hops_done + 1, self.n_stations),
             total=self.n_stations,
         )
-        # Several receivers record at once, not the watchlist in order.
-        if not self.multi_receiver and self.hops_done < min(self.n_stations, len(self.watchlist)):
+        if self.hops_done < min(self.n_stations, len(self.watchlist)):
             progress += self._t(
                 " · recording {freq:.2f} MHz", freq=self.watchlist[self.hops_done].freq_hz / 1e6
             )
+        return progress
+
+    def _parallel_hop_progress(self) -> str:
+        """What every receiver records now: each hops through its own stations at once."""
+        progress = self._t(
+            " · HOP · {done}/{total} stations recorded",
+            done=min(self.hops_done, self.n_stations),
+            total=self.n_stations,
+        )
+        for receiver in self._receiver_order():
+            if receiver in self.failed_receivers:
+                progress += self._t(" · {receiver}: failed", receiver=receiver)
+                continue
+            stations = [s for s in self.watchlist if s.receiver == receiver]
+            done = self.pass_hops.get(receiver, 0)
+            if done < len(stations):
+                progress += self._t(
+                    " · {receiver} → {freq:.2f} MHz",
+                    receiver=receiver,
+                    freq=stations[done].freq_hz / 1e6,
+                )
+            elif stations:
+                progress += self._t(" · {receiver}: done", receiver=receiver)
         return progress
 
     def _wide_progress(self) -> str:
@@ -832,6 +900,8 @@ class DashboardState:
                 age = f"{track.age_s + self.elapsed():.0f} s"
         cells = (f"{station.freq_hz / 1e6:.2f}", ps, _pi(pi), _db(rssi), str(groups), corrected)
         cells += (ct, lto, age, trust)
+        if self.multi_receiver:
+            cells = (station.receiver or "", *cells)
         attributed = track is not None or tuning not in self.tracks
         return Row(cells=cells, status=self._station_status(key, hop, track, attributed))
 

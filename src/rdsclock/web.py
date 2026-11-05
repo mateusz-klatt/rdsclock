@@ -186,7 +186,7 @@ class WebDashboard:
         with self.changed:
             view = self.state.view().as_dict()
             view["note"] = self._t(UNCERTAINTY_NOTE)
-            view["columns"] = [self._t(name) for name in COLUMNS]
+            view["columns"] = [self._t(name) for name in self.state.columns()]
             view["language"] = self.language
             for row in view["rows"]:
                 row["status_label"] = self._t(row["status"])

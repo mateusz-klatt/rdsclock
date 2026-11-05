@@ -16,12 +16,15 @@ from rdsclock.rds_clock import ClockTime
 from tests.fake_receiver import (
     CT,
     HOST_UTC,
+    LIVE,
     MARKUP_PS,
+    REPLAY,
     STATION_A,
     ct_hop,
     ct_session,
     cycle,
     line,
+    multi_session,
     receiver_command,
     session,
 )
@@ -635,3 +638,119 @@ class TestWholeHourHint:
         (hint,) = _offset_cycle(state, clock, -3600.0)
         assert hint.startswith(start)
         assert "--ct-timezone" in hint
+
+
+def _named(records: list[str], receiver: str) -> list[str]:
+    """``records`` as a receiver that names its one receiver writes them (2.2.0 and later)."""
+    named = []
+    for text in records:
+        record = json.loads(text)
+        if record["event"] == "recon_started":
+            record["receivers"] = [receiver]
+        elif record["event"] == "hop_result":
+            record["receiver"] = receiver
+        for station in record.get("watchlist", []):
+            station["receiver"] = receiver
+        if record.get("candidate"):
+            record["candidate"]["receiver"] = receiver
+        named.append(json.dumps(record))
+    return named
+
+
+class TestSeveralReceivers:
+    def test_one_named_receiver_shows_and_logs_exactly_as_before(self):
+        plain, _, plain_messages = _state(session())
+        named, _, named_messages = _state(_named(session(), LIVE))
+        assert named.receivers == (LIVE,)
+        assert named.columns() == dashboard.COLUMNS
+        assert named.view() == plain.view()
+        assert named_messages == plain_messages
+
+    def test_rows_lead_with_the_receiver_column(self):
+        state, _, _ = _state(multi_session())
+        assert state.columns() == ("Receiver", *dashboard.COLUMNS)
+        rows = state.view().rows
+        assert [row.cells[:3] for row in rows] == [
+            (LIVE, "107.50", "RADIOZET"),
+            (REPLAY, "98.80", "TROJKA"),
+        ]
+        assert {len(row.cells) for row in rows} == {len(state.columns()) - 1}
+        assert rows[0].cells[7] == "15:07Z"
+        assert rows[0].status == "ok"
+
+    def test_status_names_what_every_receiver_records(self):
+        records = multi_session()
+        state, _, _ = _state(records[:6])
+        assert state.view().status == (
+            "MAINTENANCE #1 · HOP · 0/2 stations recorded"
+            f" · {LIVE} → 107.50 MHz · {REPLAY} → 98.80 MHz"
+        )
+        state.apply_line(records[6])
+        assert state.view().status == (
+            f"MAINTENANCE #1 · HOP · 1/2 stations recorded · {LIVE}: done · {REPLAY} → 98.80 MHz"
+        )
+        state.apply_line(records[7])
+        assert state.view().status == (
+            f"MAINTENANCE #1 · HOP · 1/2 stations recorded · {LIVE}: done · {REPLAY}: failed"
+        )
+        state, _, _ = _state(records)
+        assert state.view().status == (
+            f"MAINTENANCE #2 · HOP · 1/2 stations recorded · {LIVE}: done · {REPLAY} → 98.80 MHz"
+            " · next rescan in 540 s"
+        )
+
+    def test_a_failed_receiver_and_its_return_are_logged(self):
+        state, _, messages = _state(multi_session())
+        failed = f"Receiver {REPLAY} failed: connection closed by rtl_tcp; reconnecting next cycle."
+        back = f"Receiver {REPLAY} is working again."
+        assert messages.count(failed) == 1
+        assert messages.count(back) == 1
+        assert messages.index(failed) < messages.index(back)
+        assert not state.failed_receivers
+        assert f"Watchlist: {LIVE}@107.50, {REPLAY}@98.80 MHz." in messages
+        assert any(m.startswith(f"[{LIVE}] 107.50 MHz RADIOZET: CT 15:07Z") for m in messages)
+
+    def test_any_event_naming_a_failed_receiver_shows_it_back(self):
+        state, _, _ = _state(multi_session()[:8])
+        assert state.failed_receivers == {REPLAY: "connection closed by rtl_tcp"}
+        hop = recon.HopResult(98.8e6, 0xB202, "TROJKA", -15.0, 4, 4, 0, None, receiver=REPLAY)
+        messages = state.apply_line(line(hop))
+        assert messages[0] == f"Receiver {REPLAY} is working again."
+        assert messages[1].startswith(f"[{REPLAY}] 98.80 MHz TROJKA: no CT")
+        assert state.apply_line(line(hop))[0].startswith(f"[{REPLAY}]")
+
+    @pytest.mark.parametrize(
+        "language,column,status,failed,back",
+        [
+            (
+                "pl",
+                "Odbiornik",
+                f"MONITOROWANIE #1 · HOP · odebrane stacje: 1/2 · {LIVE}: zakończono"
+                f" · {REPLAY}: błąd",
+                f"Błąd odbiornika {REPLAY}: connection closed by rtl_tcp; "
+                "ponowne połączenie w następnym cyklu.",
+                f"Odbiornik {REPLAY} znów działa.",
+            ),
+            (
+                "fr",
+                "Récepteur",
+                f"SUIVI #1 · HOP · stations reçues : 1/2 · {LIVE} : terminé · {REPLAY} : en échec",
+                f"Échec du récepteur {REPLAY} : connection closed by rtl_tcp ; "
+                "reconnexion au cycle suivant.",
+                f"Le récepteur {REPLAY} fonctionne de nouveau.",
+            ),
+        ],
+    )
+    def test_receiver_texts_are_translated(self, language, column, status, failed, back):
+        from rdsclock.i18n import translate
+
+        records = multi_session()
+        state = dashboard.DashboardState(language=language, clock=lambda: 100.0)
+        messages = [m for record in records[:8] for m in state.apply_line(record)]
+        assert translate(language, state.columns()[0]) == column
+        assert state.view().status == status
+        assert failed in messages
+        messages = [m for record in records[8:] for m in state.apply_line(record)]
+        assert back in messages
+        recording = translate(language, " · {receiver} → {freq:.2f} MHz", receiver=LIVE, freq=1)
+        assert recording == f" · {LIVE} → 1.00 MHz"
