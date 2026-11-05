@@ -6,8 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import rdsclock.recon as recon
 from rdsclock import dsp
-from rdsclock.rds_groups import encode_group_4a, encode_ps_groups
+from rdsclock.ct_policy import CTPolicy
+from rdsclock.decoder import DecodeResult
+from rdsclock.rds_clock import ClockTime
+from rdsclock.rds_groups import StationInfo, encode_group_4a, encode_ps_groups
 from rdsclock.recon import ReconConfig, run_recon_offline
 from rdsclock.synth import synthesize_fm_iq
 from rdsclock.time_consensus import TrustLevel
@@ -129,3 +133,36 @@ def test_recon_offline_no_ct_files(tmp_path):
     assert result.utc is None
     assert result.n_sources == 0
     assert result.trust_level == TrustLevel.STALE
+
+
+def test_recon_offline_applies_the_ct_timezone_rules(tmp_path, monkeypatch):
+    """Offline replay converts CET sent as "UTC" and skips an ambiguous local time."""
+    real = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+    clocks = {
+        "fm_102.40_MHz.iq": (0x3211, real + timedelta(hours=1)),
+        "fm_098.80_MHz.iq": (0x3233, real + timedelta(hours=1)),
+        "fm_095.50_MHz.iq": (0xCAFE, real),
+        "fm_107.50_MHz.iq": (0x3205, datetime(2026, 10, 25, 2, 30, tzinfo=UTC)),
+    }
+    for name in clocks:
+        (tmp_path / name).touch()
+
+    def fake_decode_file(path, fs, progress=None):
+        pi, utc = clocks[Path(path).name]
+        info = StationInfo(pi=pi)
+        info.clock_times.append(ClockTime(utc, 0))
+        return DecodeResult(info, 4, 416, 0.0, 0, n_groups_clean=4, n_groups_corrected=0)
+
+    monkeypatch.setattr(recon, "decode_file", fake_decode_file)
+    cfg = ReconConfig(ct_policy=CTPolicy.from_specs(["Europe/Warsaw", "pi:0xCAFE=UTC"]))
+    statuses: list[str] = []
+    consensus = run_recon_offline(cfg, str(tmp_path), on_status=statuses.append)
+    stored = sorted(
+        (track.pi, obs.ct_utc) for track in consensus.tracks.values() for obs in track.observations
+    )
+    assert stored == [(0x3211, real), (0x3233, real), (0xCAFE, real)]
+    result = consensus.consensus()
+    assert result.n_sources == 3
+    assert not result.outlier_freqs_mhz
+    assert any("CT=10:06:00 Europe/Warsaw → 09:06:00Z" in s for s in statuses)
+    assert any("CT=02:30:00 Europe/Warsaw (ambiguous)" in s and "not used" in s for s in statuses)

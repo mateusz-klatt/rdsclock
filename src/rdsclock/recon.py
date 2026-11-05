@@ -38,7 +38,7 @@ import math
 import re
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -47,6 +47,7 @@ from typing import ClassVar
 import numpy as np
 
 from .channelizer import ChannelDecodeResult, ChannelSpec, choose_center, decode_channels
+from .ct_policy import CTInterpretation, CTPolicy
 from .decoder import DecodeResult, decode_file, decode_iq
 from .rds_clock import ClockTime
 from .rtl_tcp import FreshCapture, RtlTcpClient
@@ -101,6 +102,8 @@ class ReconConfig:
     wide_freqs_hz: tuple[float, ...] = ()
     wide_center_hz: float | None = None  # None: chosen by wide_center()
     wide_sample_rate: int = WIDE_SAMPLE_RATE
+    # How to read each station's CT "UTC" field; by default as the standard says.
+    ct_policy: CTPolicy = field(default_factory=CTPolicy)
 
     def wide_center(self) -> float:
         """The WIDE capture centre: ``wide_center_hz``, or one away from the stations."""
@@ -204,6 +207,12 @@ class HopResult:
     account for it. ``caught_up`` is false when the capture never caught up
     with real time: its receive times are then only upper bounds, and its CT
     stays out of the consensus.
+
+    ``clock_time`` is the CT as decoded. ``ct_interpretation`` is how
+    :attr:`ReconConfig.ct_policy` read it: the effective UTC that the
+    consensus sees, or ``None`` when it could not be mapped to one instant.
+    In JSON Lines its fields are merged into the ``clock_time`` object as
+    ``effective_utc``, ``ct_timezone`` and ``ct_status``.
     """
 
     kind: ClassVar[str] = "hop_result"
@@ -217,6 +226,16 @@ class HopResult:
     clock_time: ClockTime | None
     queued_s: float = 0.0
     caught_up: bool = True
+    ct_interpretation: CTInterpretation | None = None
+
+    @property
+    def effective_ct(self) -> CTInterpretation | None:
+        """How the CT was read; standard UTC when no interpretation was recorded."""
+        if self.clock_time is None:
+            return None
+        if self.ct_interpretation is not None:
+            return self.ct_interpretation
+        return CTPolicy().interpret(self.clock_time, self.pi, self.freq_hz)
 
 
 @dataclass(frozen=True)
@@ -267,7 +286,20 @@ def event_to_json(event: ReconEvent, host_utc: datetime | None = None) -> str:
         "host_utc": host_utc if host_utc is not None else datetime.now(UTC),
         **asdict(event),
     }
+    if isinstance(event, HopResult):
+        _merge_ct_interpretation(record, event)
     return json.dumps(_jsonable(record), allow_nan=False, separators=(",", ":"))
+
+
+def _merge_ct_interpretation(record: dict[str, object], hop: HopResult) -> None:
+    """Describe the CT reading inside ``clock_time``: additive keys, existing ones unchanged."""
+    del record["ct_interpretation"]
+    interpretation = hop.effective_ct
+    clock_time = record["clock_time"]
+    if interpretation is not None and isinstance(clock_time, dict):
+        clock_time["effective_utc"] = interpretation.utc
+        clock_time["ct_timezone"] = interpretation.zone
+        clock_time["ct_status"] = interpretation.status
 
 
 def _jsonable(value: object) -> object:
@@ -409,14 +441,20 @@ def _record_station(
     rssi_db: float,
     capture_start: _CaptureStart,
     consensus: TimeConsensus,
+    ct_policy: CTPolicy | None = None,
 ) -> HopResult:
     """Store a decoded station's CT in the consensus and describe the station.
 
-    A capture that never caught up with real time has no known receive times,
-    so its CT is described but not stored.
+    ``ct_policy`` decides how the CT's UTC field is read; only the effective
+    UTC enters the consensus. A capture that never caught up with real time
+    has no known receive times, and a local time that maps to no single UTC
+    instant has no effective UTC: such CT is described but not stored.
     """
     ct = result.info.latest_clock
-    if ct is not None and capture_start.caught_up:
+    policy = ct_policy if ct_policy is not None else CTPolicy()
+    interpretation = None if ct is None else policy.interpret(ct, result.info.pi, freq_hz)
+    effective_utc = None if interpretation is None else interpretation.utc
+    if ct is not None and effective_utc is not None and capture_start.caught_up:
         received_wall = None
         if ct.rx_monotonic_ns is not None:
             received_wall = capture_start.wall + timedelta(
@@ -430,7 +468,7 @@ def _record_station(
         obs = StationObservation(
             freq_hz=freq_hz,
             pi=result.info.pi,
-            ct_utc=ct.utc,
+            ct_utc=effective_utc,
             received_monotonic=(
                 ct.rx_monotonic_ns / 1e9
                 if ct.rx_monotonic_ns is not None
@@ -453,6 +491,7 @@ def _record_station(
         clock_time=ct,
         queued_s=capture_start.queued_s,
         caught_up=capture_start.caught_up,
+        ct_interpretation=interpretation,
     )
 
 
@@ -463,18 +502,35 @@ def _report_station(
     on_event: Callable[[ReconEvent], None] | None,
 ) -> int:
     """Pass one station's result on; return 1 when its CT entered the consensus, otherwise 0."""
+    interpretation = hop.effective_ct
+    usable = interpretation is not None and interpretation.utc is not None
     if progress:
-        if hop.clock_time is not None:
-            unused = "" if hop.caught_up else " (receive time unknown, not used)"
+        if hop.clock_time is not None and interpretation is not None:
+            if not hop.caught_up:
+                unused = " (receive time unknown, not used)"
+            elif not usable:
+                unused = " (no single UTC instant, not used)"
+            else:
+                unused = ""
             progress(
                 f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: "
-                f"CT={hop.clock_time.utc.strftime('%H:%M:%S')}Z groups={hop.n_groups}{unused}"
+                f"CT={_ct_text(hop.clock_time, interpretation)} groups={hop.n_groups}{unused}"
             )
         else:
             progress(f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: no CT (groups={hop.n_groups})")
     if on_event:
         on_event(hop)
-    return 1 if hop.clock_time is not None and hop.caught_up else 0
+    return 1 if usable and hop.caught_up else 0
+
+
+def _ct_text(ct: ClockTime, interpretation: CTInterpretation) -> str:
+    """The CT for operator text: as broadcast, plus the effective UTC when read as local time."""
+    if interpretation.status == "standard":
+        return f"{ct.utc.strftime('%H:%M:%S')}Z"
+    local = f"{ct.utc.strftime('%H:%M:%S')} {interpretation.zone}"
+    if interpretation.utc is None:
+        return f"{local} ({interpretation.status})"
+    return f"{local} → {interpretation.utc.strftime('%H:%M:%S')}Z"
 
 
 def hop_collect_ct(
@@ -506,7 +562,9 @@ def hop_collect_ct(
             capture_start_monotonic_ns=capture_start.monotonic_ns,
         )
         rssi_db = float(10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12))
-        hop = _record_station(station.freq_hz, result, rssi_db, capture_start, consensus)
+        hop = _record_station(
+            station.freq_hz, result, rssi_db, capture_start, consensus, cfg.ct_policy
+        )
         n_obs += _report_station("hop", hop, progress, on_event)
     return n_obs
 
@@ -603,7 +661,12 @@ def wide_collect_ct(
     n_obs = 0
     for channel in results:
         hop = _record_station(
-            channel.spec.freq_hz, channel.result, channel.rssi_db, capture_start, consensus
+            channel.spec.freq_hz,
+            channel.result,
+            channel.rssi_db,
+            capture_start,
+            consensus,
+            cfg.ct_policy,
         )
         n_obs += _report_station("wide", hop, progress, on_event)
     return n_obs
@@ -917,29 +980,34 @@ def run_recon_offline(
             continue
 
         ct = result.info.latest_clock
-        if ct is not None:
-            obs = StationObservation(
-                freq_hz=freq_mhz * 1e6,
-                pi=result.info.pi,
-                ct_utc=ct.utc,
-                received_monotonic=snapshot_mono,
-                fingerprint=StationFingerprint(
-                    pi_code=result.info.pi,
-                    cfo_hz=result.freq_offset_hz,
-                ),
-            )
-            consensus.record(obs)
-            if freq_mhz not in watchlist_freqs:
-                watchlist_freqs.append(freq_mhz)
-            on_status(
-                f"  [{i}/{len(files)}] {freq_mhz:.2f} MHz: "
-                f"PS='{result.info.ps_name}' CT={ct.utc.strftime('%H:%M:%S')}Z "
-                f"groups={result.n_groups}"
-            )
-        else:
+        if ct is None:
             on_status(
                 f"  [{i}/{len(files)}] {freq_mhz:.2f} MHz: no CT "
                 f"(groups={result.n_groups}, PS='{result.info.ps_name}')"
+            )
+        else:
+            interpretation = cfg.ct_policy.interpret(ct, result.info.pi, freq_mhz * 1e6)
+            unused = ""
+            if interpretation.utc is None:
+                unused = " (no single UTC instant, not used)"
+            else:
+                obs = StationObservation(
+                    freq_hz=freq_mhz * 1e6,
+                    pi=result.info.pi,
+                    ct_utc=interpretation.utc,
+                    received_monotonic=snapshot_mono,
+                    fingerprint=StationFingerprint(
+                        pi_code=result.info.pi,
+                        cfo_hz=result.freq_offset_hz,
+                    ),
+                )
+                consensus.record(obs)
+                if freq_mhz not in watchlist_freqs:
+                    watchlist_freqs.append(freq_mhz)
+            on_status(
+                f"  [{i}/{len(files)}] {freq_mhz:.2f} MHz: "
+                f"PS='{result.info.ps_name}' CT={_ct_text(ct, interpretation)} "
+                f"groups={result.n_groups}{unused}"
             )
 
         # Each file simulates ~60s of wall-clock time (typical recording length).

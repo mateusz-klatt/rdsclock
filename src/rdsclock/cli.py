@@ -36,6 +36,7 @@ from .channelizer import (
     outside_capture,
     required_bandwidth,
 )
+from .ct_policy import CTPolicy, CTRule, parse_ct_timezone
 from .decoder import decode_file, decode_iq
 from .i18n import SUPPORTED_LANGUAGES, translate
 from .plot import plot_iq_waterfall, plot_mpx_spectrum
@@ -777,16 +778,20 @@ _RECON_CHILD_OPTIONS = (
     ("--wide", "wide"),
     ("--center", "center"),
     ("--fs", "fs"),
+    ("--ct-timezone", "ct_timezone"),
 )
 
 
 def _recon_child_argv(args: argparse.Namespace) -> list[str]:
-    """Arguments for a ``recon --jsonl`` child with the same receiver settings."""
+    """Arguments for a ``recon --jsonl`` child with the same receiver settings.
+
+    A repeatable option is passed once per value.
+    """
     argv = ["recon", "--jsonl"]
     for flag, dest in _RECON_CHILD_OPTIONS:
         value = getattr(args, dest)
-        if value is not None:
-            argv.append(f"{flag}={value}")
+        values = value if isinstance(value, list) else [value]
+        argv.extend(f"{flag}={item}" for item in values if item is not None)
     return argv
 
 
@@ -882,7 +887,20 @@ def _recon_config(args: argparse.Namespace) -> ReconConfig:
         wide_freqs_hz=() if args.wide is None else _station_freqs_hz(args.wide),
         wide_center_hz=None if args.center is None else args.center * 1e6,
         wide_sample_rate=WIDE_SAMPLE_RATE if args.fs is None else args.fs,
+        ct_policy=_ct_policy(args),
     )
+
+
+def _ct_policy(args: argparse.Namespace) -> CTPolicy:
+    """The ``--ct-timezone`` rules; ``ValueError`` when two of them conflict."""
+    return CTPolicy(tuple(args.ct_timezone or ()))
+
+
+def _ct_timezone_arg(value: str) -> CTRule:
+    try:
+        return parse_ct_timezone(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _station_freqs_hz(text: str) -> tuple[float, ...]:
@@ -940,6 +958,11 @@ def _recon_list_error(args: argparse.Namespace) -> str | None:
 def cmd_recon(args: argparse.Namespace) -> int:
     """Continuous passive time receiver: scan → hop (or one WIDE capture) → consensus."""
     error = _recon_list_error(args)
+    if error is None:
+        try:
+            _ct_policy(args)
+        except ValueError as exc:
+            error = str(exc)
     if error is not None:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -1164,6 +1187,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=f"WIDE capture sample rate in S/s (default {WIDE_SAMPLE_RATE})",
+    )
+    pr.add_argument(
+        "--ct-timezone",
+        type=_ct_timezone_arg,
+        action="append",
+        default=None,
+        dest="ct_timezone",
+        metavar="SPEC",
+        help="For stations that violate the RDS standard by sending local time in the "
+        "Clock-Time UTC field: read it as wall-clock time of an IANA zone and convert it "
+        "to UTC before the consensus. SPEC is ZONE (every station), pi:0x3211=ZONE or "
+        "freq:98.8=ZONE (MHz); a PI rule wins over a frequency rule, which wins over ZONE. "
+        "ZONE is UTC (standard) or an IANA name such as Europe/Warsaw. Repeatable",
     )
     pr.add_argument(
         "--from-dir",

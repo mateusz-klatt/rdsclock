@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import get_args
 
@@ -13,11 +14,12 @@ import pytest
 
 import rdsclock.cli as cli
 import rdsclock.recon as recon
+from rdsclock.ct_policy import CTInterpretation
 from rdsclock.decoder import DecodeResult
 from rdsclock.rds_clock import ClockTime
 from rdsclock.rds_groups import StationInfo
 from rdsclock.rtl_tcp import FreshCapture
-from rdsclock.time_consensus import StationObservation, TimeConsensus
+from rdsclock.time_consensus import StationObservation, TimeConsensus, TrustLevel
 
 HOST_UTC = datetime(2026, 11, 3, 12, 0, 5, tzinfo=UTC)
 
@@ -482,3 +484,242 @@ class TestReconJsonlCli:
         assert rc == 1
         assert path.read_bytes() == b""
         assert "rtl_tcp" not in capsys.readouterr().err
+
+
+# ----------------------- --ct-timezone -----------------------
+
+# 2026-10-31 09:06 real UTC; the Polish stations send CET (10:06) with LTO 0.
+REAL_UTC = datetime(2026, 10, 31, 9, 6, tzinfo=UTC)
+POLISH = {102.4e6: 0x3211, 98.8e6: 0x3233, 107.5e6: 0x3205, 98.3e6: 0x3245}
+HONEST = (95.5e6, 0xCAFE)
+WARSAW_RULES = tuple(f"pi:0x{pi:04X}=Europe/Warsaw" for pi in POLISH.values())
+
+
+def _station_result(pi: int, clock: ClockTime | None) -> DecodeResult:
+    info = StationInfo(pi=pi)
+    if clock is not None:
+        info.clock_times.append(clock)
+    return replace(_decode_result(None), info=info)
+
+
+def _hop_polish_and_honest(monkeypatch, cfg: recon.ReconConfig):
+    """Hop the four Polish stations and one honest one; return events, n_obs and consensus."""
+    stations = [*POLISH.items(), HONEST]
+    results = iter(
+        _station_result(pi, ClockTime(REAL_UTC + timedelta(hours=pi != HONEST[1]), 0))
+        for _, pi in stations
+    )
+    monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: next(results))
+    watchlist = [recon.StationCandidate(freq, -10.0, 4, True, pi) for freq, pi in stations]
+    consensus = TimeConsensus()
+    events: list[recon.ReconEvent] = []
+    n_obs = recon.hop_collect_ct(
+        _Receiver([1.0] * len(stations)), watchlist, cfg, consensus, on_event=events.append
+    )
+    return events, n_obs, consensus
+
+
+class TestCtTimezone:
+    def test_default_config_reads_every_station_as_standard(self):
+        assert recon.ReconConfig().ct_policy == recon.CTPolicy()
+
+    def test_without_rules_the_honest_station_is_the_outlier(self, monkeypatch):
+        _, n_obs, consensus = _hop_polish_and_honest(monkeypatch, _cfg())
+        result = consensus.consensus(time.monotonic())
+        assert n_obs == 5
+        assert result.outlier_freqs_mhz == [pytest.approx(95.5)]
+        assert abs((result.utc - (REAL_UTC + timedelta(hours=1))).total_seconds()) < 60
+
+    def test_converted_stations_agree_with_an_honest_one(self, monkeypatch):
+        cfg = _cfg(ct_policy=recon.CTPolicy.from_specs(WARSAW_RULES))
+        events, n_obs, consensus = _hop_polish_and_honest(monkeypatch, cfg)
+        result = consensus.consensus(time.monotonic())
+        assert n_obs == 5
+        assert result.n_sources == 5
+        assert result.outlier_freqs_mhz == []
+        assert result.trust_level == TrustLevel.HIGH
+        assert abs((result.utc - REAL_UTC).total_seconds()) < 60
+        # The event keeps the CT as decoded and describes how it was read.
+        assert events[0].clock_time == ClockTime(REAL_UTC + timedelta(hours=1), 0)
+        assert events[0].ct_interpretation == CTInterpretation(
+            REAL_UTC, "Europe/Warsaw", "converted"
+        )
+        assert events[-1].ct_interpretation == CTInterpretation(REAL_UTC, "UTC", "standard")
+
+    def test_a_ct_without_one_utc_instant_is_reported_but_not_recorded(self, monkeypatch):
+        ambiguous = ClockTime(datetime(2026, 10, 25, 2, 30, tzinfo=UTC), 0)
+        monkeypatch.setattr(
+            recon, "decode_iq", lambda iq, fs, **kwargs: _station_result(0x3211, ambiguous)
+        )
+        cfg = _cfg(ct_policy=recon.CTPolicy.from_specs(["Europe/Warsaw"]))
+        consensus = TimeConsensus()
+        events: list[recon.ReconEvent] = []
+        messages: list[str] = []
+        n_obs = recon.hop_collect_ct(
+            _Receiver([1.0]),
+            [recon.StationCandidate(102.4e6, -10.0, 4, True, 0x3211)],
+            cfg,
+            consensus,
+            progress=messages.append,
+            on_event=events.append,
+        )
+        assert n_obs == 0
+        assert consensus.tracks == {}
+        (hop,) = events
+        assert hop.clock_time == ambiguous
+        assert hop.ct_interpretation == CTInterpretation(None, "Europe/Warsaw", "ambiguous")
+        assert messages == [
+            "  hop 102.40 MHz: CT=02:30:00 Europe/Warsaw (ambiguous) groups=4 "
+            "(no single UTC instant, not used)"
+        ]
+
+    def test_a_converted_ct_is_shown_with_its_effective_utc(self, monkeypatch):
+        cfg = _cfg(ct_policy=recon.CTPolicy.from_specs(WARSAW_RULES))
+        stations = list(POLISH.items())[:1]
+        monkeypatch.setattr(
+            recon,
+            "decode_iq",
+            lambda iq, fs, **kwargs: _station_result(
+                0x3211, ClockTime(REAL_UTC + timedelta(hours=1), 0)
+            ),
+        )
+        messages: list[str] = []
+        recon.hop_collect_ct(
+            _Receiver([1.0]),
+            [recon.StationCandidate(freq, -10.0, 4, True, pi) for freq, pi in stations],
+            cfg,
+            TimeConsensus(),
+            progress=messages.append,
+        )
+        assert messages == ["  hop 102.40 MHz: CT=10:06:00 Europe/Warsaw → 09:06:00Z groups=4"]
+
+
+class TestCtTimezoneJsonl:
+    @staticmethod
+    def _record(**fields) -> dict:
+        event = recon.HopResult(102.4e6, 0x3211, "JEDYNKA", -18.0, 4, 3, 1, **fields)
+        return json.loads(recon.event_to_json(event, host_utc=HOST_UTC))
+
+    def test_converted_fields_are_added_inside_clock_time(self):
+        ct = ClockTime(REAL_UTC + timedelta(hours=1), 0)
+        record = self._record(
+            clock_time=ct,
+            ct_interpretation=CTInterpretation(REAL_UTC, "Europe/Warsaw", "converted"),
+        )
+        assert record["schema"] == 1
+        assert record["clock_time"] == {
+            "utc": "2026-10-31T10:06:00+00:00",
+            "local_offset_minutes": 0,
+            "rx_monotonic_ns": None,
+            "tx_latency_ns": None,
+            "effective_utc": "2026-10-31T09:06:00+00:00",
+            "ct_timezone": "Europe/Warsaw",
+            "ct_status": "converted",
+        }
+        assert "ct_interpretation" not in record
+
+    def test_a_standard_ct_keeps_its_fields_and_gains_the_reading(self):
+        record = self._record(clock_time=_clock())
+        assert list(record["clock_time"])[:4] == [
+            "utc",
+            "local_offset_minutes",
+            "rx_monotonic_ns",
+            "tx_latency_ns",
+        ]
+        assert record["clock_time"]["utc"] == "2026-11-03T12:00:00+00:00"
+        assert record["clock_time"]["effective_utc"] == "2026-11-03T12:00:00+00:00"
+        assert record["clock_time"]["ct_timezone"] == "UTC"
+        assert record["clock_time"]["ct_status"] == "standard"
+
+    def test_an_unmappable_ct_has_a_null_effective_utc(self):
+        record = self._record(
+            clock_time=ClockTime(datetime(2026, 3, 29, 2, 30, tzinfo=UTC), 0),
+            ct_interpretation=CTInterpretation(None, "Europe/Warsaw", "nonexistent"),
+        )
+        assert record["clock_time"]["utc"] == "2026-03-29T02:30:00+00:00"
+        assert record["clock_time"]["effective_utc"] is None
+        assert record["clock_time"]["ct_status"] == "nonexistent"
+
+    def test_no_ct_stays_null(self):
+        record = self._record(clock_time=None)
+        assert record["clock_time"] is None
+        assert "ct_interpretation" not in record
+
+    def test_hop_events_carry_the_reading_into_jsonl(self, monkeypatch):
+        cfg = _cfg(ct_policy=recon.CTPolicy.from_specs(WARSAW_RULES))
+        events, _, _ = _hop_polish_and_honest(monkeypatch, cfg)
+        clock_times = [json.loads(recon.event_to_json(e))["clock_time"] for e in events]
+        assert [c["utc"] for c in clock_times] == ["2026-10-31T10:06:00+00:00"] * 4 + [
+            "2026-10-31T09:06:00+00:00"
+        ]
+        assert {c["effective_utc"] for c in clock_times} == {"2026-10-31T09:06:00+00:00"}
+        assert [c["ct_status"] for c in clock_times] == ["converted"] * 4 + ["standard"]
+
+
+class TestCtTimezoneCli:
+    ARGV = ("--ct-timezone=Europe/Warsaw", "--ct-timezone", "pi:0xcafe=UTC")
+
+    def test_rules_reach_the_config(self):
+        cfg = cli._recon_config(cli.build_parser().parse_args(["recon", *self.ARGV]))
+        assert cfg.ct_policy == recon.CTPolicy.from_specs(["Europe/Warsaw", "pi:0xCAFE=UTC"])
+        assert cfg.ct_policy.zone_for(0xCAFE, 95.5e6) == "UTC"
+        assert cli._recon_config(cli.build_parser().parse_args(["recon"])).ct_policy == (
+            recon.CTPolicy()
+        )
+
+    def test_rules_are_forwarded_to_the_dashboard_child(self, monkeypatch):
+        import rdsclock.web as web
+
+        commands: list[list[str]] = []
+        monkeypatch.setattr(
+            web, "run_web", lambda command, host, port, language="en": commands.append(command)
+        )
+        argv = ["recon", "--hop=102.4,95.5", *self.ARGV, "--ct-timezone=freq:98.8=Europe/Berlin"]
+        cli.main([*argv, "--web"])
+        (command,) = commands
+        assert command[3:5] == ["recon", "--jsonl"]
+        assert [arg for arg in command if arg.startswith("--ct-timezone")] == [
+            "--ct-timezone=Europe/Warsaw",
+            "--ct-timezone=pi:0xCAFE=UTC",
+            "--ct-timezone=freq:98.8=Europe/Berlin",
+        ]
+        parser = cli.build_parser()
+        child = cli._recon_config(parser.parse_args(command[3:]))
+        assert child == cli._recon_config(parser.parse_args(argv))
+
+    def test_no_rules_forward_nothing(self):
+        argv = cli._recon_child_argv(cli.build_parser().parse_args(["recon"]))
+        assert not any(arg.startswith("--ct-timezone") for arg in argv)
+
+    @pytest.mark.parametrize(
+        "spec,message",
+        [
+            ("Europe/Warsw", "unknown time zone 'Europe/Warsw'"),
+            ("pi:xyz=Europe/Warsaw", "PI must be a hex code"),
+            ("freq:x=Europe/Warsaw", "frequency must be a number"),
+            ("ssid:1=Europe/Warsaw", "selector must be"),
+        ],
+    )
+    def test_a_bad_spec_is_an_argparse_error(self, spec, message, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["recon", f"--ct-timezone={spec}"])
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "argument --ct-timezone" in err
+        assert message in err
+
+    def test_conflicting_rules_exit_before_receiving(self, monkeypatch, capsys):
+        monkeypatch.setattr(recon, "run_recon", lambda *a, **k: pytest.fail("must not run"))
+        rc = cli.main(
+            ["recon", "--ct-timezone=pi:0x3211=Europe/Warsaw", "--ct-timezone=pi:3211=UTC"]
+        )
+        assert rc == 2
+        assert "conflicting --ct-timezone rules" in capsys.readouterr().err
+
+    def test_offline_replay_uses_the_rules(self, monkeypatch, tmp_path):
+        seen: list[recon.ReconConfig] = []
+        monkeypatch.setattr(
+            cli, "run_recon_offline", lambda cfg, directory, **kwargs: seen.append(cfg)
+        )
+        cli.main(["recon", "--from-dir", str(tmp_path), "--ct-timezone=Europe/Warsaw"])
+        assert seen[0].ct_policy == recon.CTPolicy.from_specs(["Europe/Warsaw"])

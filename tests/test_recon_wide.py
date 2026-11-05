@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import timedelta
 
 import numpy as np
 import pytest
@@ -9,6 +10,8 @@ import pytest
 import rdsclock.cli as cli
 import rdsclock.recon as recon
 from rdsclock.channelizer import ChannelDecodeResult
+from rdsclock.ct_policy import CTInterpretation, CTPolicy
+from rdsclock.rds_clock import ClockTime
 from rdsclock.rtl_tcp import FreshCapture
 from rdsclock.time_consensus import TimeConsensus
 from tests.test_recon_events import _clock, _decode_result
@@ -252,3 +255,29 @@ class TestWideOptions:
         wide = cli._recon_config(self._args("--wide", "102.0,102.4,103.0"))
         assert (wide.wide_center_hz, wide.wide_sample_rate) == (None, recon.WIDE_SAMPLE_RATE)
         assert cli._recon_list_error(self._args("--wide", "102.0,102.4,103.0")) is None
+
+
+def test_wide_maintenance_applies_the_ct_timezone_rules(monkeypatch):
+    """A WIDE capture reads each station's CT by its rule before the consensus."""
+    local = ClockTime(_clock().utc + timedelta(hours=1), 0)  # CET sent as "UTC"
+    results = {
+        FREQS[0]: _decode_result(local),
+        FREQS[1]: _decode_result(None, groups=2),
+        FREQS[2]: _decode_result(_clock()),
+    }
+    monkeypatch.setattr(recon, "decode_channels", _channels(results))
+    cfg = _cfg(ct_policy=CTPolicy.from_specs(["freq:102.0=Europe/Warsaw"]))
+    watchlist = [recon.StationCandidate(f, -20.0, 4, True, 0xCAFE) for f in FREQS]
+    consensus, events = TimeConsensus(), []
+    n_obs = recon.wide_collect_ct(_Receiver(), watchlist, cfg, consensus, on_event=events.append)
+    assert n_obs == 2
+    assert [event.clock_time for event in events] == [local, None, _clock()]
+    assert events[0].ct_interpretation == CTInterpretation(
+        _clock().utc, "Europe/Warsaw", "converted"
+    )
+    assert events[1].ct_interpretation is None
+    assert events[2].ct_interpretation.status == "standard"
+    stored = [obs.ct_utc for track in consensus.tracks.values() for obs in track.observations]
+    assert stored == [_clock().utc, _clock().utc]
+    record = json.loads(recon.event_to_json(events[0]))
+    assert record["clock_time"]["ct_timezone"] == "Europe/Warsaw"
