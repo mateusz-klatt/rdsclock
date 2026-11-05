@@ -3,10 +3,12 @@
 import socket
 import struct
 import threading
+import time
 
 import numpy as np
+import pytest
 
-from rdsclock.rtl_tcp import RtlTcpClient
+from rdsclock.rtl_tcp import RtlTcpCaptureTimeoutError, RtlTcpClient
 
 
 def _make_fake_server(samples: bytes, min_cmds: int = 3):
@@ -81,3 +83,84 @@ def test_set_freq_and_read():
     assert (2, 250_000) in cmds
     assert (1, 95_500_000) in cmds
     assert (3, 0) in cmds
+
+
+def _odd_server(trickle: bool):
+    """One connection: a header and one IQ sample per 0.1 s, or nothing at all.
+
+    Returns (port, accepted, closed, stop, thread); ``closed`` is set when
+    the client let go.
+    """
+    srv = socket.create_server(("127.0.0.1", 0))
+    accepted, closed, stop = threading.Event(), threading.Event(), threading.Event()
+
+    def serve():
+        with srv:
+            srv.settimeout(5.0)
+            conn, _ = srv.accept()
+        accepted.set()
+        with conn:
+            conn.settimeout(0.1)
+            try:
+                if trickle:
+                    conn.sendall(b"RTL0" + struct.pack(">II", 5, 29))
+                deadline = time.monotonic() + 20.0
+                while not stop.is_set() and time.monotonic() < deadline:
+                    try:
+                        if not conn.recv(4096):
+                            break
+                    except TimeoutError:
+                        if trickle:
+                            conn.sendall(b"\x80\x80")
+            except OSError:
+                pass
+            finally:
+                closed.set()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return srv.getsockname()[1], accepted, closed, stop, thread
+
+
+def test_a_capture_must_end_within_its_grace():
+    port, _, closed, stop, thread = _odd_server(trickle=True)
+    client = RtlTcpClient("127.0.0.1", port, capture_grace=lambda duration_s: 0.3)
+    try:
+        client.connect()
+        started = time.monotonic()
+        # 200 samples at one per 0.1 s would take 20 s; 0.2 s + 0.3 s is allowed.
+        with pytest.raises(RtlTcpCaptureTimeoutError, match="before the capture deadline"):
+            client.capture_fresh(0.2, 1000, settle_s=0.0)
+        assert time.monotonic() - started < 5.0
+        assert client._sock is None  # a failed capture closes the connection
+        assert closed.wait(2.0)
+    finally:
+        client.close()
+        stop.set()
+        thread.join(2.0)
+
+
+def test_interrupt_wakes_a_handshake():
+    port, accepted, closed, stop, thread = _odd_server(trickle=False)
+    client = RtlTcpClient("127.0.0.1", port)
+    errors: list[BaseException] = []
+
+    def connect():
+        try:
+            client.connect()
+        except OSError as exc:
+            errors.append(exc)
+
+    connecting = threading.Thread(target=connect)
+    connecting.start()
+    try:
+        assert accepted.wait(5.0)
+        client.interrupt()
+        connecting.join(5.0)  # the header read alone would wait 15 s
+        assert not connecting.is_alive()
+        assert len(errors) == 1
+        assert client.info is None and client._sock is None and client._handshake is None
+        assert closed.wait(2.0)
+    finally:
+        stop.set()
+        thread.join(2.0)

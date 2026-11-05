@@ -21,8 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly as before.
 - A receiver that fails is closed and its stations leave the watchlist while
   the others go on; it is connected again at the start of the next cycle and
-  its stations are checked before they rejoin the hops. The run ends only when
-  every receiver has failed.
+  its stations are checked before they rejoin the hops. A receiver too slow to
+  deliver a capture within its duration plus `max(15 s, 25 %)` of it fails
+  the same way, so it cannot hold up the others. The run ends only when every
+  receiver has failed. Ctrl+C stops every receiver at once, including one that
+  is still connecting, even when the output is blocked.
+- With several receivers, each one votes for the transmitter it last heard on a
+  channel: receivers in different places that hear different transmitters on
+  one frequency count as two sources, and the dashboards show each one's
+  metrics in its own row.
 - JSON Lines: `recon_started` gains `receivers` (`host:port`), `hop_result`,
   `scan_step` candidates and watchlist entries gain `receiver`, and a new
   `receiver_failed` event carries `iteration`, `receiver` and `error`. Existing
@@ -37,12 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/replay_rtl_tcp.py` serves a recorded IQ file (`cf32` or `cu8`) as an
   `rtl_tcp` receiver, a test aid for several receivers and the dashboards. Its
   Clock-Time is as old as the recording, so a live consensus treats it as an
-  outlier; with two equal camps it reports no time.
+  outlier; with two equal camps it reports no time. A `--max-queue-s` shorter
+  than one transfer is refused.
 - `recon --help` ends with examples, including several receivers and the replay
   tool.
 - English, Polish and French texts for all of the above, a README section
   "Several receivers" in each language, the operator quickstart, the
-  architecture notes on threads and the shared output lock, and release notes
+  architecture notes on threads, the output queue and stopping, and release notes
   in all three languages.
 ## [2.1.0] — 2026-11-05
 

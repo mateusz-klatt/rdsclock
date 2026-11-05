@@ -258,15 +258,33 @@ minute or more for the once-a-minute Clock-Time without lengthening the cycle.
 Only the main thread decides the phases, evaluates the consensus and writes
 `watchlist_updated` and `cycle_completed`.
 
-The threads share one `TimeConsensus` and one output stream through
-`_SharedOutputs`, whose re-entrant lock serialises every status line, progress
-line and event, so JSON Lines records stay whole. `hop_collect_ct` takes the
-same lock while a result enters the consensus and is reported, but not while it
-records or decodes, so captures overlap. Progress lines name their receiver
-(`[host:port] …`). An exception from an output callback in a worker is wrapped
-as `_OutputError`, so that a failed write is re-raised after the join instead
-of being mistaken for a failed receiver. After the run stops, the shared
-outputs drop late output, so nothing follows `recon_stopped`.
+The receiver threads never write output. Their status lines, progress lines
+(`[host:port] …`) and events go to `_Outbox`, a queue that the main thread
+empties, in order, while it waits for the phase to end; so every output
+callback runs in the main thread, JSON Lines records stay whole, and an output
+that blocks (a JSON Lines reader that stopped reading) holds up only the main
+thread, never a receiver. The threads share one `TimeConsensus`:
+`hop_collect_ct` holds `consensus_lock` while a result enters it, but not while
+it records or decodes, so captures overlap, and no output is written under
+that lock. An exception from an output callback is raised in the main thread
+at once and stops the run; it is never mistaken for a failed receiver.
+
+Ctrl+C reaches the main thread wherever it waits: on the queue, in a blocked
+output callback or in a join. `_stop()` then sets `_stopping` under
+`_slots_lock`, shuts down the socket of every client, including one still
+reading the `rtl_tcp` header (`_ReceiverSlot.connecting`), and gives the
+threads two seconds in all to end; it takes no lock that output holds. A
+connection that completes after the stop is closed instead of being kept, and
+an interrupted client never connects again. Output still queued at the stop is
+dropped, so nothing follows `recon_stopped`. Only the TCP connect itself cannot
+be woken; `connect_timeout` (10 s) bounds it.
+
+Each read of a capture times out after 15 s, but a receiver that trickles a few
+bytes now and then never trips that, and would hold up every phase. So with
+several receivers each capture must also arrive within its duration plus a
+grace of `max(15 s, 25 % of the duration)` (`_capture_grace_s`); otherwise it
+fails with `RtlTcpCaptureTimeoutError`, an `OSError`. One receiver has no such
+deadline, as before.
 
 A receiver whose connection or capture raises `OSError` is closed, its stations
 leave the watchlist, and `receiver_failed` (`iteration`, `receiver`, `error`)
@@ -280,15 +298,24 @@ one receiver.
 In JSON Lines, `recon_started` lists every receiver as `receivers`
 (`host:port`), and each `hop_result`, watchlist entry and `scan_step` candidate
 carries its `receiver`. A single-receiver run names its receiver too; readers
-that ignore unknown keys need no change. The consensus itself does not know
-about receivers: tracks follow the transmitter (PI and tuning), so two
-receivers that hear the same station feed the same track. Receivers are not
-independent sources: a broadcaster's wrong clock reaches every receiver alike.
+that ignore unknown keys need no change. Tracks follow the transmitter (PI and
+tuning), so two receivers that hear the same station feed the same track. Its
+observations stay ordered by reception time, so a receiver that reports an
+older Clock-Time after a newer one does not make the track look older. Each
+observation names its receiver, and the consensus gives each receiver one vote
+per channel, its latest transmitter there, before it merges known PIs: two
+receivers in different places that hear different transmitters on one
+frequency count twice, while one receiver whose channel changed PI still counts
+once. The dashboards likewise attribute track metrics by receiver row, tuning
+and the PI that row confirmed. Receivers are not independent sources: a
+broadcaster's wrong clock reaches every receiver alike.
 
 `tools/replay_rtl_tcp.py` serves a recorded IQ file as an `rtl_tcp` server, so
 multi-receiver runs and the dashboards can be tested next to a real receiver
 or without one. It replays an old broadcast: its Clock-Time is as old as the
-recording, so the consensus treats it as an outlier next to live stations.
+recording, so the consensus treats it as an outlier next to live stations. It
+refuses a `--max-queue-s` shorter than one transfer (`--chunk-samples`), which
+would never send a sample.
 
 The offline variant `run_recon_offline` replays the same logic over
 pre-recorded `.iq` files and is the primary integration test for the

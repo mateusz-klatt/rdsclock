@@ -359,7 +359,8 @@ class DashboardState:
     last_ct: dict[RowKey, Hop] = field(default_factory=dict)
     identity: dict[RowKey, int] = field(default_factory=dict)  # last confirmed PI per row
     consensus: Consensus | None = None
-    tracks: dict[int, Track] = field(default_factory=dict)
+    tracks: dict[int, Track] = field(default_factory=dict)  # the freshest per tuning
+    tracks_by_pi: dict[tuple[int, int | None], Track] = field(default_factory=dict)
     next_rescan_in_s: float | None = None
     cycle_at: float = 0.0
     band: tuple[float, float, float] | None = None
@@ -628,6 +629,7 @@ class DashboardState:
         # A PI change leaves several tracks per tuning; like the consensus,
         # keep the freshest one (ties go to the later track).
         tracks: dict[int, Track] = {}
+        tracks_by_pi: dict[tuple[int, int | None], Track] = {}
         for entry in record["tracks"]:
             key = _tuning(_number(entry["freq_hz"]))
             track = Track(
@@ -637,8 +639,12 @@ class DashboardState:
             )
             if key not in tracks or _not_older(track, tracks[key]):
                 tracks[key] = track
+            by_pi = (key, track.pi)
+            if by_pi not in tracks_by_pi or _not_older(track, tracks_by_pi[by_pi]):
+                tracks_by_pi[by_pi] = track
         next_rescan_in_s = _number(record["next_rescan_in_s"])
         self.consensus, self.tracks, self.watchlist = consensus, tracks, watchlist
+        self.tracks_by_pi = tracks_by_pi
         self.next_rescan_in_s = next_rescan_in_s
         self.cycle_at = self.clock()
         return [
@@ -876,6 +882,10 @@ class DashboardState:
         # Consensus tracks follow the transmitter, not the receiver: by tuning.
         track = self.tracks.get(tuning)
         identity = self.identity.get(key)
+        if self.multi_receiver and identity is not None:
+            # Receivers in different places may hear different transmitters on
+            # one tuning: the PI that this receiver confirmed picks the track.
+            track = self.tracks_by_pi.get((tuning, identity), track)
         if track is not None and None not in (track.pi, identity) and track.pi != identity:
             track = None  # its metrics belong to the transmitter that answered before
         if hop is None:

@@ -164,6 +164,24 @@ class TestMain:
             replay.main([str(tmp_path / "x.cu8"), *argv])
         assert exit_info.value.code == 2
 
+    def test_a_queue_shorter_than_one_transfer_is_refused(self, tmp_path, capsys):
+        # 0.01 s at 250 kS/s is 2500 samples: a 16384-sample transfer never fills.
+        with pytest.raises(SystemExit) as exit_info:
+            replay.main([str(tmp_path / "x.cu8"), "--rate", "250000", "--max-queue-s", "0.01"])
+        assert exit_info.value.code == 2
+        error = capsys.readouterr().err
+        assert "--max-queue-s 0.01 holds less than one transfer of 16384 samples" in error
+        assert "use at least 0.065536 s" in error
+
+    def test_the_server_needs_a_queue_of_one_transfer(self, tmp_path):
+        path = tmp_path / "ramp.cu8"
+        path.write_bytes(bytes(range(200)))
+        source = replay.IqSource(path, "cu8")
+        with pytest.raises(ValueError, match="less than one transfer of 50 samples"):
+            replay.ReplayServer(source, port=0, rate=10_000, chunk_samples=50, max_queue_s=0.0049)
+        with _Server(path, "cu8", rate=10_000, chunk_samples=50, max_queue_s=0.005) as served:
+            assert served.server.max_queue_samples == served.server.chunk_samples == 50
+
     def test_formats_follow_the_suffix(self, tmp_path):
         assert replay.guess_format(tmp_path / "a.CF32") == "cf32"
         assert replay.guess_format(tmp_path / "a.cu8") == "cu8"

@@ -142,8 +142,9 @@ the consensus groups stations by transmitter, not by receiver.
 
 If a receiver fails, its stations leave the watchlist, the others go on, and
 `recon` connects to it again at the start of the next cycle, then checks its
-stations before they rejoin the hops. The run ends only when every receiver has
-failed. The dashboards then add a *Receiver* column (`host:port`), the status
+stations before they rejoin the hops. A receiver that cannot deliver a capture
+within its dwell plus 25 % (at least 15 s) fails the same way. The run ends
+only when every receiver has failed. The dashboards then add a *Receiver* column (`host:port`), the status
 names what each receiver is recording, for example
 `HOP · 1/2 stations recorded · 192.168.5.1:1234: done · 127.0.0.1:1235 → 98.80 MHz`,
 and the log reports a receiver that fails and when it works again. With one

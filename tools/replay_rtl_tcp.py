@@ -32,6 +32,8 @@ What it does NOT do:
 Like rtl_tcp, it keeps producing samples while the client does not read,
 then sends the queued samples as fast as the client takes them. A queue
 longer than ``--max-queue-s`` is dropped, as a full rtl_tcp buffer would be.
+The queue must hold at least one transfer (``--chunk-samples``): a shorter
+one could never send a sample, so it is refused.
 
 Only the standard library and numpy are used. It listens on 127.0.0.1 by
 default; ``--host`` changes that, but it has no authentication.
@@ -152,6 +154,9 @@ class ReplayServer:
     ) -> None:
         if rate <= 0 or chunk_samples <= 0 or max_queue_s <= 0:
             raise ValueError("rate, chunk_samples and max_queue_s must be positive")
+        problem = queue_problem(max_queue_s, rate, chunk_samples)
+        if problem:
+            raise ValueError(problem)
         self.source = source
         self.rate = rate
         self.loop = loop
@@ -269,6 +274,21 @@ class ReplayServer:
         self.log(f"client: {name} {detail}")
 
 
+def queue_problem(max_queue_s: float, rate: int, chunk_samples: int) -> str | None:
+    """Why ``max_queue_s`` cannot work at ``rate`` with these transfers, or ``None``.
+
+    A transfer leaves once all its samples exist; a queue limit below one
+    transfer drops them before that, so nothing would ever be sent.
+    """
+    if round(max_queue_s * rate) >= chunk_samples:
+        return None
+    return (
+        f"--max-queue-s {max_queue_s:g} holds less than one transfer of {chunk_samples} "
+        f"samples at {rate} S/s; use at least {chunk_samples / rate:g} s "
+        "or fewer --chunk-samples"
+    )
+
+
 def _positive_int(text: str) -> int:
     value = int(text)
     if value <= 0:
@@ -317,7 +337,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-queue-s",
         type=float,
         default=DEFAULT_MAX_QUEUE_S,
-        help=f"drop samples queued for longer than this (default {DEFAULT_MAX_QUEUE_S:g} s)",
+        help=(
+            f"drop samples queued for longer than this (default {DEFAULT_MAX_QUEUE_S:g} s); "
+            "it must hold at least one transfer"
+        ),
     )
     parser.add_argument("--tuner-type", type=int, default=TUNER_R820T, help="header tuner type")
     parser.add_argument("--gain-count", type=int, default=R820T_GAIN_COUNT, help="header gains")
@@ -332,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"cannot tell the format of {args.file}: add --format cf32 or --format cu8")
     if not args.max_queue_s > 0:
         parser.error("--max-queue-s must be positive")
+    problem = queue_problem(args.max_queue_s, args.rate, args.chunk_samples)
+    if problem:
+        parser.error(problem)
     try:
         source = IqSource(args.file, fmt)
         server = ReplayServer(

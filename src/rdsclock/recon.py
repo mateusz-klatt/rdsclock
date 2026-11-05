@@ -36,6 +36,7 @@ Everything is fully passive: receive-only, no RF emission of any kind.
 import contextlib
 import json
 import math
+import queue
 import re
 import threading
 import time
@@ -545,6 +546,7 @@ def _record_station(
             clock_time=ct,
             rx_monotonic_ns=ct.rx_monotonic_ns,
             received_wall_utc=received_wall,
+            receiver=receiver,
         )
         consensus.record(obs)
     return HopResult(
@@ -623,7 +625,10 @@ def hop_collect_ct(
     ``on_event`` receives a :class:`HopResult` for every station, with or
     without CT. ``receiver`` names ``client`` in them. When other receivers
     hop at the same time, ``lock`` is held while a result enters the
-    consensus and is reported, but not while recording or decoding.
+    consensus and is reported, so that the reports follow the consensus
+    order, but not while recording or decoding. ``progress`` and
+    ``on_event`` must then not block: in a run with several receivers they
+    only queue the output (see :class:`_Outbox`).
     """
     guard = lock if lock is not None else contextlib.nullcontext()
     client.configure_fm(cfg.sample_rate, gain_db=cfg.gain_db)
@@ -1001,8 +1006,9 @@ def run_recon(
 
     When :attr:`ReconConfig.hop_stations` spreads the HOP stations over
     several receivers, every receiver hops through its own stations in its
-    own thread (see :class:`_MultiReceiverRun`). Callbacks are then called
-    from those threads too, but never two at a time.
+    own thread (see :class:`_MultiReceiverRun`). Callbacks are still called
+    only from the calling thread: the receiver threads queue their output,
+    and it is written while the calling thread waits for them.
     """
     if on_status is None:
         on_status = print
@@ -1062,84 +1068,90 @@ def run_recon(
 
 # ----------------------- SEVERAL RECEIVERS -----------------------
 
-# How long a stopping run waits for each receiver thread to notice.
+# How long, in all, a stopping run waits for the receiver threads to notice.
 _THREAD_STOP_TIMEOUT_S = 2.0
 
+# The per-read timeout never trips on a receiver that trickles a few bytes now
+# and then, and one slow receiver would hold up every phase of every receiver.
+# So with several receivers each capture must also end within its duration plus
+# this grace; otherwise that receiver fails for the cycle and the others go on.
+_CAPTURE_GRACE_MIN_S = 15.0
+_CAPTURE_GRACE_FRACTION = 0.25
 
-class _OutputError(Exception):
-    """An output callback failed in a receiver thread; ``__cause__`` is its error.
 
-    Kept apart from ``OSError`` so that a failed write is never mistaken
-    for a failed receiver.
-    """
+def _capture_grace_s(duration_s: float) -> float:
+    """How long a capture of ``duration_s`` may overrun in a run with several receivers."""
+    return max(_CAPTURE_GRACE_MIN_S, _CAPTURE_GRACE_FRACTION * duration_s)
 
 
-class _SharedOutputs:
-    """:class:`_Outputs` for several threads: one line or record at a time.
+_FINISHED = object()  # the last item that a receiver thread queues
 
-    ``lock`` also serialises the consensus updates. After :meth:`close`,
-    output from the receiver threads is dropped, so that nothing follows
+
+class _Outbox:
+    """The output of the receiver threads, written by the thread that runs the loop.
+
+    Receiver threads only queue their status lines, progress lines and events;
+    :meth:`write_until_finished` writes them, in the order queued, while the
+    loop waits for the threads. So every callback runs in one thread, records
+    stay whole, and a blocked output (a JSON Lines reader that stopped reading)
+    holds up only that thread: never a receiver, the consensus or a stop.
+    Output still queued when the run stops is dropped, so that nothing follows
     ``recon_stopped``.
     """
 
     def __init__(self, out: _Outputs) -> None:
-        self.lock = threading.RLock()
         self._out = out
-        self._closed = False
-
-    def close(self) -> None:
-        with self.lock:
-            self._closed = True
-
-    def _call(self, callback: Callable, value: object, in_worker: bool) -> None:
-        with self.lock:
-            if self._closed:
-                return
-            if not in_worker:
-                callback(value)
-                return
-            try:
-                callback(value)
-            except Exception as exc:
-                raise _OutputError from exc
-
-    def _wrap(self, callback: Callable | None, in_worker: bool) -> Callable | None:
-        if callback is None:
-            return None
-        return lambda value: self._call(callback, value, in_worker)
-
-    def main(self) -> _Outputs:
-        """Outputs for the thread that runs the loop."""
-        return _Outputs(
-            self._wrap(self._out.status, False),
-            self._wrap(self._out.progress, False),
-            self._wrap(self._out.event, False),
-        )
+        self._queue: queue.SimpleQueue[object] = queue.SimpleQueue()
 
     def worker(self, receiver: str, on_hop: Callable[[HopResult], None]) -> _Outputs:
         """Outputs for the thread of ``receiver``: progress names it, hops go to ``on_hop``."""
+        put = self._queue.put
+        status = self._out.status
         progress = self._out.progress
-        if progress is not None:
-            inner = progress
-            progress = lambda message: inner(f"  [{receiver}] {message.lstrip()}")  # noqa: E731
-        forward = self._wrap(self._out.event, True)
+        forward = self._out.event
 
         def event(value: ReconEvent) -> None:
             if isinstance(value, HopResult):
                 on_hop(value)
             if forward is not None:
-                forward(value)
+                put((forward, value))
 
-        return _Outputs(self._wrap(self._out.status, True), self._wrap(progress, True), event)
+        return _Outputs(
+            lambda message: put((status, message)),
+            (
+                None
+                if progress is None
+                else lambda message: put((progress, f"  [{receiver}] {message.lstrip()}"))
+            ),
+            event,
+        )
+
+    def finished(self) -> None:
+        """Called by a receiver thread as its last act."""
+        self._queue.put(_FINISHED)
+
+    def write_until_finished(self, n_threads: int) -> None:
+        """Write queued output until ``n_threads`` receiver threads have finished."""
+        while n_threads:
+            item = self._queue.get()
+            if item is _FINISHED:
+                n_threads -= 1
+                continue
+            callback, value = item  # type: ignore[misc]
+            callback(value)
 
 
 @dataclass
 class _ReceiverSlot:
-    """One receiver of a run with several, and its part of the watchlist."""
+    """One receiver of a run with several, and its part of the watchlist.
+
+    ``connecting`` is the client while it connects, so that a stop can wake it.
+    """
 
     address: RtlTcpAddress
     cfg: ReconConfig  # the run's settings, with only this receiver's stations
     client: RtlTcpClient | None = None
+    connecting: RtlTcpClient | None = None
     watchlist: list[StationCandidate] = field(default_factory=list)
     new_observations: int = 0
 
@@ -1158,21 +1170,28 @@ class _MultiReceiverRun:
     The cycle is the same as with one receiver: an acquisition when one is
     due, then one maintenance pass and the consensus. Within each phase every
     receiver records its own stations in its own thread, and the phase ends
-    when all of them have finished. A receiver that fails is reported as
+    when all of them have finished. A receiver that fails, or whose capture
+    overruns its grace (:func:`_capture_grace_s`), is reported as
     :class:`ReceiverFailed`, leaves the watchlist with its stations, and is
     connected again at the start of the next cycle; an acquisition then
     checks its stations again. When no receiver is left, the latest error
     ends the run, as it does with one receiver.
+
+    Locks: ``consensus_lock`` serialises the receiver threads' consensus
+    updates and is never held while writing output (see :class:`_Outbox`).
+    ``_slots_lock`` guards the clients against a stop: :meth:`_stop` sets
+    ``_stopping`` under it, so a receiver that connects after that is closed
+    rather than handed to a stopped run.
     """
 
     def __init__(
         self, cfg: ReconConfig, receivers: dict[RtlTcpAddress, tuple[float, ...]], out: _Outputs
     ) -> None:
         self.cfg = cfg
-        self.base_out = out
-        self.shared = _SharedOutputs(out)
-        self.out = self.shared.main()
+        self.out = out
+        self.outbox = _Outbox(out)
         self.consensus = TimeConsensus(mission_precision_s=cfg.mission_precision_s)
+        self.consensus_lock = threading.Lock()
         self.slots = [
             _ReceiverSlot(
                 address,
@@ -1185,14 +1204,17 @@ class _MultiReceiverRun:
         self.iteration = 0
         self.threads: list[threading.Thread] = []
         self.last_error: OSError | None = None
+        self._slots_lock = threading.Lock()
+        self._stopping = False
 
     def run(self, rescan_requested: Callable[[], bool] | None) -> None:
         try:
             self._loop(rescan_requested)
         except KeyboardInterrupt:
+            # Stop first: it needs no output, which may be what is blocked.
             self._stop()
-            self.base_out.status("\nInterrupted by operator (Ctrl+C).")
-            self.base_out.publish(ReconStopped(iteration=self.iteration, reason="interrupted"))
+            self.out.status("\nInterrupted by operator (Ctrl+C).")
+            self.out.publish(ReconStopped(iteration=self.iteration, reason="interrupted"))
         finally:
             self._stop()
 
@@ -1260,9 +1282,24 @@ class _MultiReceiverRun:
         return [station for slot in self.slots for station in slot.watchlist]
 
     def _connect(self, slot: _ReceiverSlot) -> None:
-        client = RtlTcpClient(host=slot.address.host, port=slot.address.port)
-        client.connect()
-        slot.client = client
+        client = RtlTcpClient(
+            host=slot.address.host, port=slot.address.port, capture_grace=_capture_grace_s
+        )
+        with self._slots_lock:
+            if self._stopping:
+                return
+            slot.connecting = client
+        try:
+            client.connect()
+        finally:
+            with self._slots_lock:
+                slot.connecting = None
+                stopped = self._stopping
+                if not stopped and client.info is not None:
+                    slot.client = client
+        if stopped:
+            # A connection that completed after the stop belongs to no one: close it.
+            client.close()
 
     def _acquire(self, slots: list[_ReceiverSlot]) -> None:
         freqs_hz = [freq_hz for slot in slots for freq_hz in slot.cfg.hop_freqs_hz]
@@ -1281,7 +1318,7 @@ class _MultiReceiverRun:
         )
 
         def scan(slot: _ReceiverSlot) -> None:
-            out = self.shared.worker(slot.name, lambda hop: None)
+            out = self.outbox.worker(slot.name, lambda hop: None)
             slot.watchlist = _scan_listed(slot.client, slot.cfg, out, slot.name)
 
         self._handle(self._in_parallel(slots, scan))
@@ -1303,7 +1340,7 @@ class _MultiReceiverRun:
             def count(result: HopResult) -> None:
                 slot.new_observations += _entered_consensus(result)
 
-            out = self.shared.worker(slot.name, count)
+            out = self.outbox.worker(slot.name, count)
             hop_collect_ct(
                 slot.client,
                 slot.watchlist,
@@ -1312,7 +1349,7 @@ class _MultiReceiverRun:
                 out.progress,
                 out.event,
                 receiver=slot.name,
-                lock=self.shared.lock,
+                lock=self.consensus_lock,
             )
 
         self._handle(self._in_parallel(slots, hop))
@@ -1323,8 +1360,10 @@ class _MultiReceiverRun:
     ) -> list[tuple[_ReceiverSlot, OSError]]:
         """Run ``job`` for every slot in a thread of its own and wait for all of them.
 
-        Returns the receivers that failed, with their errors. Any other error,
-        such as one of an output callback, is raised once every thread ended.
+        While waiting, this thread writes the output that they queue. Returns
+        the receivers that failed, with their errors. Any other error of a
+        job is raised once every thread ended; an error of an output callback
+        is raised at once, and the run then stops the threads.
         """
         failures: dict[int, OSError] = {}
         errors: list[BaseException] = []
@@ -1332,21 +1371,21 @@ class _MultiReceiverRun:
         def run(index: int, slot: _ReceiverSlot) -> None:
             try:
                 job(slot)
-            except _OutputError as exc:
-                errors.append(exc.__cause__)
             except OSError as exc:
                 failures[index] = exc
             except BaseException as exc:
                 errors.append(exc)
+            finally:
+                self.outbox.finished()
 
-        self.threads = [
-            threading.Thread(
+        self.threads = []
+        for index, slot in enumerate(slots):
+            thread = threading.Thread(
                 target=run, args=(index, slot), name=f"rdsclock {slot.name}", daemon=True
             )
-            for index, slot in enumerate(slots)
-        ]
-        for thread in self.threads:
+            self.threads.append(thread)
             thread.start()
+        self.outbox.write_until_finished(len(self.threads))
         for thread in self.threads:
             thread.join()
         if errors:
@@ -1382,13 +1421,26 @@ class _MultiReceiverRun:
                 client.close()
 
     def _stop(self) -> None:
-        """Drop late output, wake every receiver thread and close the receivers."""
-        self.shared.close()
-        for slot in self.slots:
-            if slot.client is not None:
-                slot.client.interrupt()
+        """Wake every receiver thread, wait a bounded time for them and close the receivers.
+
+        It writes no output and takes no lock that is held while writing, so a
+        blocked output cannot hold it up. Receiver threads still alive after
+        the wait are left to end on their own; their output is never written.
+        """
+        with self._slots_lock:
+            self._stopping = True
+            clients = [
+                client
+                for slot in self.slots
+                for client in (slot.client, slot.connecting)
+                if client is not None
+            ]
+        for client in clients:
+            client.interrupt()
+        deadline = time.monotonic() + _THREAD_STOP_TIMEOUT_S
         for thread in self.threads:
-            thread.join(_THREAD_STOP_TIMEOUT_S)
+            if thread.is_alive():
+                thread.join(max(0.0, deadline - time.monotonic()))
         for slot in self.slots:
             self._disconnect(slot)
 

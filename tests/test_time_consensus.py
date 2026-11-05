@@ -1,5 +1,6 @@
 """Tests for multi-source time consensus + per-station trust."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from rdsclock.rds_clock import ClockTime
@@ -464,3 +465,50 @@ class TestTrackBookkeeping:
         c.record(_obs(91.98, 0x3201, utc + timedelta(seconds=1), mono=101.0))
         # They should end up in the same track
         assert len(c.tracks) == 1
+
+
+class TestParallelReceivers:
+    """Several receivers report to one consensus, in whatever order they finish."""
+
+    @staticmethod
+    def _heard(pi: int, mono: float, receiver: str, freq_mhz: float = 98.8):
+        utc = datetime(2026, 5, 17, 12, 0, tzinfo=UTC) + timedelta(seconds=mono)
+        return replace(_obs(freq_mhz, pi, utc, mono), receiver=receiver)
+
+    def test_an_older_reception_reported_later_does_not_age_the_track(self):
+        c = TimeConsensus(mission_precision_s=60)
+        track = c.record(self._heard(0x1001, 160.0, "a:1"))
+        c.record(self._heard(0x1001, 100.0, "b:1"))  # finished later, heard earlier
+        assert [o.reception_monotonic for o in track.observations] == [100.0, 160.0]
+        assert track.last.reception_monotonic == 160.0
+        result = c.consensus(monotonic_now=175.0)
+        assert result.median_age_s == 15.0
+        assert result.trust_level == TrustLevel.LOW  # age 75 would be STALE
+
+    def test_receivers_hearing_different_transmitters_on_one_channel_count_twice(self):
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 100.0, "a:1"))
+        c.record(self._heard(0x1002, 101.0, "b:1"))
+        result = c.consensus(monotonic_now=102.0)
+        assert result.n_sources == 2
+        assert result.trust_level == TrustLevel.MEDIUM
+
+    def test_one_receiver_still_gives_one_vote_per_channel(self):
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 100.0, "a:1"))
+        c.record(self._heard(0x1002, 101.0, "a:1"))  # the channel changed PI
+        assert c.consensus(monotonic_now=102.0).n_sources == 1
+
+    def test_a_channel_that_changed_pi_for_one_receiver_only(self):
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 100.0, "a:1"))
+        c.record(self._heard(0x1001, 105.0, "b:1"))
+        c.record(self._heard(0x1002, 110.0, "a:1"))
+        # a:1 now hears 0x1002 and b:1 still 0x1001.
+        assert c.consensus(monotonic_now=111.0).n_sources == 2
+
+    def test_one_transmitter_heard_by_two_receivers_counts_once(self):
+        c = TimeConsensus()
+        c.record(self._heard(0x1001, 100.0, "a:1"))
+        c.record(self._heard(0x1001, 101.0, "b:1"))
+        assert c.consensus(monotonic_now=102.0).n_sources == 1

@@ -14,6 +14,7 @@ Design rationale (GPS-denied passive-RF operation):
     - Operator display: ``UTC HH:MM:SS  ±Xs  N=4  trust=HIGH``.
 """
 
+import bisect
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -72,7 +73,10 @@ class StationFingerprint:
 
 @dataclass
 class StationObservation:
-    """A single Clock-Time observation from a station."""
+    """A single Clock-Time observation from a station.
+
+    ``receiver`` names the receiver that heard it (``host:port``), if known.
+    """
 
     freq_hz: float
     pi: int | None
@@ -83,6 +87,7 @@ class StationObservation:
     rx_monotonic_ns: int | None = None
     received_wall_utc: datetime | None = None
     tx_latency_ns: int | None = None
+    receiver: str | None = None
 
     def __post_init__(self) -> None:
         if self.clock_time is not None and self.rx_monotonic_ns is None:
@@ -100,7 +105,12 @@ class StationObservation:
 
 @dataclass
 class StationTrack:
-    """Per-transmitter state, keyed by PI and frequency bin."""
+    """Per-transmitter state, keyed by PI and frequency bin.
+
+    ``observations`` are ordered by reception time, so that ``last`` is the
+    latest reception even when receivers working in parallel report an older
+    one later.
+    """
 
     freq_hz: float
     pi: int | None
@@ -142,7 +152,11 @@ class StationTrack:
         return monotonic_now - self.observations[-1].reception_monotonic
 
     def add_observation(self, obs: StationObservation) -> None:
-        self.observations.append(obs)
+        # A late report of an older reception goes before the newer ones,
+        # never after them: it must not become the anchor that ages the track.
+        bisect.insort_right(
+            self.observations, obs, key=lambda observation: observation.reception_monotonic
+        )
         # Trim to the most recent 30 observations to bound memory use.
         if len(self.observations) > 30:
             self.observations = self.observations[-30:]
@@ -221,8 +235,16 @@ def _is_fresher_track(track: "StationTrack", previous: "StationTrack | None") ->
     )
 
 
+def _latest_by_receiver(track: "StationTrack") -> dict[str | None, float]:
+    """The latest reception of ``track`` by each receiver that heard it."""
+    latest: dict[str | None, float] = {}
+    for obs in track.observations:  # in reception order: the latest comes last
+        latest[obs.receiver] = obs.reception_monotonic
+    return latest
+
+
 def _distinct_source_tracks(tracks: list["StationTrack"]) -> list["StationTrack"]:
-    """Conservatively give one vote per channel and then per known PI.
+    """Conservatively give one vote per channel of each receiver and then per known PI.
 
     Several frequencies can carry one programme clock, or capture the same
     transmitter at adjacent tunings. Different PIs are not proof of independent
@@ -230,15 +252,23 @@ def _distinct_source_tracks(tracks: list["StationTrack"]) -> list["StationTrack"
     remain separate diagnostic sources; they do not qualify for elevated trust.
     A channel changing PI, including an unconfirmed/confirmed transition,
     contributes only its freshest observation, without favouring known PI.
+    That holds per receiver: receivers in different places may hear different
+    transmitters on one channel, and each keeps what it heard last. With one
+    receiver this is one vote per channel.
     """
-    by_channel: dict[int, StationTrack] = {}
+    by_channel: dict[tuple[str | None, int], tuple[StationTrack, float]] = {}
     for track in tracks:
         channel_hz = round(track.freq_hz / 100_000) * 100_000
-        if _is_fresher_track(track, by_channel.get(channel_hz)):
-            by_channel[channel_hz] = track
+        # A track without observations has no receiver and never votes.
+        for receiver, heard in _latest_by_receiver(track).items():
+            previous = by_channel.get((receiver, channel_hz))
+            if previous is None or heard >= previous[1]:
+                by_channel[(receiver, channel_hz)] = (track, heard)
 
+    # A track that several receivers kept counts once.
+    kept = list({id(track): track for track, _ in by_channel.values()}.values())
     selected: dict[tuple[str, int | float], StationTrack] = {}
-    for track in by_channel.values():
+    for track in kept:
         key = ("pi", track.pi) if track.pi is not None else ("frequency", track.freq_hz)
         if _is_fresher_track(track, selected.get(key)):
             selected[key] = track
