@@ -286,6 +286,63 @@ minutes ; celui de ces captures s'est terminé au niveau ÉLEVÉE :
 observé ; la concordance des sources n'en établit ni la cause ni l'exactitude
 absolue.*
 
+### Stations qui émettent l'heure locale comme UTC
+
+La norme CEI 62106 définit l'heure et la minute du groupe 4A comme UTC ;
+l'heure locale vaut UTC + LTO. Des mesures à Varsovie du 31 octobre au
+5 novembre 2026, avec l'horloge de l'hôte vérifiée par NTP à 0,4 s près, ont
+relevé quatre stations qui placent l'heure d'Europe centrale (CET) dans le champ
+UTC avec un LTO nul. Leurs champs ont été décodés et vérifiés bit par bit :
+
+| Station | MHz | PI | Champ « UTC » du groupe 4A | LTO |
+|---|---|---|---|---|
+| PR Jedynka | 102,4 | `0x3211` | CET, UTC + 1 h | +00:00 |
+| PR Trójka | 98,8 | `0x3233` | CET, UTC + 1 h | +00:00 |
+| Radio ZET | 107,5 | `0x3205` | CET, UTC + 1 h | +00:00 |
+| RMF Classic | 98,3 | `0x3245` | CET, UTC + 1 h | +00:00 |
+
+Lues selon la norme, elles sont en avance d'une heure sur l'UTC, et de deux
+heures à l'heure d'été (CEST) ; c'est l'écart visible sur les captures HOP
+ci-dessus. Par défaut, rdsclock lit toujours ce champ comme UTC. Si vous savez
+qu'une station y émet l'heure locale, indiquez son fuseau horaire IANA avec
+`recon --ct-timezone` :
+
+```bash
+# Toutes les stations émettent l'heure de Varsovie.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 98.8,102.4,107.5 --ct-timezone Europe/Warsaw --tui --lang fr
+
+# Seulement ces deux-là ; les autres restent conformes à la norme.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 --hop 98.8,102.4,107.5 \
+  --ct-timezone pi:0x3211=Europe/Warsaw --ct-timezone freq:98.8=Europe/Warsaw \
+  --tui --lang fr
+```
+
+`--ct-timezone` accepte `FUSEAU` (toutes les stations), `pi:HEX=FUSEAU` ou
+`freq:MHZ=FUSEAU` et peut être répétée ; une règle PI l'emporte sur une règle de
+fréquence, qui l'emporte sur un `FUSEAU` seul, et `UTC` conserve la lecture
+normalisée. L'heure et la minute décodées sont lues comme heure locale de ce
+fuseau horaire et converties en UTC avec la base de fuseaux du système, ce qui
+suit les changements d'heure. Une heure de l'heure répétée en automne
+(`ambiguous`) ou de l'heure sautée au printemps (`nonexistent`) est affichée
+mais pas utilisée. Le LTO est conservé tel que reçu et n'est pas appliqué.
+
+Les tableaux de bord affichent le CT d'une station convertie comme son UTC
+effectif avec le fuseau source, par exemple `09:06Z ← Europe/Warsaw`, et
+gardent la valeur émise dans le journal. En JSON Lines, `clock_time` conserve
+`utc` et `local_offset_minutes` tels qu'émis et ajoute `effective_utc`,
+`ct_timezone` et `ct_status`. Sans règle, lorsque le consensus s'écarte de
+l'horloge de l'hôte d'un nombre d'heures presque entier, le journal du tableau
+de bord suggère l'option une fois ; l'horloge de l'hôte n'est qu'un indice et
+rien n'est modifié automatiquement.
+
+Une déclaration accorde ces stations avec celles qui respectent la norme ; elle
+ne prouve pas que le résultat soit l'UTC. Des stations qui partagent une même
+horloge amont erronée restent d'accord entre elles. Comparez avec une référence
+indépendante.
+
+[Notes de version 2.1.0 — EN / PL / FR](docs/releases/2.1.0.md)
+
 ## Fonctionnement
 
 ```mermaid

@@ -102,6 +102,13 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     "not counted": ("nieuwzględniona", "non retenue"),
     "no CT": ("brak CT", "sans CT"),
     "none": ("brak", "aucun"),
+    "ambiguous": ("niejednoznaczny", "ambigu"),
+    "nonexistent": ("nieistniejący", "inexistant"),
+    "{utc:%H:%M}Z ← {zone}": ("{utc:%H:%M}Z ← {zone}", "{utc:%H:%M}Z ← {zone}"),
+    "{local:%H:%M} {zone}: {status}, not used": (
+        "{local:%H:%M} {zone}: {status}, nieużyty",
+        "{local:%H:%M} {zone} : {status}, non utilisé",
+    ),
     "MHz": ("MHz", "MHz"),
     "PS": ("PS", "PS"),
     "PI": ("PI", "PI"),
@@ -173,6 +180,22 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     "{label}: CT {utc:%H:%M}Z (LTO {lto}), {groups}.": (
         "{label}: CT {utc:%H:%M}Z (LTO {lto}), {groups}.",
         "{label} : CT {utc:%H:%M}Z (LTO {lto}), {groups}.",
+    ),
+    "{label}: CT {local:%H:%M} read as {zone} local time = {utc:%H:%M}Z (LTO {lto}), {groups}.": (
+        "{label}: CT {local:%H:%M} odczytany jako czas lokalny {zone} = {utc:%H:%M}Z (LTO {lto}), {groups}.",
+        "{label} : CT {local:%H:%M} lu comme heure locale {zone} = {utc:%H:%M}Z (LTO {lto}), {groups}.",
+    ),
+    "{label}: CT {local:%H:%M} as {zone} local time is {status}, not used (LTO {lto}), {groups}.": (
+        "{label}: CT {local:%H:%M} jako czas lokalny {zone} jest {status}, nieużyty (LTO {lto}), {groups}.",
+        "{label} : CT {local:%H:%M} {status} en heure locale {zone}, non utilisé (LTO {lto}), {groups}.",
+    ),
+    "CT read as local time by --ct-timezone: {rules}.": (
+        "CT odczytywany jako czas lokalny zgodnie z --ct-timezone: {rules}.",
+        "CT lu comme heure locale selon --ct-timezone : {rules}.",
+    ),
+    "Host clock minus consensus is close to {hours:+d} h. Some stations may send local time in the CT UTC field; if so, name their time zone with --ct-timezone. The host clock is only a hint: no time is changed automatically.": (
+        "Zegar komputera minus konsensus wynosi blisko {hours:+d} h. Niektóre stacje mogą nadawać czas lokalny w polu UTC sygnału CT; jeśli tak, wskaż ich strefę czasową opcją --ct-timezone. Zegar komputera jest tylko wskazówką: żaden czas nie jest zmieniany automatycznie.",
+        "Horloge de l’hôte moins consensus : environ {hours:+d} h. Certaines stations émettent peut-être l’heure locale dans le champ UTC du CT ; si c’est le cas, indiquez leur fuseau horaire avec --ct-timezone. L’horloge de l’hôte n’est qu’un indice : aucune heure n’est modifiée automatiquement.",
     ),
     "Cycle #{iteration}: {observations} new CT observation(s); trust {trust}, N={sources}.": (
         "Cykl #{iteration}: nowe obserwacje CT: {observations}; zaufanie {trust}, N={sources}.",

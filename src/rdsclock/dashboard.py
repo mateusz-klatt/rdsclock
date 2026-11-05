@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import IO, Any
 
+from .ct_policy import STANDARD_ZONE
 from .i18n import normalize_language, translate
 from .time_consensus import STALE_AGE_S
 
@@ -44,6 +45,16 @@ COLUMNS = (
     "Age",
     "Trust",
     "Status",
+)
+
+STANDARD_CT = "standard"
+# Host clock minus consensus this close to a whole, non-zero number of hours
+# suggests stations that send local time in the UTC field.
+WHOLE_HOUR_TOLERANCE_S = 120.0
+WHOLE_HOUR_HINT = (
+    "Host clock minus consensus is close to {hours:+d} h. Some stations may send local time "
+    "in the CT UTC field; if so, name their time zone with --ct-timezone. The host clock is "
+    "only a hint: no time is changed automatically."
 )
 
 Record = dict[str, Any]
@@ -67,6 +78,12 @@ def _number(value: object) -> float:
 
 def _optional_number(value: object) -> float | None:
     return None if value is None else _number(value)
+
+
+def _text(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"expected a string, got {type(value).__name__}")
+    return printable(value)
 
 
 def _integer(value: object) -> int:
@@ -146,7 +163,12 @@ class Station:
 
 @dataclass(frozen=True)
 class Hop:
-    """The latest ``hop_result`` of one channel."""
+    """The latest ``hop_result`` of one channel.
+
+    ``ct_utc`` and ``lto_minutes`` are the CT as broadcast. ``ct_status``,
+    ``ct_timezone`` and ``effective_utc`` say how ``recon --ct-timezone`` read
+    it; records without them come from the standard reading.
+    """
 
     ps_name: str
     pi: int | None
@@ -155,21 +177,40 @@ class Hop:
     n_groups_corrected: int
     ct_utc: datetime | None
     lto_minutes: int | None
+    ct_status: str = STANDARD_CT
+    ct_timezone: str = STANDARD_ZONE
+    effective_utc: datetime | None = None
 
     @classmethod
     def from_record(cls, record: Record) -> "Hop":
         clock_time = record["clock_time"]
+        ct_utc = None if clock_time is None else _timestamp(clock_time["utc"])
+        status, zone, effective_utc = STANDARD_CT, STANDARD_ZONE, ct_utc
+        if clock_time is not None and clock_time.get("ct_status", STANDARD_CT) != STANDARD_CT:
+            status = _text(clock_time["ct_status"])
+            zone = _text(clock_time["ct_timezone"])
+            effective_utc = _timestamp(clock_time["effective_utc"])
+            if status == "converted" and effective_utc is None:
+                raise ValueError("a converted CT without effective_utc")
         return cls(
             ps_name=printable(record["ps_name"]).strip(),
             pi=_optional_integer(record["pi"]),
             rssi_db=_optional_number(record["rssi_db"]),
             n_groups=_integer(record["n_groups"]),
             n_groups_corrected=_integer(record["n_groups_corrected"]),
-            ct_utc=None if clock_time is None else _timestamp(clock_time["utc"]),
+            ct_utc=ct_utc,
             lto_minutes=(
                 None if clock_time is None else _integer(clock_time["local_offset_minutes"])
             ),
+            ct_status=status,
+            ct_timezone=zone,
+            effective_utc=effective_utc,
         )
+
+    @property
+    def read_as_local(self) -> bool:
+        """Whether ``--ct-timezone`` read this CT as local time instead of UTC."""
+        return self.ct_utc is not None and self.ct_status != STANDARD_CT
 
 
 @dataclass(frozen=True)
@@ -294,6 +335,9 @@ class DashboardState:
     n_stations: int = 0
     schema_warned: bool = False
     language: str = "en"
+    ct_rules: tuple[str, ...] = ()  # the receiver's --ct-timezone rules
+    ct_read_as_local: bool = False  # some CT was read as local time
+    hinted_hours: int | None = None  # whole-hour host offset last hinted at
 
     def __post_init__(self) -> None:
         self.language = normalize_language(self.language)
@@ -333,12 +377,21 @@ class DashboardState:
 
     def _on_recon_started(self, record: Record) -> list[str]:
         tuner, gains = _integer(record["tuner_type"]), _integer(record["gain_count"])
-        self.ready = True
-        return [
+        listed = record.get("ct_timezone_rules", [])
+        if not isinstance(listed, list):
+            raise ValueError("ct_timezone_rules is not a list")
+        rules = tuple(_text(rule) for rule in listed)
+        self.ready, self.ct_rules = True, rules
+        messages = [
             self._t(
                 "Receiver ready: tuner type {tuner}, {gains} gain steps.", tuner=tuner, gains=gains
             )
         ]
+        if rules:
+            messages.append(
+                self._t("CT read as local time by --ct-timezone: {rules}.", rules=", ".join(rules))
+            )
+        return messages
 
     def _on_acquisition_started(self, record: Record) -> list[str]:
         iteration = _integer(record["iteration"])
@@ -453,13 +506,36 @@ class DashboardState:
         )
         if hop.ct_utc is None:
             return [self._t("{label}: no CT, {groups}.", label=label, groups=groups)]
+        lto = _lto(hop.lto_minutes)
+        if not hop.read_as_local:
+            return [
+                self._t(
+                    "{label}: CT {utc:%H:%M}Z (LTO {lto}), {groups}.",
+                    label=label,
+                    utc=hop.ct_utc,
+                    lto=lto,
+                    groups=groups,
+                )
+            ]
+        self.ct_read_as_local = True
+        values = {"label": label, "local": hop.ct_utc, "zone": hop.ct_timezone, "lto": lto}
+        if hop.effective_utc is not None:
+            return [
+                self._t(
+                    "{label}: CT {local:%H:%M} read as {zone} local time = {utc:%H:%M}Z "
+                    "(LTO {lto}), {groups}.",
+                    utc=hop.effective_utc,
+                    groups=groups,
+                    **values,
+                )
+            ]
         return [
             self._t(
-                "{label}: CT {utc:%H:%M}Z (LTO {lto}), {groups}.",
-                label=label,
-                utc=hop.ct_utc,
-                lto=_lto(hop.lto_minutes),
+                "{label}: CT {local:%H:%M} as {zone} local time is {status}, not used "
+                "(LTO {lto}), {groups}.",
+                status=self._t(hop.ct_status),
                 groups=groups,
+                **values,
             )
         ]
 
@@ -492,8 +568,28 @@ class DashboardState:
                 observations=new_observations,
                 trust=self._t(consensus.trust_level),
                 sources=consensus.n_sources,
-            )
+            ),
+            *self._whole_hour_hint(consensus),
         ]
+
+    def _whole_hour_hint(self, consensus: Consensus) -> list[str]:
+        """Suggest ``--ct-timezone`` once each time a whole-hour host offset appears or changes.
+
+        Only without any rule: the host clock is a hint, never a reference, so
+        nothing else follows from it.
+        """
+        if consensus.utc is None:
+            return []
+        hours = None
+        if not (self.ct_rules or self.ct_read_as_local):
+            delta_s = (self.wall_clock() - consensus.utc).total_seconds()
+            nearest = round(delta_s / 3600)
+            if nearest and abs(delta_s - nearest * 3600) <= WHOLE_HOUR_TOLERANCE_S:
+                hours = nearest
+        previous, self.hinted_hours = self.hinted_hours, hours
+        if hours is None or hours == previous:
+            return []
+        return [self._t(WHOLE_HOUR_HINT, hours=hours)]
 
     def _on_recon_stopped(self, record: Record) -> list[str]:
         reason = printable(record["reason"])
@@ -674,7 +770,7 @@ class DashboardState:
             rssi, groups, corrected = hop.rssi_db, hop.n_groups, str(hop.n_groups_corrected)
         ct = lto = ""
         if last_ct is not None:
-            ct, lto = f"{last_ct.ct_utc:%H:%M}Z", _lto(last_ct.lto_minutes)
+            ct, lto = self._ct_cell(last_ct), _lto(last_ct.lto_minutes)
         elif hop is not None:
             ct = self._t("none")
         age = trust = "—"
@@ -686,6 +782,19 @@ class DashboardState:
         cells += (ct, lto, age, trust)
         attributed = track is not None or key not in self.tracks
         return Row(cells=cells, status=self._station_status(key, hop, track, attributed))
+
+    def _ct_cell(self, hop: Hop) -> str:
+        """The CT as the consensus saw it: UTC, marked when read as local time."""
+        if not hop.read_as_local:
+            return f"{hop.ct_utc:%H:%M}Z"
+        if hop.effective_utc is not None:
+            return self._t("{utc:%H:%M}Z ← {zone}", utc=hop.effective_utc, zone=hop.ct_timezone)
+        return self._t(
+            "{local:%H:%M} {zone}: {status}, not used",
+            local=hop.ct_utc,
+            zone=hop.ct_timezone,
+            status=self._t(hop.ct_status),
+        )
 
     def _station_status(
         self, key: int, hop: Hop | None, track: Track | None, attributed: bool

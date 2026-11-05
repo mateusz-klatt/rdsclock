@@ -327,6 +327,7 @@ class TestRunReconEvents:
         assert any("CONSENSUS:" in message for message in status)
 
         records = [json.loads(recon.event_to_json(event)) for event in events]
+        assert records[0]["ct_timezone_rules"] == []
         consensus, track = records[-2]["consensus"], records[-2]["tracks"][0]
         assert datetime.fromisoformat(consensus["utc"]).tzinfo is not None
         assert consensus["trust_level"] == cycle.consensus.trust_level.value
@@ -522,6 +523,25 @@ def _hop_polish_and_honest(monkeypatch, cfg: recon.ReconConfig):
 class TestCtTimezone:
     def test_default_config_reads_every_station_as_standard(self):
         assert recon.ReconConfig().ct_policy == recon.CTPolicy()
+
+    def test_recon_started_lists_the_rules(self, monkeypatch, rtl_tcp_factory):
+        monkeypatch.setattr(recon, "decode_iq", lambda iq, fs, **kwargs: _decode_result(_clock()))
+        events: list[recon.ReconEvent] = []
+        policy = recon.CTPolicy.from_specs(
+            ["Europe/Warsaw", "pi:3211=Europe/Warsaw", "freq:98.8=UTC"]
+        )
+        with rtl_tcp_factory(bytes([180, 128] * 256)) as port:
+            cfg = _cfg(band_end_mhz=95.5, iterations=1, host="127.0.0.1", port=port)
+            recon.run_recon(
+                replace(cfg, ct_policy=policy), on_status=lambda _: None, on_event=events.append
+            )
+        record = json.loads(recon.event_to_json(events[0]))
+        assert record["ct_timezone_rules"] == [
+            "Europe/Warsaw",
+            "pi:0x3211=Europe/Warsaw",
+            "freq:98.8=UTC",
+        ]
+        assert recon.CTPolicy.from_specs(record["ct_timezone_rules"]) == policy
 
     def test_without_rules_the_honest_station_is_the_outlier(self, monkeypatch):
         _, n_obs, consensus = _hop_polish_and_honest(monkeypatch, _cfg())

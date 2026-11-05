@@ -35,9 +35,23 @@ _ALERT = "#b8232a"
 
 # Tk's Nimbus fonts have no glyphs for these General Punctuation characters:
 # they draw nothing, or unrelated symbols for U+2026, so the window uses ASCII.
+# The arrows that mark CT read as local time are spelled in ASCII as well.
 _TK_ASCII = str.maketrans(
-    {"…": "...", "’": "'", "‘": "'", "—": "-", "–": "-", "“": '"', "”": '"', "„": '"'}
+    {
+        "…": "...",
+        "’": "'",
+        "‘": "'",
+        "—": "-",
+        "–": "-",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "←": "<-",
+        "→": "->",
+    }
 )
+_COLUMN_WIDTH = 78
+_CT_COLUMN = "Last CT"
 
 
 def tk_text(text: str) -> str:
@@ -136,7 +150,8 @@ class DesktopDashboard:
         self.table = ttk.Treeview(stations, columns=COLUMNS, show="headings", height=7)
         for name in COLUMNS:
             self.table.heading(name, text=self._t(name), anchor="w")
-            self.table.column(name, width=78, minwidth=48, stretch=True, anchor="w")
+            self.table.column(name, width=_COLUMN_WIDTH, minwidth=48, stretch=True, anchor="w")
+        self.cell_font = tkfont.nametofont("TkDefaultFont")
         self.table.tag_configure("ok", foreground=_TRUST_COLOURS["HIGH"])
         self.table.tag_configure("outlier", foreground=_ALERT)
         self.table.tag_configure("muted", foreground=_MUTED)
@@ -205,12 +220,20 @@ class DesktopDashboard:
         self.status.set(tk_text(view.status))
         self._show_consensus(view.consensus)
         self.table.delete(*self.table.get_children())
+        ct_index = COLUMNS.index(_CT_COLUMN)
         for row in view.rows:
             tag = _STATUS_TAGS.get(row.status)
             cells = (*(tk_text(cell) for cell in row.cells), self._t(row.status))
             self.table.insert("", "end", values=cells, tags=(tag,) if tag else ())
+            self._fit_column(_CT_COLUMN, cells[ct_index])
         ready = self.state.can_rescan() and self.receiver.running
         self.rescan_button.state(["!disabled"] if ready else ["disabled"])
+
+    def _fit_column(self, name: str, text: str) -> None:
+        """Widen a column for a cell that would be cut off; never narrow it."""
+        needed = self.cell_font.measure(text) + 16
+        if needed > int(self.table.column(name, "width")):
+            self.table.column(name, width=needed)
 
     def _show_consensus(self, consensus: ConsensusView | None) -> None:
         clock, trust, assessed, facts, offset, outliers = "", "", "", "", "", ""

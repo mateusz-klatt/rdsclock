@@ -270,6 +270,60 @@ stronach granicy dwóch minut; cykl na tych zrzutach zakończył się oceną WYS
 wyprzedzały UTC hosta o około godzinę. To zaobserwowana rozbieżność; zgodność
 źródeł nie ustala jej przyczyny ani bezwzględnej dokładności czasu.*
 
+### Stacje, które nadają czas lokalny jako UTC
+
+Norma IEC 62106 definiuje godzinę i minutę w grupie 4A jako UTC; czas lokalny
+to UTC + LTO. Pomiary w Warszawie od 31 października do 5 listopada 2026, przy
+zegarze komputera sprawdzonym z NTP z dokładnością do 0,4 s, wykazały cztery
+stacje, które w polu UTC nadają czas środkowoeuropejski (CET), a LTO równe
+zeru. Ich pola zdekodowano i sprawdzono bit po bicie:
+
+| Stacja | MHz | PI | Pole „UTC” grupy 4A | LTO |
+|---|---|---|---|---|
+| PR Jedynka | 102,4 | `0x3211` | CET, UTC + 1 h | +00:00 |
+| PR Trójka | 98,8 | `0x3233` | CET, UTC + 1 h | +00:00 |
+| Radio ZET | 107,5 | `0x3205` | CET, UTC + 1 h | +00:00 |
+| RMF Classic | 98,3 | `0x3245` | CET, UTC + 1 h | +00:00 |
+
+Odczytane zgodnie z normą wyprzedzają UTC o godzinę, a w czasie letnim (CEST)
+o dwie godziny; to przesunięcie widać na zrzutach HOP powyżej. Domyślnie
+rdsclock nadal odczytuje to pole jako UTC. Jeśli wiesz, że stacja nadaje w nim
+czas lokalny, wskaż jej strefę czasową IANA opcją `recon --ct-timezone`:
+
+```bash
+# Wszystkie stacje nadają czas warszawski.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 98.8,102.4,107.5 --ct-timezone Europe/Warsaw --tui --lang pl
+
+# Tylko te dwie; pozostałe zgodnie z normą.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 --hop 98.8,102.4,107.5 \
+  --ct-timezone pi:0x3211=Europe/Warsaw --ct-timezone freq:98.8=Europe/Warsaw \
+  --tui --lang pl
+```
+
+`--ct-timezone` przyjmuje `STREFA` (wszystkie stacje), `pi:HEX=STREFA` lub
+`freq:MHZ=STREFA` i można ją powtarzać; reguła PI ma pierwszeństwo przed regułą
+częstotliwości, a ta przed samą strefą, zaś `UTC` oznacza odczyt zgodny z normą.
+Zdekodowana godzina i minuta są traktowane jako czas lokalny w tej strefie
+czasowej i przeliczane na UTC według systemowej bazy stref czasowych, więc
+zmiany czasu letniego są uwzględniane. Czas z powtórzonej jesiennej godziny
+(`ambiguous`) lub pominiętej wiosennej (`nonexistent`) jest pokazywany, ale nie
+jest używany. LTO pozostaje takie, jak odebrano, i nie jest stosowane.
+
+Panele pokazują CT przeliczonej stacji jako efektywny UTC ze strefą źródłową,
+na przykład `09:06Z ← Europe/Warsaw`, a nadaną wartość zapisują w dzienniku.
+W JSON Lines obiekt `clock_time` zachowuje `utc` i `local_offset_minutes` w
+postaci nadanej i dostaje `effective_utc`, `ct_timezone` oraz `ct_status`. Bez
+reguły, gdy konsensus różni się od zegara komputera o prawie całkowitą liczbę
+godzin, dziennik panelu jednokrotnie podpowiada tę opcję; zegar komputera jest
+tylko wskazówką i nic nie jest zmieniane automatycznie.
+
+Deklaracja sprawia, że takie stacje zgadzają się ze stacjami zgodnymi z normą,
+ale nie dowodzi, że wynik to UTC. Stacje o wspólnym błędnym zegarze źródłowym
+nadal zgadzają się między sobą. Porównaj czas z niezależnym źródłem.
+
+[Opis wydania 2.1.0 — EN / PL / FR](docs/releases/2.1.0.md)
+
 ## Jak to działa
 
 ```mermaid

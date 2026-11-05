@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import rdsclock.recon as recon
+from rdsclock.ct_policy import CTPolicy
 from rdsclock.rds_clock import ClockTime
 from rdsclock.time_consensus import ConsensusResult, TrustLevel
 
@@ -57,6 +58,41 @@ def session() -> list[str]:
     ]
 
 
+WARSAW_RULES = ("pi:0xA101=Europe/Warsaw", "pi:0xA103=Europe/Warsaw")
+
+
+def ct_hop(
+    station: recon.StationCandidate, ct: ClockTime, rules: tuple[str, ...] = WARSAW_RULES
+) -> recon.HopResult:
+    """A ``hop_result`` whose CT was read by ``recon --ct-timezone`` with ``rules``."""
+    reading = CTPolicy.from_specs(rules).interpret(ct, station.pi, station.freq_hz)
+    return recon.HopResult(
+        station.freq_hz,
+        station.pi,
+        station.ps_name,
+        station.rssi_db,
+        812,
+        795,
+        17,
+        ct,
+        0.0,
+        True,
+        reading,
+    )
+
+
+def ct_session() -> list[str]:
+    """:func:`session` from a receiver told that A and C send Warsaw time as UTC.
+
+    A sends 13:00 CET for 12:00Z; C sends 02:30 on the night the hour repeats.
+    """
+    records = session()
+    records[0] = line(recon.ReconStarted(5, 29, WARSAW_RULES))
+    records[6] = line(ct_hop(STATION_A, ClockTime(CT + timedelta(hours=1), 0)))
+    records[8] = line(ct_hop(STATION_C, ClockTime(datetime(2026, 10, 25, 2, 30, tzinfo=UTC), 0)))
+    return records
+
+
 # Replays a session file, answers SIGUSR1 with a new acquisition and SIGINT
 # with recon_stopped, like the real loop. The mode selects a failure to imitate.
 FAKE_RECEIVER = """
@@ -91,8 +127,10 @@ except KeyboardInterrupt:
 """
 
 
-def receiver_command(tmp_path: Path, mode: str = "follow") -> list[str]:
-    """A command that replays :func:`session` like ``rdsclock recon --jsonl``."""
+def receiver_command(
+    tmp_path: Path, mode: str = "follow", records: list[str] | None = None
+) -> list[str]:
+    """A command that replays ``records``, by default :func:`session`, like ``recon --jsonl``."""
     recording = tmp_path / "session.jsonl"
-    recording.write_text("\n".join(session()) + "\n", encoding="utf-8")
+    recording.write_text("\n".join(records or session()) + "\n", encoding="utf-8")
     return [sys.executable, "-I", "-c", FAKE_RECEIVER, str(recording), mode]
