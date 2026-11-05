@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-11-05
+
+### Fixed
+
+- The consensus no longer reports a time that no station sent. With two equal
+  camps, for example two stations an hour ahead of two others, the median fell
+  between them; now no source supports the result, so the time is unavailable
+  and the stations are listed as outliers.
+- Release staging creates the GitHub draft once and waits for the release list
+  to show it, even when `gh release create` reports an error such as HTTP 502.
+  Several drafts for one tag stop staging with the ids of the empty ones to
+  delete; nothing is deleted automatically.
+- Finalization waits for PyPI to list freshly uploaded files instead of failing
+  at once, while mismatched files still fail immediately. It marks a release
+  latest only when no published release has a higher version.
+
 ## [2.0.0] — 2026-11-04
 
 ### Added
