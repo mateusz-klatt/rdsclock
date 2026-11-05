@@ -9,13 +9,22 @@ import socket
 import sys
 import threading
 import time
+from importlib import resources
 
 import pytest
 
 import rdsclock.cli as cli
 import rdsclock.web as web
 from rdsclock.dashboard import COLUMNS
-from tests.fake_receiver import MARKUP_PS, ct_session, receiver_command
+from tests.fake_receiver import (
+    LIVE,
+    MARKUP_PS,
+    REPLAY,
+    ct_session,
+    multi_session,
+    receiver_command,
+    session,
+)
 
 RESCAN = {"X-Requested-By": "rdsclock"}
 
@@ -327,8 +336,6 @@ class TestReconWebCli:
     ],
 )
 def test_web_language_covers_initial_page_and_live_snapshot(language, trust, rescan, groups):
-    from tests.fake_receiver import session
-
     dashboard = web.WebDashboard(["unused"], port=0, language=language)
     try:
         page = dashboard.pages["/"].decode()
@@ -377,3 +384,28 @@ def test_rows_show_ct_read_as_local_time(tmp_path, language, ambiguous):
         assert json.loads(json.dumps(view))["rows"][0]["cells"][6] == "12:00Z ← Europe/Warsaw"
     finally:
         dashboard.close()
+
+
+@pytest.mark.parametrize("language,receiver", [("en", "Receiver"), ("fr", "Récepteur")])
+def test_several_receivers_add_a_column_status_and_log_lines(language, receiver):
+    dashboard = web.WebDashboard(["unused"], port=0, language=language)
+    try:
+        for record in multi_session():
+            dashboard._on_line(record)
+        view = dashboard.snapshot("127.0.0.1")[0]
+        assert view["columns"][0] == receiver
+        assert len(view["columns"]) == len(COLUMNS) + 1
+        assert [row["cells"][:2] for row in view["rows"]] == [(LIVE, "107.50"), (REPLAY, "98.80")]
+        assert f"{REPLAY} → 98.80 MHz" in view["status"]
+        assert any("connection closed by rtl_tcp" in message for message in view["log"])
+        assert len([message for message in view["log"] if REPLAY in message]) >= 3
+    finally:
+        dashboard.close()
+
+
+def test_the_page_rebuilds_its_table_header_from_the_view():
+    webui = resources.files("rdsclock") / "webui"
+    script, page = (webui / "app.js").read_text(), (webui / "index.html").read_text()
+    assert '<tr id="columns">' in page
+    assert "renderColumns(view.columns);" in script
+    assert 'byId("columns").replaceChildren(' in script

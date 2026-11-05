@@ -317,6 +317,69 @@ with each other. Compare with an independent reference.
 
 [2.1.0 release notes — EN / PL / FR](docs/releases/2.1.0.md)
 
+### Several receivers
+
+Since 2.2.0, a HOP station can name the `rtl_tcp` receiver that records it, as
+`HOST:PORT@MHZ`, with an IPv6 address in brackets (`[::1]:1235@98.8`). Stations
+without a receiver use `--host` and `--port`:
+
+```bash
+# Two receivers, one station each; both record at the same time.
+.venv/bin/python -m rdsclock recon \
+  --hop 192.168.5.1:1234@107.5,192.168.5.2:1234@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui
+
+# A receiver for 98.8; 102.4 and 107.5 share --host/--port.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 102.4,107.5,192.168.5.2:1234@98.8 --dwell 65 --web
+```
+
+Each receiver hops through its own stations in parallel with the others, so a
+cycle lasts as long as the busiest receiver instead of one dwell per station.
+With one station per receiver, every station can be heard for a full minute,
+long enough for the Clock-Time sent once a minute, without making the cycle
+longer. A station listed twice for one receiver is an error, and `--wide` does
+not take receivers.
+
+More receivers do not make the sources more independent. The consensus groups
+observations by transmitter, and a broadcaster that sends a wrong time, such as
+the local time as UTC above, sends the same wrong time to every receiver.
+
+If one receiver fails, its stations leave the watchlist and the others go on;
+`recon` connects to it again at the start of the next cycle and checks its
+stations before they rejoin the hops. The run stops only when every receiver
+has failed. With more than one receiver, the dashboards add a *Receiver* column
+(`host:port`), the status names what each receiver is recording, for example
+`HOP · 1/2 stations recorded · 192.168.5.1:1234: done · 127.0.0.1:1235 → 98.80 MHz`,
+and the log reports when a receiver fails and when it works again. With one
+receiver they look as before. In JSON Lines, `recon_started` lists the
+`receivers`, every `hop_result` and watchlist entry names its `receiver`, and
+a `receiver_failed` event reports the failure.
+
+#### Replaying a recording: a test aid
+
+`tools/replay_rtl_tcp.py` serves a recorded IQ file (`.cf32` or `.cu8`, at the
+250 kS/s that HOP uses) as an `rtl_tcp` receiver on 127.0.0.1, so that several
+receivers and the dashboards can be tried with a single dongle:
+
+```bash
+python tools/replay_rtl_tcp.py trojka-98.8.cf32 --rate 250000 --port 1235 --loop &
+.venv/bin/python -m rdsclock recon \
+  --hop 192.168.5.1:1234@107.5,127.0.0.1:1235@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui
+```
+
+A replay is not a time source. It ignores tuning, so every station listed for
+it receives the same recording, and its Clock-Time is as old as the
+recording. On 5 November 2026 at 15:08 UTC, this command ran a live receiver on
+Radio ZET 107.5 next to a 14:13 recording of Trójka 98.8. Both hops ran in
+parallel, and a cycle took about 70 s instead of about 130 s. The live CT
+(15:07Z) and the replayed one (14:13Z) formed two equal camps, so the consensus
+reported no time and both stations as outliers. Next to two or more agreeing
+live stations, the replay would simply be the outlier.
+
+[2.2.0 release notes — EN / PL / FR](docs/releases/2.2.0.md)
+
 ## How it works
 
 ```mermaid

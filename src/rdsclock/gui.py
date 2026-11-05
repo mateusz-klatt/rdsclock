@@ -20,7 +20,14 @@ from collections import deque
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from .dashboard import COLUMNS, UNCERTAINTY_NOTE, ConsensusView, DashboardState, ReceiverProcess
+from .dashboard import (
+    COLUMNS,
+    RECEIVER_COLUMN,
+    UNCERTAINTY_NOTE,
+    ConsensusView,
+    DashboardState,
+    ReceiverProcess,
+)
 from .i18n import translate
 
 POLL_MS = 100
@@ -147,10 +154,9 @@ class DesktopDashboard:
 
         stations = ttk.LabelFrame(frame, text=self._t("Stations"), padding=10)
         stations.pack(fill="both", expand=True, pady=(10, 0))
-        self.table = ttk.Treeview(stations, columns=COLUMNS, show="headings", height=7)
-        for name in COLUMNS:
-            self.table.heading(name, text=self._t(name), anchor="w")
-            self.table.column(name, width=_COLUMN_WIDTH, minwidth=48, stretch=True, anchor="w")
+        self.table = ttk.Treeview(stations, show="headings", height=7)
+        self.columns: tuple[str, ...] = ()
+        self._set_columns(COLUMNS)
         self.cell_font = tkfont.nametofont("TkDefaultFont")
         self.table.tag_configure("ok", foreground=_TRUST_COLOURS["HIGH"])
         self.table.tag_configure("outlier", foreground=_ALERT)
@@ -219,15 +225,27 @@ class DesktopDashboard:
         view = self.state.view()
         self.status.set(tk_text(view.status))
         self._show_consensus(view.consensus)
+        self._set_columns(self.state.columns())
         self.table.delete(*self.table.get_children())
-        ct_index = COLUMNS.index(_CT_COLUMN)
+        fitted = [name for name in (RECEIVER_COLUMN, _CT_COLUMN) if name in self.columns]
         for row in view.rows:
             tag = _STATUS_TAGS.get(row.status)
             cells = (*(tk_text(cell) for cell in row.cells), self._t(row.status))
             self.table.insert("", "end", values=cells, tags=(tag,) if tag else ())
-            self._fit_column(_CT_COLUMN, cells[ct_index])
+            for name in fitted:
+                self._fit_column(name, cells[self.columns.index(name)])
         ready = self.state.can_rescan() and self.receiver.running
         self.rescan_button.state(["!disabled"] if ready else ["disabled"])
+
+    def _set_columns(self, columns: tuple[str, ...]) -> None:
+        """Lay out the table for ``columns``: a receiver column joins with a second receiver."""
+        if columns == self.columns:
+            return
+        self.table.configure(columns=columns)
+        for name in columns:
+            self.table.heading(name, text=self._t(name), anchor="w")
+            self.table.column(name, width=_COLUMN_WIDTH, minwidth=48, stretch=True, anchor="w")
+        self.columns = columns
 
     def _fit_column(self, name: str, text: str) -> None:
         """Widen a column for a cell that would be cut off; never narrow it."""

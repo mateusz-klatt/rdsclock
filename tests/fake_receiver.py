@@ -58,6 +58,51 @@ def session() -> list[str]:
     ]
 
 
+LIVE = "192.168.5.1:1234"
+REPLAY = "127.0.0.1:1235"
+ZET = recon.StationCandidate(107.5e6, -19.0, 790, True, 0xB201, "RADIOZET", LIVE)
+TROJKA = recon.StationCandidate(98.8e6, -15.0, 805, True, 0xB202, "TROJKA", REPLAY)
+ZET_CT = datetime(2026, 11, 5, 15, 7, tzinfo=UTC)
+
+
+def multi_session() -> list[str]:
+    """Two receivers: the second fails in cycle 1 and is back in cycle 2.
+
+    The stream ends while cycle 2 hops: the first receiver has recorded its
+    station, the second is still recording.
+    """
+    consensus = ConsensusResult(
+        utc=ZET_CT + timedelta(seconds=30),
+        uncertainty_s=5.0,
+        trust_level=TrustLevel.LOW,
+        n_sources=1,
+        contributing_freqs_mhz=[107.5],
+        outlier_freqs_mhz=[],
+        median_age_s=30.0,
+        notes="single-source",
+    )
+    track = recon.TrackSnapshot(107.5e6, 0xB201, 1, 0.3, 0, 30.0, ZET_CT)
+    zet_hop = recon.HopResult(
+        107.5e6, 0xB201, "RADIOZET", -19.0, 790, 780, 10, ClockTime(ZET_CT, 60), receiver=LIVE
+    )
+    return [
+        line(recon.ReconStarted(5, 29, receivers=(LIVE, REPLAY))),
+        line(recon.AcquisitionStarted(1, 98.8, 107.5, 0.0, n_points=2)),
+        line(recon.ScanStep(107.5e6, -19.0, ZET)),
+        line(recon.ScanStep(98.8e6, -15.0, TROJKA)),
+        line(recon.WatchlistUpdated(1, (ZET, TROJKA))),
+        line(recon.MaintenanceStarted(1, 2)),
+        line(zet_hop),
+        line(recon.ReceiverFailed(1, REPLAY, "connection closed by rtl_tcp")),
+        line(recon.CycleCompleted(1, 1, consensus, (ZET,), (track,), 540.0)),
+        line(recon.AcquisitionStarted(2, 98.8, 98.8, 0.0, n_points=1)),
+        line(recon.ScanStep(98.8e6, -15.0, TROJKA)),
+        line(recon.WatchlistUpdated(2, (ZET, TROJKA))),
+        line(recon.MaintenanceStarted(2, 2)),
+        line(zet_hop),
+    ]
+
+
 WARSAW_RULES = ("pi:0xA101=Europe/Warsaw", "pi:0xA103=Europe/Warsaw")
 
 

@@ -120,6 +120,57 @@ that short check; `--rssi-threshold` and `--max-stations` do not apply. HOP
 reaches stations anywhere in the band but records them one after another: a
 cycle of three stations takes three dwells.
 
+### Several receivers (2.2.0)
+
+A HOP station can name the `rtl_tcp` receiver that records it, as
+`HOST:PORT@MHZ` (IPv6 in brackets: `[::1]:1235@98.8`); stations without one
+use `--host` and `--port`:
+
+```bash
+rdsclock recon --hop 192.168.5.1:1234@107.5,192.168.5.2:1234@98.8 --dwell 65 --tui
+```
+
+Each receiver hops through its own stations, and the receivers record at the
+same time. With one station per receiver, each station can be heard for a full
+minute, enough for the Clock-Time sent once a minute, and the cycle lasts one
+dwell instead of one per station. A station listed twice for the same receiver
+is an error; `--wide` does not take receivers.
+
+More receivers are not more independent sources. A broadcaster that sends a
+wrong time, for example local time as UTC, sends it to every receiver alike;
+the consensus groups stations by transmitter, not by receiver.
+
+If a receiver fails, its stations leave the watchlist, the others go on, and
+`recon` connects to it again at the start of the next cycle, then checks its
+stations before they rejoin the hops. The run ends only when every receiver has
+failed. The dashboards then add a *Receiver* column (`host:port`), the status
+names what each receiver is recording, for example
+`HOP · 1/2 stations recorded · 192.168.5.1:1234: done · 127.0.0.1:1235 → 98.80 MHz`,
+and the log reports a receiver that fails and when it works again. With one
+receiver they look as before.
+
+### Replaying a recording (test aid)
+
+`tools/replay_rtl_tcp.py` serves a recorded IQ file (`.cf32` or `.cu8`) as an
+`rtl_tcp` server, so a multi-receiver setup or a dashboard can be tried with one
+real receiver or none:
+
+```bash
+python tools/replay_rtl_tcp.py trojka.cf32 --rate 250000 --port 1235 --loop &
+rdsclock recon --hop 192.168.5.1:1234@107.5,127.0.0.1:1235@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui
+```
+
+`--rate` is the file's sample rate; HOP records at 250 kS/s, so use a
+recording made at that rate. The server ignores tuning: every station listed
+for it receives the same recording. A replay is not a time source: its Clock-Time is as old as the recording. On
+5 November 2026 at 15:08 UTC, a live receiver on Radio ZET 107.5 and a replay
+of Trójka 98.8 recorded at 14:13 ran in parallel, in a cycle of about 70 s
+instead of about 130 s one after the other. The live CT (15:07Z) and the
+replayed one (14:13Z) formed two camps of one station each, so the consensus
+gave no time and listed both as outliers. Next to two or more agreeing live
+stations, the replay is simply an outlier.
+
 ### WIDE: several stations at once
 
 When the stations fit inside the receiver bandwidth, `--wide` records them
@@ -313,6 +364,13 @@ reading); `ct_status`, one of `standard`, `converted`, `ambiguous` or
 the rules in effect as `ct_timezone_rules`, an empty list by default. Consumers
 that ignore unknown keys need no change.
 
+Since 2.2.0, `recon_started` lists the receivers as `receivers` (`host:port`),
+and each `hop_result`, watchlist entry and `scan_step` candidate names its
+`receiver`, also with a single receiver. With several receivers, a
+`receiver_failed` event (`iteration`, `receiver`, `error`) reports a receiver
+that failed; the run goes on, and no event marks its return: the next record
+that names it shows it working again.
+
 ## 6. Adjusting the Wrist Watch
 
 Before using the display to set another clock, establish that the received
@@ -337,6 +395,7 @@ from host UTC. If an independent reference confirms the estimate:
 | `OUTLIERS:` appears | Source disagreement, source identity problems or timing error | Inspect the individual PI, CT and receipt estimates; disagreement alone does not establish spoofing. |
 | Header timeout or connection reset | Another client, unavailable server or interrupted service | Check exclusive access and server logs; reconnect after resolving the cause. |
 | Drain timeout | The client could not establish a quiet boundary | Resolve backlog or throughput limits and reconnect; do not relabel stale samples as the new station. |
+| `receiver_failed`, other receivers go on | One of several receivers dropped its connection | Check that receiver; `recon` reconnects at the start of each cycle. |
 
 ## 8. Shutdown
 

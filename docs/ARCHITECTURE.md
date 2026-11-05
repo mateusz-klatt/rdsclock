@@ -219,7 +219,8 @@ Every operator message also has a typed counterpart, delivered through
 `on_event`: `recon_started`, `acquisition_started`, one `scan_step` per
 tuning point (including points below the RSSI threshold),
 `watchlist_updated`, `maintenance_started`, one `hop_result` per station,
-`cycle_completed` and `recon_stopped`. In WIDE mode `acquisition_started` and
+`cycle_completed` and `recon_stopped`, plus `receiver_failed` when one of
+several receivers fails. In WIDE mode `acquisition_started` and
 `maintenance_started` also carry the capture centre and sample rate, and every
 station of a capture produces a `hop_result`. Each `hop_result` carries the
 `queued_s` of its capture, which its receive times already include, and
@@ -239,6 +240,55 @@ scores.
 object per line on stdout, and moves the operator text to stderr. Before each
 iteration the loop polls `rescan_requested`; the CLI sets it from `SIGUSR1`,
 so a running receiver can be asked for a new acquisition scan.
+
+### Several receivers
+
+`ReconConfig.hop_stations` (CLI `--hop` items `HOST:PORT@MHZ`, IPv6 as
+`[::1]:PORT@MHZ`) assigns each listed station to an `rtl_tcp` receiver;
+items without one go to `host`/`port`. `hop_receivers()` groups the stations
+by receiver. With one receiver `run_recon` runs the loop above unchanged; with
+several, `_MultiReceiverRun` runs it with one `_ReceiverSlot` per receiver,
+each holding its client, its stations and its part of the watchlist.
+
+Each phase starts one thread per receiver and ends when all of them have
+joined: connecting, the listed-station acquisition and the maintenance hops all
+run in parallel, so a cycle lasts as long as the slowest receiver rather than
+the sum of all dwells. With one station per receiver, each can listen a full
+minute or more for the once-a-minute Clock-Time without lengthening the cycle.
+Only the main thread decides the phases, evaluates the consensus and writes
+`watchlist_updated` and `cycle_completed`.
+
+The threads share one `TimeConsensus` and one output stream through
+`_SharedOutputs`, whose re-entrant lock serialises every status line, progress
+line and event, so JSON Lines records stay whole. `hop_collect_ct` takes the
+same lock while a result enters the consensus and is reported, but not while it
+records or decodes, so captures overlap. Progress lines name their receiver
+(`[host:port] …`). An exception from an output callback in a worker is wrapped
+as `_OutputError`, so that a failed write is re-raised after the join instead
+of being mistaken for a failed receiver. After the run stops, the shared
+outputs drop late output, so nothing follows `recon_stopped`.
+
+A receiver whose connection or capture raises `OSError` is closed, its stations
+leave the watchlist, and `receiver_failed` (`iteration`, `receiver`, `error`)
+is written; the others go on. At the start of the next cycle the main thread
+connects to it again; when that works, an acquisition checks its stations
+before it rejoins the hops. No event marks the reconnection: the next
+`scan_step`, `watchlist_updated` or `hop_result` that names the receiver shows
+it. When every receiver has failed, the run ends with the latest error, as with
+one receiver.
+
+In JSON Lines, `recon_started` lists every receiver as `receivers`
+(`host:port`), and each `hop_result`, watchlist entry and `scan_step` candidate
+carries its `receiver`. A single-receiver run names its receiver too; readers
+that ignore unknown keys need no change. The consensus itself does not know
+about receivers: tracks follow the transmitter (PI and tuning), so two
+receivers that hear the same station feed the same track. Receivers are not
+independent sources: a broadcaster's wrong clock reaches every receiver alike.
+
+`tools/replay_rtl_tcp.py` serves a recorded IQ file as an `rtl_tcp` server, so
+multi-receiver runs and the dashboards can be tested next to a real receiver
+or without one. It replays an old broadcast: its Clock-Time is as old as the
+recording, so the consensus treats it as an outlier next to live stations.
 
 The offline variant `run_recon_offline` replays the same logic over
 pre-recorded `.iq` files and is the primary integration test for the
@@ -265,6 +315,11 @@ the estimate as expired once its median CT age passes the consensus freshness
 limit (`STALE_AGE_S`). Rows are keyed by exact tuning, the latest CT of a tuning
 survives hops without CT until another confirmed PI answers there, and an
 unconfirmed hop PI is shown as unknown rather than borrowed from the scan.
+With several receivers, rows are keyed by receiver and tuning, since two
+receivers may hear different transmitters on one frequency; `columns()` then
+leads with a *Receiver* column, the hop status names what every receiver is
+recording, and the log reports `receiver_failed` and the first event that
+shows a failed receiver working again. With one receiver nothing changes.
 Strings from broadcasts or the child process are reduced to printable
 characters and rendered as plain text, never as Rich markup.
 A station whose CT was read as local time shows its effective UTC with the

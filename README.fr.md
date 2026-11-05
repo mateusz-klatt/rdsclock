@@ -343,6 +343,75 @@ indépendante.
 
 [Notes de version 2.1.0 — EN / PL / FR](docs/releases/2.1.0.md)
 
+### Plusieurs récepteurs
+
+Depuis la version 2.2.0, une station HOP peut désigner le récepteur `rtl_tcp`
+qui l'enregistre, sous la forme `HOST:PORT@MHZ`, avec une adresse IPv6 entre
+crochets (`[::1]:1235@98.8`). Les stations sans récepteur utilisent `--host` et
+`--port` :
+
+```bash
+# Deux récepteurs, une station chacun ; tous deux enregistrent en même temps.
+.venv/bin/python -m rdsclock recon \
+  --hop 192.168.5.1:1234@107.5,192.168.5.2:1234@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui --lang fr
+
+# Un récepteur pour 98.8 ; 102.4 et 107.5 partagent --host/--port.
+.venv/bin/python -m rdsclock recon --host 127.0.0.1 \
+  --hop 102.4,107.5,192.168.5.2:1234@98.8 --dwell 65 --web --lang fr
+```
+
+Chaque récepteur parcourt ses propres stations en parallèle avec les autres :
+un cycle dure autant que le récepteur le plus chargé, au lieu d'une durée
+d'enregistrement par station. Avec une station par récepteur, chaque station
+peut être écoutée une minute entière, assez pour le Clock-Time émis une fois
+par minute, sans allonger le cycle. Une station indiquée deux fois pour un même
+récepteur est une erreur, et `--wide` n'accepte pas de récepteur.
+
+Davantage de récepteurs ne rend pas les sources plus indépendantes. Le
+consensus regroupe les observations par émetteur, et un diffuseur qui émet une
+heure erronée, comme l'heure locale envoyée comme UTC décrite ci-dessus, envoie
+la même heure erronée à chaque récepteur.
+
+Si un récepteur tombe en panne, ses stations quittent la liste de suivi et les
+autres continuent ; `recon` s'y reconnecte au début du cycle suivant et vérifie
+ses stations avant qu'elles ne reprennent les sauts. L'exécution ne s'arrête que
+lorsque tous les récepteurs ont échoué. Avec plus d'un récepteur, les tableaux
+de bord ajoutent une colonne *Récepteur* (`host:port`), l'état indique ce
+qu'enregistre chaque récepteur, par exemple
+`HOP · stations reçues : 1/2 · 192.168.5.1:1234 : terminé · 127.0.0.1:1235 → 98.80 MHz`,
+et le journal signale la panne d'un récepteur et son retour. Avec un seul
+récepteur, ils restent identiques. En JSON Lines, `recon_started` liste les
+récepteurs (`receivers`), chaque `hop_result` et chaque entrée de la liste de
+suivi indique son `receiver`, et un événement `receiver_failed` signale la
+panne.
+
+#### Rejouer un enregistrement : une aide aux tests
+
+`tools/replay_rtl_tcp.py` sert un fichier IQ enregistré (`.cf32` ou `.cu8`, aux
+250 kS/s qu'utilise HOP) comme récepteur `rtl_tcp` sur 127.0.0.1, afin
+d'essayer plusieurs récepteurs et les tableaux de bord avec une seule clé :
+
+```bash
+python tools/replay_rtl_tcp.py trojka-98.8.cf32 --rate 250000 --port 1235 --loop &
+.venv/bin/python -m rdsclock recon \
+  --hop 192.168.5.1:1234@107.5,127.0.0.1:1235@98.8 \
+  --dwell 65 --ct-timezone Europe/Warsaw --tui --lang fr
+```
+
+Un enregistrement rejoué n'est pas une source de temps. Il ignore l'accord, donc
+chaque station qui lui est attribuée reçoit le même enregistrement, et son
+Clock-Time a l'âge de l'enregistrement. Le 5 novembre 2026 à 15 h 08 UTC, cette
+commande a fait tourner un récepteur en direct sur Radio ZET 107,5 à côté d'un
+enregistrement de Trójka 98,8 de 14 h 13. Les deux sauts se sont déroulés en
+parallèle, et un cycle a duré environ 70 s au lieu d'environ 130 s. Le CT en
+direct (15:07Z) et le CT rejoué (14:13Z) ont formé deux camps égaux : le
+consensus n'a donné aucune heure et a classé les deux stations comme aberrantes.
+À côté de deux stations en direct concordantes ou plus, l'enregistrement rejoué
+serait simplement la valeur aberrante.
+
+[Notes de version 2.2.0 — EN / PL / FR](docs/releases/2.2.0.md)
+
 ## Fonctionnement
 
 ```mermaid

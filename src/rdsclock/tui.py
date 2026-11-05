@@ -24,7 +24,6 @@ from textual.binding import Binding
 from textual.widgets import DataTable, Footer, RichLog, Static
 
 from .dashboard import (
-    COLUMNS,
     LINE_LIMIT_BYTES,
     STDERR_TAIL_LINES,
     UNCERTAINTY_NOTE,
@@ -222,6 +221,7 @@ class ReconDashboard(App[None]):
         self.failed = False
         self.held: deque[str] = deque(maxlen=LOG_LINES)
         self._stop_requested = False
+        self.columns: tuple[str, ...] = ()
 
     def _t(self, message: str, **values: object) -> str:
         return translate(self.language, message, **values)
@@ -234,7 +234,7 @@ class ReconDashboard(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one(DataTable).add_columns(*(self._t(name) for name in COLUMNS))
+        self._set_columns(self.state.columns())
         # Live recon rescans on SIGUSR1; the dashboard forwards it instead of dying.
         asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, self.action_rescan)
         self.run_worker(self._follow_receiver(), exclusive=True)
@@ -265,10 +265,20 @@ class ReconDashboard(App[None]):
         view = self.state.view()
         self.query_one("#status", Static).update(status_text(view, self.language))
         self.query_one("#consensus", Static).update(consensus_text(view.consensus, self.language))
+        self._set_columns(self.state.columns())
         table = self.query_one(DataTable)
         table.clear()
         for row in view.rows:
             table.add_row(*row_cells(row, self.language))
+
+    def _set_columns(self, columns: tuple[str, ...]) -> None:
+        """Lay out the table for ``columns``: a receiver column joins with a second receiver."""
+        if columns == self.columns:
+            return
+        table = self.query_one(DataTable)
+        table.clear(columns=True)
+        table.add_columns(*(self._t(name) for name in columns))
+        self.columns = columns
 
     def _log_all(self, messages: list[str]) -> None:
         if self.paused:
