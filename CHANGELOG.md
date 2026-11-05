@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-11-05
+
+### Added
+
+- `recon --hop` items can name the `rtl_tcp` receiver that records them, as
+  `HOST:PORT@MHZ` or `[IPv6]:PORT@MHZ`; items without one use `--host` and
+  `--port`. Each receiver hops through its own stations in its own thread, in
+  parallel with the others, so a cycle lasts as long as the busiest receiver
+  instead of one dwell per station, and with one station per receiver every
+  station can be heard for a full minute. A station listed twice for one
+  receiver is an error, and `--wide` rejects receivers. One receiver works
+  exactly as before.
+- A receiver that fails is closed and its stations leave the watchlist while
+  the others go on; it is connected again at the start of the next cycle and
+  its stations are checked before they rejoin the hops. The run ends only when
+  every receiver has failed.
+- JSON Lines: `recon_started` gains `receivers` (`host:port`), `hop_result`,
+  `scan_step` candidates and watchlist entries gain `receiver`, and a new
+  `receiver_failed` event carries `iteration`, `receiver` and `error`. Existing
+  keys keep their meaning.
+- The terminal, browser and desktop dashboards add a *Receiver* column when
+  more than one receiver is configured, show in the status what each receiver
+  is recording (for example
+  `HOP · 1/2 stations recorded · 192.168.5.1:1234: done · 127.0.0.1:1235 → 98.80 MHz`),
+  prefix hop log lines with the receiver, and log a receiver that fails and
+  the first record that shows it working again. With one receiver they look
+  as before.
+- `tools/replay_rtl_tcp.py` serves a recorded IQ file (`cf32` or `cu8`) as an
+  `rtl_tcp` receiver, a test aid for several receivers and the dashboards. Its
+  Clock-Time is as old as the recording, so a live consensus treats it as an
+  outlier; with two equal camps it reports no time.
+- `recon --help` ends with examples, including several receivers and the replay
+  tool.
+- English, Polish and French texts for all of the above, a README section
+  "Several receivers" in each language, the operator quickstart, the
+  architecture notes on threads and the shared output lock, and release notes
+  in all three languages.
 ## [2.1.0] — 2026-11-05
 
 ### Added
