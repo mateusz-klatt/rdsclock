@@ -110,6 +110,11 @@ jobs:
     name: Publish completed GitHub release
     needs: publish-pypi
     runs-on: ubuntu-latest
+    # One finalization at a time across all tags: choosing "latest" and
+    # publishing must not interleave with another release's.
+    concurrency:
+      group: publish-finalize
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
