@@ -49,7 +49,7 @@ from .recon import (
     run_recon,
     run_recon_offline,
 )
-from .rtl_tcp import RtlTcpClient
+from .rtl_tcp import RtlTcpAddress, RtlTcpClient
 from .synth import DEFAULT_FS, synthesize_fm_iq
 
 # ---------- helpers ----------
@@ -883,7 +883,13 @@ def _recon_config(args: argparse.Namespace) -> ReconConfig:
         host=args.host,
         port=args.port,
         iterations=args.iterations,
-        hop_freqs_hz=() if args.hop is None else _station_freqs_hz(args.hop),
+        # Every listed tuning; with named receivers, hop_stations replaces it.
+        hop_freqs_hz=(
+            ()
+            if args.hop is None
+            else tuple(float(item.rpartition("@")[2]) * 1e6 for item in args.hop.split(","))
+        ),
+        hop_stations=() if args.hop is None else _hop_stations(args.hop, args.host, args.port),
         wide_freqs_hz=() if args.wide is None else _station_freqs_hz(args.wide),
         wide_center_hz=None if args.center is None else args.center * 1e6,
         wide_sample_rate=WIDE_SAMPLE_RATE if args.fs is None else args.fs,
@@ -913,6 +919,34 @@ def _station_freqs_hz(text: str) -> tuple[float, ...]:
     return freqs_hz
 
 
+def _hop_stations(
+    text: str, host: str, port: int
+) -> tuple[tuple[RtlTcpAddress | None, float], ...]:
+    """The ``--hop`` items ``MHZ`` or ``HOST:PORT@MHZ`` with their receivers.
+
+    Empty when no item names a receiver: every station then goes to
+    ``--host``/``--port``, as before receivers could be named. ``ValueError``
+    for an unusable list, including a station listed twice for one receiver.
+    """
+    default = RtlTcpAddress(host, port)
+    stations: list[tuple[RtlTcpAddress | None, float]] = []
+    seen: set[tuple[RtlTcpAddress, float]] = set()
+    for item in text.split(","):
+        receiver, at, mhz = item.strip().rpartition("@")
+        address = RtlTcpAddress.parse(receiver) if at else None
+        freq_hz = float(mhz) * 1e6
+        if not (math.isfinite(freq_hz) and freq_hz > 0):
+            raise ValueError("frequencies must be positive numbers in MHz")
+        key = (address or default, freq_hz)
+        if key in seen:
+            raise ValueError(f"list each station once per receiver: {mhz} MHz on {key[0]}")
+        seen.add(key)
+        stations.append((address, freq_hz))
+    if all(address is None for address, _ in stations):
+        return ()
+    return tuple(stations)
+
+
 def _recon_list_error(args: argparse.Namespace) -> str | None:
     """Why the HOP or WIDE station options cannot be used, or ``None`` when they can."""
     if args.hop is not None:
@@ -921,7 +955,7 @@ def _recon_list_error(args: argparse.Namespace) -> str | None:
         if args.from_dir:
             return "--hop applies to live reception, not --from-dir"
         try:
-            _station_freqs_hz(args.hop)
+            _hop_stations(args.hop, args.host, args.port)
         except ValueError as exc:
             return f"--hop: {exc}"
     if args.wide is None:
@@ -930,6 +964,11 @@ def _recon_list_error(args: argparse.Namespace) -> str | None:
         return None
     if args.from_dir:
         return "--wide applies to live reception, not --from-dir"
+    if "@" in args.wide:
+        return (
+            "--wide records every station with one receiver, --host/--port; "
+            "HOST:PORT@MHZ applies only to --hop"
+        )
     try:
         freqs_hz = _station_freqs_hz(args.wide)
     except ValueError as exc:
@@ -1165,8 +1204,11 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument(
         "--hop",
         default=None,
-        metavar="FREQS",
-        help="Hop between these stations (MHz, comma-separated) instead of scanning the band",
+        metavar="STATIONS",
+        help="Hop between these stations instead of scanning the band: comma-separated "
+        "MHZ, or HOST:PORT@MHZ to record that station with another rtl_tcp receiver "
+        "(IPv6 as [::1]:1234@98.8); other stations use --host/--port. Each receiver hops "
+        "through its own stations, all receivers at the same time",
     )
     pr.add_argument(
         "--wide",

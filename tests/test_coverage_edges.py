@@ -798,14 +798,14 @@ def test_recon_live_loop_keyboard_interrupt(monkeypatch, rtl_tcp_factory):
     monkeypatch.setattr(
         recon,
         "quick_scan_band",
-        lambda client, cfg, progress=None, on_event=None: [
+        lambda client, cfg, progress=None, on_event=None, receiver=None: [
             recon.StationCandidate(95.5e6, -10.0, 1, True, 0xCAFE)
         ],
     )
     monkeypatch.setattr(
         recon,
         "hop_collect_ct",
-        lambda client, watchlist, cfg, consensus, progress=None, on_event=None: (
+        lambda client, watchlist, cfg, consensus, progress=None, on_event=None, receiver=None: (
             _ for _ in ()
         ).throw(KeyboardInterrupt),
     )

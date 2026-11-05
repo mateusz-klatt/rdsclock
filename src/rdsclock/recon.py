@@ -33,9 +33,11 @@ Events:
 Everything is fully passive: receive-only, no RF emission of any kind.
 """
 
+import contextlib
 import json
 import math
 import re
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -50,7 +52,7 @@ from .channelizer import ChannelDecodeResult, ChannelSpec, choose_center, decode
 from .ct_policy import CTInterpretation, CTPolicy
 from .decoder import DecodeResult, decode_file, decode_iq
 from .rds_clock import ClockTime
-from .rtl_tcp import FreshCapture, RtlTcpClient
+from .rtl_tcp import FreshCapture, RtlTcpAddress, RtlTcpClient
 from .time_consensus import (
     ConsensusResult,
     StationFingerprint,
@@ -61,7 +63,11 @@ from .time_consensus import (
 
 @dataclass
 class StationCandidate:
-    """A station discovered during a band scan."""
+    """A station discovered during a band scan.
+
+    ``receiver`` is the ``host:port`` of the ``rtl_tcp`` receiver that found
+    it, when known.
+    """
 
     freq_hz: float
     rssi_db: float
@@ -69,6 +75,7 @@ class StationCandidate:
     has_ct: bool
     pi: int | None
     ps_name: str = ""
+    receiver: str | None = None
 
 
 WIDE_SAMPLE_RATE = 2_400_000  # default WIDE capture rate, as for ``rdsclock multi``
@@ -97,6 +104,9 @@ class ReconConfig:
     # HOP over a list: when set, acquisitions check only these stations
     # instead of scanning the band.
     hop_freqs_hz: tuple[float, ...] = ()
+    # HOP with several receivers: each listed station with the receiver that
+    # records it, None for host/port. When set, it defines hop_freqs_hz.
+    hop_stations: tuple[tuple[RtlTcpAddress | None, float], ...] = ()
     # WIDE: when set, one capture records all these stations at once,
     # replacing the band scan and the hops.
     wide_freqs_hz: tuple[float, ...] = ()
@@ -104,6 +114,28 @@ class ReconConfig:
     wide_sample_rate: int = WIDE_SAMPLE_RATE
     # How to read each station's CT "UTC" field; by default as the standard says.
     ct_policy: CTPolicy = field(default_factory=CTPolicy)
+
+    def __post_init__(self) -> None:
+        if self.hop_stations:
+            self.hop_freqs_hz = tuple(freq_hz for _, freq_hz in self.hop_stations)
+
+    def default_receiver(self) -> RtlTcpAddress:
+        """The receiver at ``host``/``port``."""
+        return RtlTcpAddress(self.host, self.port)
+
+    def hop_receivers(self) -> dict[RtlTcpAddress, tuple[float, ...]]:
+        """The listed HOP stations of every receiver, in the order first listed.
+
+        Empty without a HOP list; stations without a receiver go to
+        :meth:`default_receiver`.
+        """
+        if not self.hop_stations:
+            return {self.default_receiver(): self.hop_freqs_hz} if self.hop_freqs_hz else {}
+        plan: dict[RtlTcpAddress, tuple[float, ...]] = {}
+        for address, freq_hz in self.hop_stations:
+            key = address if address is not None else self.default_receiver()
+            plan[key] = (*plan.get(key, ()), freq_hz)
+        return plan
 
     def wide_center(self) -> float:
         """The WIDE capture centre: ``wide_center_hz``, or one away from the stations."""
@@ -144,12 +176,17 @@ class ReconStarted:
     ``ct_timezone_rules`` lists the ``--ct-timezone`` rules in effect, each in
     a form that parses back to it; it is empty when every station is read as
     the standard says.
+
+    ``receivers`` lists every receiver of the run as ``host:port``. With
+    several, the tuner fields describe the first one that answered; the
+    others that did not answer follow as :class:`ReceiverFailed`.
     """
 
     kind: ClassVar[str] = "recon_started"
     tuner_type: int
     gain_count: int
     ct_timezone_rules: tuple[str, ...] = ()
+    receivers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -219,6 +256,8 @@ class HopResult:
     consensus sees, or ``None`` when it could not be mapped to one instant.
     In JSON Lines its fields are merged into the ``clock_time`` object as
     ``effective_utc``, ``ct_timezone`` and ``ct_status``.
+
+    ``receiver`` is the ``host:port`` of the receiver that recorded it.
     """
 
     kind: ClassVar[str] = "hop_result"
@@ -233,6 +272,7 @@ class HopResult:
     queued_s: float = 0.0
     caught_up: bool = True
     ct_interpretation: CTInterpretation | None = None
+    receiver: str | None = None
 
     @property
     def effective_ct(self) -> CTInterpretation | None:
@@ -266,6 +306,22 @@ class ReconStopped:
     reason: str
 
 
+@dataclass(frozen=True)
+class ReceiverFailed:
+    """One of several receivers could not connect, or its connection failed.
+
+    Only a run with several receivers reports this; the others go on, its
+    stations leave the watchlist, and the next cycle connects to it again.
+    When every receiver has failed, the run ends with the error instead, as
+    a run with one receiver does.
+    """
+
+    kind: ClassVar[str] = "receiver_failed"
+    iteration: int
+    receiver: str
+    error: str
+
+
 ReconEvent = (
     ReconStarted
     | AcquisitionStarted
@@ -275,6 +331,7 @@ ReconEvent = (
     | HopResult
     | CycleCompleted
     | ReconStopped
+    | ReceiverFailed
 )
 
 
@@ -342,6 +399,7 @@ def quick_scan_band(
     cfg: ReconConfig,
     progress: Callable[[str], None] | None = None,
     on_event: Callable[[ReconEvent], None] | None = None,
+    receiver: str | None = None,
 ) -> list[StationCandidate]:
     """Quickly scan the FM band. Per frequency: capture ``scan_dwell_s``,
     measure RSSI, and attempt a decode to check for RDS / Clock-Time.
@@ -349,7 +407,8 @@ def quick_scan_band(
     With ``cfg.hop_freqs_hz`` only the listed stations are checked, and the
     RSSI threshold does not apply to them. ``on_event`` receives a
     :class:`ScanStep` for every frequency, including those that were not
-    decoded because of the RSSI threshold."""
+    decoded because of the RSSI threshold. ``receiver`` names ``client`` in
+    the candidates."""
 
     def emit(msg: str) -> None:
         if progress:
@@ -379,6 +438,7 @@ def quick_scan_band(
                 has_ct=has_ct,
                 pi=result.info.pi,
                 ps_name=result.info.ps_name,
+                receiver=receiver,
             )
             candidates.append(candidate)
             emit(
@@ -448,6 +508,7 @@ def _record_station(
     capture_start: _CaptureStart,
     consensus: TimeConsensus,
     ct_policy: CTPolicy | None = None,
+    receiver: str | None = None,
 ) -> HopResult:
     """Store a decoded station's CT in the consensus and describe the station.
 
@@ -498,7 +559,14 @@ def _record_station(
         queued_s=capture_start.queued_s,
         caught_up=capture_start.caught_up,
         ct_interpretation=interpretation,
+        receiver=receiver,
     )
+
+
+def _entered_consensus(hop: HopResult) -> bool:
+    """Whether :func:`_record_station` stored the CT of ``hop`` in the consensus."""
+    interpretation = hop.effective_ct
+    return interpretation is not None and interpretation.utc is not None and hop.caught_up
 
 
 def _report_station(
@@ -526,7 +594,7 @@ def _report_station(
             progress(f"  {mode} {hop.freq_hz / 1e6:6.2f} MHz: no CT (groups={hop.n_groups})")
     if on_event:
         on_event(hop)
-    return 1 if usable and hop.caught_up else 0
+    return 1 if _entered_consensus(hop) else 0
 
 
 def _ct_text(ct: ClockTime, interpretation: CTInterpretation) -> str:
@@ -546,13 +614,18 @@ def hop_collect_ct(
     consensus: TimeConsensus,
     progress: Callable[[str], None] | None = None,
     on_event: Callable[[ReconEvent], None] | None = None,
+    receiver: str | None = None,
+    lock: contextlib.AbstractContextManager | None = None,
 ) -> int:
     """Hop through the watchlist: tune, record, decode, store CT in the consensus.
 
     Returns the number of new CT observations recorded in this iteration.
     ``on_event`` receives a :class:`HopResult` for every station, with or
-    without CT.
+    without CT. ``receiver`` names ``client`` in them. When other receivers
+    hop at the same time, ``lock`` is held while a result enters the
+    consensus and is reported, but not while recording or decoding.
     """
+    guard = lock if lock is not None else contextlib.nullcontext()
     client.configure_fm(cfg.sample_rate, gain_db=cfg.gain_db)
 
     n_obs = 0
@@ -568,10 +641,11 @@ def hop_collect_ct(
             capture_start_monotonic_ns=capture_start.monotonic_ns,
         )
         rssi_db = float(10 * np.log10(float(np.mean(np.abs(iq) ** 2)) + 1e-12))
-        hop = _record_station(
-            station.freq_hz, result, rssi_db, capture_start, consensus, cfg.ct_policy
-        )
-        n_obs += _report_station("hop", hop, progress, on_event)
+        with guard:
+            hop = _record_station(
+                station.freq_hz, result, rssi_db, capture_start, consensus, cfg.ct_policy, receiver
+            )
+            n_obs += _report_station("hop", hop, progress, on_event)
     return n_obs
 
 
@@ -609,12 +683,14 @@ def wide_scan(
     cfg: ReconConfig,
     progress: Callable[[str], None] | None = None,
     on_event: Callable[[ReconEvent], None] | None = None,
+    receiver: str | None = None,
 ) -> list[StationCandidate]:
     """WIDE acquisition: decode every station of ``cfg.wide_freqs_hz`` from one
     ``scan_dwell_s`` capture instead of scanning the band.
 
     ``on_event`` receives a :class:`ScanStep` for every station. The RSSI
     threshold does not apply: the capture contains every station anyway.
+    ``receiver`` names ``client`` in the candidates.
     """
     results, _ = _wide_capture(client, cfg, cfg.wide_freqs_hz, cfg.scan_dwell_s, progress)
     candidates: list[StationCandidate] = []
@@ -627,6 +703,7 @@ def wide_scan(
             has_ct=info.latest_clock is not None,
             pi=info.pi,
             ps_name=info.ps_name,
+            receiver=receiver,
         )
         candidates.append(candidate)
         if progress:
@@ -652,13 +729,14 @@ def wide_collect_ct(
     consensus: TimeConsensus,
     progress: Callable[[str], None] | None = None,
     on_event: Callable[[ReconEvent], None] | None = None,
+    receiver: str | None = None,
 ) -> int:
     """WIDE maintenance: record every watchlist station from one ``dwell_s``
     capture and store their CT in the consensus.
 
     Returns the number of new CT observations. ``on_event`` receives a
     :class:`HopResult` for every station, as after a hop. An empty watchlist
-    records nothing.
+    records nothing. ``receiver`` names ``client`` in the results.
     """
     if not watchlist:
         return 0
@@ -673,6 +751,7 @@ def wide_collect_ct(
             capture_start,
             consensus,
             cfg.ct_policy,
+            receiver,
         )
         n_obs += _report_station("wide", hop, progress, on_event)
     return n_obs
@@ -768,8 +847,21 @@ class _Outputs:
             self.event(event)
 
 
+def _scan_listed(
+    client: RtlTcpClient, cfg: ReconConfig, out: _Outputs, receiver: str | None
+) -> list[StationCandidate]:
+    """Check the listed HOP stations of ``cfg``; return the next watchlist."""
+    ranked = rank_candidates(quick_scan_band(client, cfg, out.progress, out.event, receiver))
+    # The operator chose these stations: keep every one with RDS, uncapped.
+    return [c for c in ranked if c.n_groups > 0]
+
+
 def _acquire(
-    client: RtlTcpClient, cfg: ReconConfig, iteration: int, out: _Outputs
+    client: RtlTcpClient,
+    cfg: ReconConfig,
+    iteration: int,
+    out: _Outputs,
+    receiver: str | None = None,
 ) -> list[StationCandidate]:
     """Run one acquisition and return the next watchlist."""
     if cfg.wide_freqs_hz:
@@ -785,7 +877,7 @@ def _acquire(
                 wide_sample_rate=cfg.wide_sample_rate,
             )
         )
-        ranked = rank_candidates(wide_scan(client, cfg, out.progress, out.event))
+        ranked = rank_candidates(wide_scan(client, cfg, out.progress, out.event, receiver))
         # One capture records them all, so every station with RDS stays.
         return [c for c in ranked if c.n_groups > 0]
 
@@ -800,9 +892,7 @@ def _acquire(
                 n_points=len(cfg.hop_freqs_hz),
             )
         )
-        ranked = rank_candidates(quick_scan_band(client, cfg, out.progress, out.event))
-        # The operator chose these stations: keep every one with RDS, uncapped.
-        return [c for c in ranked if c.n_groups > 0]
+        return _scan_listed(client, cfg, out, receiver)
 
     out.status(f"\n[#{iteration}] ACQUISITION (scan {cfg.band_start_mhz}-{cfg.band_end_mhz} MHz)…")
     out.publish(
@@ -814,7 +904,7 @@ def _acquire(
         )
     )
     ranked = rank_candidates(
-        quick_scan_band(client, cfg, progress=out.progress, on_event=out.event)
+        quick_scan_band(client, cfg, progress=out.progress, on_event=out.event, receiver=receiver)
     )
     watchlist = [c for c in ranked if c.has_ct][: cfg.max_watchlist]
     if not watchlist:
@@ -830,6 +920,7 @@ def _maintain(
     watchlist: list[StationCandidate],
     consensus: TimeConsensus,
     out: _Outputs,
+    receiver: str | None = None,
 ) -> int:
     """Observe the watchlist once; return the number of new CT observations."""
     if cfg.wide_freqs_hz:
@@ -846,11 +937,52 @@ def _maintain(
                 wide_sample_rate=cfg.wide_sample_rate,
             )
         )
-        return wide_collect_ct(client, watchlist, cfg, consensus, out.progress, out.event)
+        return wide_collect_ct(client, watchlist, cfg, consensus, out.progress, out.event, receiver)
 
     out.status(f"\n[#{iteration}] MAINTENANCE (hop {len(watchlist)} stations)…")
     out.publish(MaintenanceStarted(iteration=iteration, n_stations=len(watchlist)))
-    return hop_collect_ct(client, watchlist, cfg, consensus, out.progress, out.event)
+    return hop_collect_ct(
+        client, watchlist, cfg, consensus, out.progress, out.event, receiver=receiver
+    )
+
+
+def _complete_cycle(
+    cfg: ReconConfig,
+    consensus: TimeConsensus,
+    iteration: int,
+    new_obs: int,
+    watchlist: list[StationCandidate],
+    last_rescan_mono: float,
+    out: _Outputs,
+) -> bool:
+    """Report the end of a cycle; return whether the run has reached its iterations."""
+    out.status(f"  collected {new_obs} new CT observations")
+
+    # Display. Evaluate the consensus once: each evaluation updates trust.
+    # Publish before the status text, which may block on a slow stderr,
+    # so that the record is stamped close to the evaluation.
+    now_mono = time.monotonic()
+    next_rescan_in = max(0.0, cfg.rescan_min * 60 - (now_mono - last_rescan_mono))
+    result = consensus.consensus(now_mono)
+    out.publish(
+        CycleCompleted(
+            iteration=iteration,
+            new_observations=new_obs,
+            consensus=result,
+            watchlist=_detached(watchlist),
+            tracks=_track_snapshots(consensus, now_mono),
+            next_rescan_in_s=next_rescan_in,
+        )
+    )
+    out.status("\n" + render_status(consensus, watchlist, next_rescan_in, result=result))
+
+    if cfg.iterations is not None and iteration >= cfg.iterations:
+        out.status(f"\n[#{iteration}] reached iterations={cfg.iterations}, stop")
+        out.publish(ReconStopped(iteration=iteration, reason="iterations"))
+        return True
+    if cfg.idle_s > 0:
+        time.sleep(cfg.idle_s)
+    return False
 
 
 def run_recon(
@@ -866,15 +998,28 @@ def run_recon(
     receives the same milestones as :data:`ReconEvent` values.
     ``rescan_requested`` is polled before every iteration; when it returns
     true, that iteration starts with an acquisition scan.
+
+    When :attr:`ReconConfig.hop_stations` spreads the HOP stations over
+    several receivers, every receiver hops through its own stations in its
+    own thread (see :class:`_MultiReceiverRun`). Callbacks are then called
+    from those threads too, but never two at a time.
     """
+    if on_status is None:
+        on_status = print
+    out = _Outputs(on_status, on_progress, on_event)
+    receivers = cfg.hop_receivers()
+    if len(receivers) > 1:
+        _MultiReceiverRun(cfg, receivers, out).run(rescan_requested)
+        return
+    address = next(iter(receivers), cfg.default_receiver())
+    if address != cfg.default_receiver():
+        cfg = replace(cfg, host=address.host, port=address.port)
+    receiver = str(address)
+
     consensus = TimeConsensus(mission_precision_s=cfg.mission_precision_s)
     watchlist: list[StationCandidate] = []
     last_rescan_mono = float("-inf")
     iteration = 0
-
-    if on_status is None:
-        on_status = print
-    out = _Outputs(on_status, on_progress, on_event)
     publish = out.publish
 
     # The handler also covers the connection and the first event, so that every
@@ -888,6 +1033,7 @@ def run_recon(
                     tuner_type=info.tuner_type,
                     gain_count=info.gain_count,
                     ct_timezone_rules=tuple(str(rule) for rule in cfg.ct_policy.rules),
+                    receivers=(receiver,),
                 )
             )
             while True:
@@ -898,42 +1044,353 @@ def run_recon(
                 # ACQUISITION when requested, the watchlist is empty or rescan_min has elapsed.
                 due = (now_mono - last_rescan_mono) > cfg.rescan_min * 60
                 if requested or not watchlist or due:
-                    watchlist = _acquire(client, cfg, iteration, out)
+                    watchlist = _acquire(client, cfg, iteration, out, receiver)
                     last_rescan_mono = time.monotonic()
                     on_status(f"  → watchlist: {[f'{s.freq_hz / 1e6:.2f}' for s in watchlist]}")
                     publish(WatchlistUpdated(iteration=iteration, watchlist=_detached(watchlist)))
 
                 # MAINTENANCE — hop, or one WIDE capture
-                new_obs = _maintain(client, cfg, iteration, watchlist, consensus, out)
-                on_status(f"  collected {new_obs} new CT observations")
-
-                # Display. Evaluate the consensus once: each evaluation updates trust.
-                # Publish before the status text, which may block on a slow stderr,
-                # so that the record is stamped close to the evaluation.
-                now_mono = time.monotonic()
-                next_rescan_in = max(0.0, cfg.rescan_min * 60 - (now_mono - last_rescan_mono))
-                result = consensus.consensus(now_mono)
-                publish(
-                    CycleCompleted(
-                        iteration=iteration,
-                        new_observations=new_obs,
-                        consensus=result,
-                        watchlist=_detached(watchlist),
-                        tracks=_track_snapshots(consensus, now_mono),
-                        next_rescan_in_s=next_rescan_in,
-                    )
-                )
-                on_status("\n" + render_status(consensus, watchlist, next_rescan_in, result=result))
-
-                if cfg.iterations is not None and iteration >= cfg.iterations:
-                    on_status(f"\n[#{iteration}] reached iterations={cfg.iterations}, stop")
-                    publish(ReconStopped(iteration=iteration, reason="iterations"))
+                new_obs = _maintain(client, cfg, iteration, watchlist, consensus, out, receiver)
+                if _complete_cycle(
+                    cfg, consensus, iteration, new_obs, watchlist, last_rescan_mono, out
+                ):
                     break
-                if cfg.idle_s > 0:
-                    time.sleep(cfg.idle_s)
     except KeyboardInterrupt:
         on_status("\nInterrupted by operator (Ctrl+C).")
         publish(ReconStopped(iteration=iteration, reason="interrupted"))
+
+
+# ----------------------- SEVERAL RECEIVERS -----------------------
+
+# How long a stopping run waits for each receiver thread to notice.
+_THREAD_STOP_TIMEOUT_S = 2.0
+
+
+class _OutputError(Exception):
+    """An output callback failed in a receiver thread; ``__cause__`` is its error.
+
+    Kept apart from ``OSError`` so that a failed write is never mistaken
+    for a failed receiver.
+    """
+
+
+class _SharedOutputs:
+    """:class:`_Outputs` for several threads: one line or record at a time.
+
+    ``lock`` also serialises the consensus updates. After :meth:`close`,
+    output from the receiver threads is dropped, so that nothing follows
+    ``recon_stopped``.
+    """
+
+    def __init__(self, out: _Outputs) -> None:
+        self.lock = threading.RLock()
+        self._out = out
+        self._closed = False
+
+    def close(self) -> None:
+        with self.lock:
+            self._closed = True
+
+    def _call(self, callback: Callable, value: object, in_worker: bool) -> None:
+        with self.lock:
+            if self._closed:
+                return
+            if not in_worker:
+                callback(value)
+                return
+            try:
+                callback(value)
+            except Exception as exc:
+                raise _OutputError from exc
+
+    def _wrap(self, callback: Callable | None, in_worker: bool) -> Callable | None:
+        if callback is None:
+            return None
+        return lambda value: self._call(callback, value, in_worker)
+
+    def main(self) -> _Outputs:
+        """Outputs for the thread that runs the loop."""
+        return _Outputs(
+            self._wrap(self._out.status, False),
+            self._wrap(self._out.progress, False),
+            self._wrap(self._out.event, False),
+        )
+
+    def worker(self, receiver: str, on_hop: Callable[[HopResult], None]) -> _Outputs:
+        """Outputs for the thread of ``receiver``: progress names it, hops go to ``on_hop``."""
+        progress = self._out.progress
+        if progress is not None:
+            inner = progress
+            progress = lambda message: inner(f"  [{receiver}] {message.lstrip()}")  # noqa: E731
+        forward = self._wrap(self._out.event, True)
+
+        def event(value: ReconEvent) -> None:
+            if isinstance(value, HopResult):
+                on_hop(value)
+            if forward is not None:
+                forward(value)
+
+        return _Outputs(self._wrap(self._out.status, True), self._wrap(progress, True), event)
+
+
+@dataclass
+class _ReceiverSlot:
+    """One receiver of a run with several, and its part of the watchlist."""
+
+    address: RtlTcpAddress
+    cfg: ReconConfig  # the run's settings, with only this receiver's stations
+    client: RtlTcpClient | None = None
+    watchlist: list[StationCandidate] = field(default_factory=list)
+    new_observations: int = 0
+
+    @property
+    def name(self) -> str:
+        return str(self.address)
+
+
+def _error_text(exc: BaseException) -> str:
+    return str(exc) or type(exc).__name__
+
+
+class _MultiReceiverRun:
+    """The live loop of :func:`run_recon` with several receivers.
+
+    The cycle is the same as with one receiver: an acquisition when one is
+    due, then one maintenance pass and the consensus. Within each phase every
+    receiver records its own stations in its own thread, and the phase ends
+    when all of them have finished. A receiver that fails is reported as
+    :class:`ReceiverFailed`, leaves the watchlist with its stations, and is
+    connected again at the start of the next cycle; an acquisition then
+    checks its stations again. When no receiver is left, the latest error
+    ends the run, as it does with one receiver.
+    """
+
+    def __init__(
+        self, cfg: ReconConfig, receivers: dict[RtlTcpAddress, tuple[float, ...]], out: _Outputs
+    ) -> None:
+        self.cfg = cfg
+        self.base_out = out
+        self.shared = _SharedOutputs(out)
+        self.out = self.shared.main()
+        self.consensus = TimeConsensus(mission_precision_s=cfg.mission_precision_s)
+        self.slots = [
+            _ReceiverSlot(
+                address,
+                replace(
+                    cfg, host=address.host, port=address.port, hop_stations=(), hop_freqs_hz=freqs
+                ),
+            )
+            for address, freqs in receivers.items()
+        ]
+        self.iteration = 0
+        self.threads: list[threading.Thread] = []
+        self.last_error: OSError | None = None
+
+    def run(self, rescan_requested: Callable[[], bool] | None) -> None:
+        try:
+            self._loop(rescan_requested)
+        except KeyboardInterrupt:
+            self._stop()
+            self.base_out.status("\nInterrupted by operator (Ctrl+C).")
+            self.base_out.publish(ReconStopped(iteration=self.iteration, reason="interrupted"))
+        finally:
+            self._stop()
+
+    def _loop(self, rescan_requested: Callable[[], bool] | None) -> None:
+        cfg, out = self.cfg, self.out
+        failures = self._in_parallel(self.slots, self._connect)
+        self._require_a_receiver(failures)
+        first = next(slot for slot in self.slots if slot.client is not None)
+        for slot in self.slots:
+            if slot.client is not None:
+                info = slot.client.info
+                out.status(
+                    f"  rtl_tcp OK: {slot.name} tuner={info.tuner_type}, gains={info.gain_count}"
+                )
+        out.publish(
+            ReconStarted(
+                tuner_type=first.client.info.tuner_type,
+                gain_count=first.client.info.gain_count,
+                ct_timezone_rules=tuple(str(rule) for rule in cfg.ct_policy.rules),
+                receivers=tuple(slot.name for slot in self.slots),
+            )
+        )
+        self._report(failures)
+        last_rescan_mono = float("-inf")
+        while True:
+            self.iteration += 1
+            now_mono = time.monotonic()
+            # Poll first, so that a pending request is consumed in any case.
+            requested = rescan_requested is not None and rescan_requested()
+            down = [slot for slot in self.slots if slot.client is None]
+            if down:
+                failures = self._in_parallel(down, self._connect)
+                for slot in down:
+                    if slot.client is not None:
+                        out.status(f"  receiver {slot.name} connected again")
+                self._report(failures)
+                self._require_a_receiver(failures)
+            up = [slot for slot in self.slots if slot.client is not None]
+            due = (now_mono - last_rescan_mono) > cfg.rescan_min * 60
+            everywhere = requested or due or not any(slot.watchlist for slot in up)
+            # A receiver that has just connected again checks its stations on its own.
+            acquiring = up if everywhere else [slot for slot in up if not slot.watchlist]
+            if acquiring:
+                self._acquire(acquiring)
+                if everywhere:
+                    last_rescan_mono = time.monotonic()
+                watchlist = self._watchlist()
+                out.status(f"  → watchlist: {[f'{s.freq_hz / 1e6:.2f}' for s in watchlist]}")
+                out.publish(
+                    WatchlistUpdated(iteration=self.iteration, watchlist=_detached(watchlist))
+                )
+            new_obs = self._maintain()
+            if _complete_cycle(
+                cfg,
+                self.consensus,
+                self.iteration,
+                new_obs,
+                self._watchlist(),
+                last_rescan_mono,
+                out,
+            ):
+                break
+
+    def _watchlist(self) -> list[StationCandidate]:
+        return [station for slot in self.slots for station in slot.watchlist]
+
+    def _connect(self, slot: _ReceiverSlot) -> None:
+        client = RtlTcpClient(host=slot.address.host, port=slot.address.port)
+        client.connect()
+        slot.client = client
+
+    def _acquire(self, slots: list[_ReceiverSlot]) -> None:
+        freqs_hz = [freq_hz for slot in slots for freq_hz in slot.cfg.hop_freqs_hz]
+        self.out.status(
+            f"\n[#{self.iteration}] ACQUISITION (check {len(freqs_hz)} listed stations "
+            f"on {len(slots)} receivers)…"
+        )
+        self.out.publish(
+            AcquisitionStarted(
+                iteration=self.iteration,
+                band_start_mhz=min(freqs_hz) / 1e6,
+                band_end_mhz=max(freqs_hz) / 1e6,
+                scan_step_mhz=0.0,
+                n_points=len(freqs_hz),
+            )
+        )
+
+        def scan(slot: _ReceiverSlot) -> None:
+            out = self.shared.worker(slot.name, lambda hop: None)
+            slot.watchlist = _scan_listed(slot.client, slot.cfg, out, slot.name)
+
+        self._handle(self._in_parallel(slots, scan))
+
+    def _maintain(self) -> int:
+        slots = [slot for slot in self.slots if slot.client is not None and slot.watchlist]
+        watchlist = self._watchlist()
+        self.out.status(
+            f"\n[#{self.iteration}] MAINTENANCE (hop {len(watchlist)} stations "
+            f"on {len(slots)} receivers)…"
+        )
+        self.out.publish(MaintenanceStarted(iteration=self.iteration, n_stations=len(watchlist)))
+
+        def hop(slot: _ReceiverSlot) -> None:
+            slot.new_observations = 0
+
+            # Count as the results arrive, so that a receiver that fails
+            # midway still counts what it added to the consensus.
+            def count(result: HopResult) -> None:
+                slot.new_observations += _entered_consensus(result)
+
+            out = self.shared.worker(slot.name, count)
+            hop_collect_ct(
+                slot.client,
+                slot.watchlist,
+                slot.cfg,
+                self.consensus,
+                out.progress,
+                out.event,
+                receiver=slot.name,
+                lock=self.shared.lock,
+            )
+
+        self._handle(self._in_parallel(slots, hop))
+        return sum(slot.new_observations for slot in slots)
+
+    def _in_parallel(
+        self, slots: list[_ReceiverSlot], job: Callable[[_ReceiverSlot], None]
+    ) -> list[tuple[_ReceiverSlot, OSError]]:
+        """Run ``job`` for every slot in a thread of its own and wait for all of them.
+
+        Returns the receivers that failed, with their errors. Any other error,
+        such as one of an output callback, is raised once every thread ended.
+        """
+        failures: dict[int, OSError] = {}
+        errors: list[BaseException] = []
+
+        def run(index: int, slot: _ReceiverSlot) -> None:
+            try:
+                job(slot)
+            except _OutputError as exc:
+                errors.append(exc.__cause__)
+            except OSError as exc:
+                failures[index] = exc
+            except BaseException as exc:
+                errors.append(exc)
+
+        self.threads = [
+            threading.Thread(
+                target=run, args=(index, slot), name=f"rdsclock {slot.name}", daemon=True
+            )
+            for index, slot in enumerate(slots)
+        ]
+        for thread in self.threads:
+            thread.start()
+        for thread in self.threads:
+            thread.join()
+        if errors:
+            raise errors[0]
+        return [(slots[index], failures[index]) for index in sorted(failures)]
+
+    def _handle(self, failures: list[tuple[_ReceiverSlot, OSError]]) -> None:
+        self._report(failures)
+        self._require_a_receiver(failures)
+
+    def _report(self, failures: list[tuple[_ReceiverSlot, OSError]]) -> None:
+        for slot, exc in failures:
+            self._disconnect(slot)
+            slot.watchlist = []
+            self.last_error = exc
+            self.out.status(
+                f"  receiver {slot.name} failed: {_error_text(exc)}; reconnecting next cycle"
+            )
+            self.out.publish(
+                ReceiverFailed(iteration=self.iteration, receiver=slot.name, error=_error_text(exc))
+            )
+
+    def _require_a_receiver(self, failures: list[tuple[_ReceiverSlot, OSError]]) -> None:
+        if all(slot.client is None for slot in self.slots):
+            raise failures[-1][1] if failures else (self.last_error or OSError("no receiver"))
+
+    @staticmethod
+    def _disconnect(slot: _ReceiverSlot) -> None:
+        client, slot.client = slot.client, None
+        if client is not None:
+            # A failed capture may have closed it in its own thread already.
+            with contextlib.suppress(OSError, AttributeError):
+                client.close()
+
+    def _stop(self) -> None:
+        """Drop late output, wake every receiver thread and close the receivers."""
+        self.shared.close()
+        for slot in self.slots:
+            if slot.client is not None:
+                slot.client.interrupt()
+        for thread in self.threads:
+            thread.join(_THREAD_STOP_TIMEOUT_S)
+        for slot in self.slots:
+            self._disconnect(slot)
 
 
 # ----------------------- OFFLINE / DEMO MODE -----------------------
