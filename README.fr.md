@@ -368,15 +368,17 @@ peut être écoutée une minute entière, assez pour le Clock-Time émis une foi
 par minute, sans allonger le cycle. Une station indiquée deux fois pour un même
 récepteur est une erreur, et `--wide` n'accepte pas de récepteur.
 
-Davantage de récepteurs ne rend pas les sources plus indépendantes. Le
+Davantage de récepteurs ne rendent pas les sources plus indépendantes. Le
 consensus regroupe les observations par émetteur, et un diffuseur qui émet une
 heure erronée, comme l'heure locale envoyée comme UTC décrite ci-dessus, envoie
 la même heure erronée à chaque récepteur.
 
 Si un récepteur tombe en panne, ses stations quittent la liste de suivi et les
 autres continuent ; `recon` s'y reconnecte au début du cycle suivant et vérifie
-ses stations avant qu'elles ne reprennent les sauts. L'exécution ne s'arrête que
-lorsque tous les récepteurs ont échoué. Avec plus d'un récepteur, les tableaux
+ses stations avant qu'elles ne reprennent les sauts. Un récepteur qui ne livre
+pas une capture dans sa durée plus 25 % (au moins 15 s) échoue de la même
+façon, si bien qu'une liaison lente ne retient pas les autres. L'exécution ne
+s'arrête que lorsque tous les récepteurs ont échoué. Avec plus d'un récepteur, les tableaux
 de bord ajoutent une colonne *Récepteur* (`host:port`), l'état indique ce
 qu'enregistre chaque récepteur, par exemple
 `HOP · stations reçues : 1/2 · 192.168.5.1:1234 : terminé · 127.0.0.1:1235 → 98.80 MHz`,

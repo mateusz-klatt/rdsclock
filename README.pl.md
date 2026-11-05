@@ -343,7 +343,7 @@ rejestruje, w postaci `HOST:PORT@MHZ`, z adresem IPv6 w nawiasach
 
 Każdy odbiornik przechodzi przez swoje stacje równolegle z pozostałymi, więc
 cykl trwa tyle, ile najbardziej obciążony odbiornik, a nie jeden czas
-rejestracji na każdą stację. Przy jednej stacji na odbiornik każdą stację można
+rejestracji na każdą stację. Przy jednej stacji na odbiornik każdej stacji można
 słuchać przez pełną minutę, wystarczająco długo na Clock-Time nadawany raz na
 minutę, bez wydłużania cyklu. Stacja podana dwa razy dla jednego odbiornika
 jest błędem, a `--wide` nie przyjmuje odbiorników.
@@ -355,7 +355,9 @@ odbiornika.
 
 Gdy jeden odbiornik zawiedzie, jego stacje znikają z listy obserwowanych, a
 pozostałe działają dalej; `recon` łączy się z nim ponownie na początku
-następnego cyklu i sprawdza jego stacje, zanim wrócą do przełączania. Praca
+następnego cyklu i sprawdza jego stacje, zanim wrócą do przełączania. Tak samo
+zawodzi odbiornik, który nie dostarczy rejestracji w czasie jej trwania plus
+25 % (co najmniej 15 s), więc wolne łącze nie wstrzymuje pozostałych. Praca
 kończy się dopiero wtedy, gdy zawiodą wszystkie odbiorniki. Przy więcej niż
 jednym odbiorniku panele dodają kolumnę *Odbiornik* (`host:port`), status
 podaje, co rejestruje każdy odbiornik, na przykład

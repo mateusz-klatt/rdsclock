@@ -2,7 +2,9 @@
 
 import contextlib
 import json
+import signal
 import socket
+import struct
 import threading
 import time
 from dataclasses import replace
@@ -359,6 +361,267 @@ class TestLostReceivers:
         assert "\nInterrupted by operator (Ctrl+C)." in recorder.status
 
 
+class _OddServer:
+    """A local rtl_tcp server for one connection that misbehaves.
+
+    ``mode`` is ``"silent"`` (accepts, never sends the header), ``"stall"``
+    (header, then nothing) or ``"trickle"`` (header, then one IQ sample every
+    0.1 s, which no per-read timeout ever trips). ``tuned`` is set when the
+    client first sets a frequency, ``closed`` when the client let go. It ends
+    by itself after ``lifetime_s``, so that a regression fails, not hangs.
+    """
+
+    def __init__(self, mode: str, index: int = 0, lifetime_s: float = 20.0):
+        self.mode = mode
+        self.sample = _server_bytes(index)[:2]
+        self.lifetime_s = lifetime_s
+        self.accepted = threading.Event()
+        self.tuned = threading.Event()
+        self.closed = threading.Event()
+        self.stop = threading.Event()
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.address = RtlTcpAddress("127.0.0.1", self._listener.getsockname()[1])
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self._thread.join(timeout=2.0)
+        assert not self._thread.is_alive()
+
+    def _serve(self) -> None:
+        deadline = time.monotonic() + self.lifetime_s
+        with self._listener:
+            self._listener.settimeout(0.05)
+            while True:
+                if self.stop.is_set() or time.monotonic() > deadline:
+                    return
+                with contextlib.suppress(TimeoutError):
+                    conn, _ = self._listener.accept()
+                    break
+        self.accepted.set()
+        with conn:
+            try:
+                if self.mode != "silent":
+                    conn.sendall(b"RTL0" + struct.pack(">II", 5, 29))
+                self._talk(conn, deadline)
+            except OSError:
+                pass
+            finally:
+                self.closed.set()
+
+    def _talk(self, conn: socket.socket, deadline: float) -> None:
+        conn.settimeout(0.1)
+        commands = bytearray()
+        while not self.stop.is_set() and time.monotonic() < deadline:
+            try:
+                chunk = conn.recv(4096)
+            except TimeoutError:
+                if self.mode == "trickle":
+                    conn.sendall(self.sample)
+                continue
+            if not chunk:
+                return  # the client closed or shut down its end
+            commands.extend(chunk)
+            while len(commands) >= 5:
+                if commands[0] == 1:
+                    self.tuned.set()
+                del commands[:5]
+        # Out of time or told to stop: let the client see the end.
+
+
+@contextlib.contextmanager
+def _ctrl_c_when(*conditions: threading.Event, timeout_s: float = 10.0):
+    """Press Ctrl+C in the main thread once every condition is set.
+
+    Yields an event that is set when it was pressed. The run under test cannot
+    end by itself before that, so the interrupt always lands inside it.
+    """
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    pressed = threading.Event()
+
+    def press() -> None:
+        deadline = time.monotonic() + timeout_s
+        for condition in conditions:
+            if not condition.wait(max(0.0, deadline - time.monotonic())):
+                return
+        pressed.set()
+        signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+
+    presser = threading.Thread(target=press, daemon=True)
+    presser.start()
+    try:
+        yield pressed
+    finally:
+        presser.join(timeout_s)
+        signal.signal(signal.SIGINT, previous)
+
+
+@pytest.fixture
+def runs(monkeypatch):
+    """Every :class:`recon._MultiReceiverRun` that a test makes."""
+    made: list[recon._MultiReceiverRun] = []
+    original = recon._MultiReceiverRun.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        made.append(self)
+
+    monkeypatch.setattr(recon._MultiReceiverRun, "__init__", init)
+    return made
+
+
+def _assert_stopped_cleanly(run: "recon._MultiReceiverRun") -> None:
+    assert run._stopping
+    assert not any(thread.is_alive() for thread in run.threads)
+    assert all(slot.client is None and slot.connecting is None for slot in run.slots)
+
+
+@pytest.mark.usefixtures("decode_by_server")
+class TestSlowAndStuckReceivers:
+    def test_a_trickling_receiver_fails_its_cycle_and_the_others_go_on(self, monkeypatch):
+        # Dwell 0.4 s needs 400 samples; at one per 0.1 s the read would take 40 s.
+        monkeypatch.setattr(recon, "_CAPTURE_GRACE_MIN_S", 0.5)
+        recorder = _Recorder()
+        with _servers(1) as servers, _OddServer("trickle", index=1) as slow:
+            addresses = [servers[0][0], slow.address]
+            hop_stations = ((addresses[0], 102.4e6), (addresses[1], 104.0e6))
+            started = time.monotonic()
+            recorder.run(
+                _cfg(hop_stations=hop_stations, dwell_s=DWELL_S, settle_s=0.05, iterations=1)
+            )
+            elapsed = time.monotonic() - started
+            assert slow.closed.wait(2.0)
+
+        failed = recorder.of("receiver_failed")
+        assert [(event.iteration, event.receiver) for event in failed] == [(1, str(slow.address))]
+        assert "before the capture deadline" in failed[0].error
+        assert [hop.receiver for hop in recorder.of("hop_result")] == [str(addresses[0])]
+        assert recorder.of("cycle_completed")[0].consensus.n_sources == 1
+        assert recorder.events[-1] == recon.ReconStopped(iteration=1, reason="iterations")
+        # The fake ends after 20 s: only the capture deadline can end it sooner.
+        assert elapsed < 10.0
+
+    def test_the_grace_is_at_least_15_s_and_a_quarter_of_the_dwell(self):
+        assert recon._capture_grace_s(0.4) == 15.0
+        assert recon._capture_grace_s(65.0) == 16.25
+        assert recon._capture_grace_s(200.0) == 50.0
+
+    def test_ctrl_c_while_waiting_for_a_stuck_receiver(self, runs):
+        recorder = _Recorder()
+        with _servers(1) as servers, _OddServer("stall", index=1) as stuck:
+            addresses = [servers[0][0], stuck.address]
+            with _ctrl_c_when(stuck.tuned) as pressed:
+                started = time.monotonic()
+                recorder.run(_multi_cfg(addresses, iterations=5))
+                elapsed = time.monotonic() - started
+            assert pressed.is_set()
+            assert stuck.closed.wait(2.0)
+
+        assert recorder.events[-1] == recon.ReconStopped(iteration=1, reason="interrupted")
+        assert "\nInterrupted by operator (Ctrl+C)." in recorder.status
+        _assert_stopped_cleanly(runs[0])
+        # The stuck read would have lasted the 15 s read timeout.
+        assert elapsed < 10.0
+
+    def test_ctrl_c_during_a_handshake(self, runs):
+        recorder = _Recorder()
+        with _servers(1) as servers, _OddServer("silent") as mute:
+            with _ctrl_c_when(mute.accepted) as pressed:
+                started = time.monotonic()
+                recorder.run(_multi_cfg([servers[0][0], mute.address]))
+                elapsed = time.monotonic() - started
+            assert pressed.is_set()
+            assert mute.closed.wait(2.0)
+
+        assert recorder.events == [recon.ReconStopped(iteration=0, reason="interrupted")]
+        _assert_stopped_cleanly(runs[0])
+        assert elapsed < 10.0  # the header read would have waited 15 s
+
+    def test_ctrl_c_while_the_output_is_blocked(self, monkeypatch, runs):
+        hops_done = threading.Event()
+        output_blocked = threading.Event()
+        release = threading.Event()
+        finished: list[str] = []
+        hop_collect_ct = recon.hop_collect_ct
+
+        def hop_and_count(*args, **kwargs):
+            try:
+                return hop_collect_ct(*args, **kwargs)
+            finally:
+                finished.append(kwargs["receiver"])
+                if len(finished) == 2:
+                    hops_done.set()
+
+        def block_at_the_first_hop(event):
+            # A JSON Lines reader that stopped reading.
+            if event.kind == "hop_result" and not output_blocked.is_set():
+                output_blocked.set()
+                release.wait(30.0)
+
+        monkeypatch.setattr(recon, "hop_collect_ct", hop_and_count)
+        recorder = _Recorder(block_at_the_first_hop)
+        with _servers(2) as servers:
+            addresses = [address for address, _ in servers]
+            try:
+                # The receivers finish their hops while the output is blocked.
+                with _ctrl_c_when(output_blocked, hops_done) as pressed:
+                    recorder.run(_multi_cfg(addresses, iterations=5))
+            finally:
+                release.set()
+            assert pressed.is_set()
+
+        assert sorted(finished) == sorted(str(address) for address in addresses)
+        # Only the hop that was being written got out; nothing queued follows the stop.
+        assert [event.kind for event in recorder.events][-2:] == ["hop_result", "recon_stopped"]
+        assert recorder.events[-1] == recon.ReconStopped(iteration=1, reason="interrupted")
+        _assert_stopped_cleanly(runs[0])
+
+    def test_a_connection_completed_after_the_stop_is_closed(self, monkeypatch):
+        connecting = threading.Event()
+        complete = threading.Event()
+        clients: list = []
+
+        class LateClient:
+            """Connects only when told to, whatever interrupt() says."""
+
+            def __init__(self, host, port, capture_grace):
+                self.info = None
+                self.interrupted = self.closed = False
+                clients.append(self)
+
+            def connect(self):
+                connecting.set()
+                assert complete.wait(10.0)
+                self.info = object()
+
+            def interrupt(self):
+                self.interrupted = True
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(recon, "RtlTcpClient", LateClient)
+        address = RtlTcpAddress("127.0.0.1", 1)
+        run = recon._MultiReceiverRun(_cfg(), {address: (98.8e6,)}, recon._Outputs(print))
+        slot = run.slots[0]
+        thread = threading.Thread(target=run._connect, args=(slot,))
+        thread.start()
+        assert connecting.wait(10.0)
+        assert slot.connecting is clients[0]
+        run._stop()
+        complete.set()
+        thread.join(10.0)
+
+        assert clients[0].interrupted and clients[0].closed
+        assert slot.client is None and slot.connecting is None
+        run._connect(slot)  # a stopped run connects no more
+        assert len(clients) == 2 and slot.client is None
+
+
 def _restart(port: int) -> tuple[threading.Event, threading.Thread]:
     """A fake server for ``port`` again, once the old one let it go."""
     deadline = time.monotonic() + 2.0
@@ -530,6 +793,32 @@ class TestDashboardReceivers:
         )
         assert not named.multi_receiver
         assert named.view() == plain.view()
+
+    @pytest.mark.usefixtures("decode_by_server")
+    def test_receivers_hearing_different_transmitters_on_one_channel(self):
+        recorder = _Recorder()
+        with _servers(2) as servers:
+            addresses = [address for address, _ in servers]
+            hop_stations = tuple((address, 98.8e6) for address in addresses)
+            recorder.run(
+                _cfg(hop_stations=hop_stations, dwell_s=DWELL_S, settle_s=0.05, iterations=1)
+            )
+
+        names = [str(address) for address in addresses]
+        assert sorted((hop.receiver, hop.pi) for hop in recorder.of("hop_result")) == sorted(
+            [(names[0], PI_BASE), (names[1], PI_BASE + 1)]
+        )
+        assert recorder.of("cycle_completed")[0].consensus.n_sources == 2
+
+        state, _, _ = _state([line(event) for event in recorder.events])
+        rows = {row.cells[0]: row for row in state.view().rows}
+        assert set(rows) == set(names)
+        for name, pi in zip(names, (PI_BASE, PI_BASE + 1), strict=True):
+            cells = dict(zip(state.columns(), rows[name].cells, strict=False))
+            assert cells["PI"] == f"0x{pi:04X}"
+            # Each row shows the metrics of the transmitter that its receiver heard.
+            assert cells["Trust"] != "—" and cells["Age"] != "—"
+            assert rows[name].status == "ok"
 
     def test_a_failed_receiver_is_logged_until_it_is_back(self):
         failed = line(recon.ReceiverFailed(2, "10.0.0.2:1235", "Connection refused"))

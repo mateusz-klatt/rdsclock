@@ -342,12 +342,15 @@ longer. A station listed twice for one receiver is an error, and `--wide` does
 not take receivers.
 
 More receivers do not make the sources more independent. The consensus groups
-observations by transmitter, and a broadcaster that sends a wrong time, such as
+observations by transmitter (receivers in different places that hear different
+transmitters on one frequency count as two), and a broadcaster that sends a wrong time, such as
 the local time as UTC above, sends the same wrong time to every receiver.
 
 If one receiver fails, its stations leave the watchlist and the others go on;
 `recon` connects to it again at the start of the next cycle and checks its
-stations before they rejoin the hops. The run stops only when every receiver
+stations before they rejoin the hops. A receiver that cannot deliver a
+capture within its dwell plus 25 % (at least 15 s) fails the same way, so a
+slow link does not hold up the others. The run stops only when every receiver
 has failed. With more than one receiver, the dashboards add a *Receiver* column
 (`host:port`), the status names what each receiver is recording, for example
 `HOP · 1/2 stations recorded · 192.168.5.1:1234: done · 127.0.0.1:1235 → 98.80 MHz`,

@@ -5,8 +5,10 @@ import math
 import select
 import socket
 import struct
+import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -125,6 +127,10 @@ class RtlTcpDrainTimeoutError(TimeoutError):
     """No fresh capture boundary could be established within the deadline."""
 
 
+class RtlTcpCaptureTimeoutError(TimeoutError):
+    """A capture's samples did not all arrive within its duration plus the grace."""
+
+
 def _arrived_in_real_time(
     recent: deque[tuple[int, int]],
     start_ns: int,
@@ -155,7 +161,15 @@ def _arrived_in_real_time(
 
 
 class RtlTcpClient:
-    """Thin TCP wrapper. Every command is a 5-byte big-endian record."""
+    """Thin TCP wrapper. Every command is a 5-byte big-endian record.
+
+    ``read_timeout`` bounds each read, not a whole capture: a receiver that
+    trickles a few bytes now and then never trips it. ``capture_grace``, when
+    set, also bounds every capture of ``duration_s``: its samples must arrive
+    within ``duration_s + capture_grace(duration_s)`` after reading starts, or
+    the capture fails with :class:`RtlTcpCaptureTimeoutError`. Draining
+    before it has its own bound (see :meth:`capture_fresh`).
+    """
 
     def __init__(
         self,
@@ -163,13 +177,19 @@ class RtlTcpClient:
         port: int = DEFAULT_PORT,
         connect_timeout: float = 10.0,
         read_timeout: float = 15.0,
+        capture_grace: Callable[[float], float] | None = None,
     ):
         self.host = host
         self.port = port
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
+        self.capture_grace = capture_grace
         self._sock: socket.socket | None = None
         self.info: DongleInfo | None = None
+        # interrupt() may come from another thread while connect() runs.
+        self._lock = threading.Lock()
+        self._handshake: socket.socket | None = None
+        self._interrupted = False
 
     # ---- context manager ----
     def __enter__(self) -> "RtlTcpClient":
@@ -185,6 +205,8 @@ class RtlTcpClient:
             return self.info  # type: ignore[return-value]
         s = socket.create_connection((self.host, self.port), timeout=self.connect_timeout)
         try:
+            # Own the socket before the header read, so that interrupt() can wake it.
+            self._own_handshake(s)
             s.settimeout(self.read_timeout)
             header = self._recv_exact(s, 12)
             magic = header[:4]
@@ -192,12 +214,24 @@ class RtlTcpClient:
                 raise OSError(f"unexpected magic: {magic!r}")
             tuner = struct.unpack(">I", header[4:8])[0]
             gain_count = struct.unpack(">I", header[8:12])[0]
+            with self._lock:
+                self._handshake = None
+                if self._interrupted:
+                    raise OSError("rtl_tcp: interrupted while connecting")
+                self._sock = s
         except BaseException:
+            with self._lock:
+                self._handshake = None
             s.close()
             raise
-        self._sock = s
         self.info = DongleInfo(magic=magic, tuner_type=tuner, gain_count=gain_count)
         return self.info
+
+    def _own_handshake(self, sock: socket.socket) -> None:
+        with self._lock:
+            if self._interrupted:
+                raise OSError("rtl_tcp: interrupted while connecting")
+            self._handshake = sock
 
     def close(self) -> None:
         if self._sock is not None:
@@ -210,10 +244,15 @@ class RtlTcpClient:
         """Make a read that blocks in another thread fail at once.
 
         Closing alone does not wake a blocked ``recv`` on every platform; a
-        shutdown does. The connection is unusable afterwards: close it.
+        shutdown does. The connection is unusable afterwards: close it. This
+        includes a :meth:`connect` in progress: its header read fails at once,
+        and a TCP connection that completes later is closed, not kept. An
+        interrupted client never connects again; make a new one.
         """
-        sock = self._sock
-        if sock is not None:
+        with self._lock:
+            self._interrupted = True
+            socks = [sock for sock in (self._sock, self._handshake) if sock is not None]
+        for sock in socks:
             with contextlib.suppress(OSError):
                 sock.shutdown(socket.SHUT_RDWR)
 
@@ -358,6 +397,10 @@ class RtlTcpClient:
         transfer and 50 ms cannot reveal a backlog, and neither can a link
         that is barely faster than the stream.
 
+        With :attr:`capture_grace` set, the read after draining must also end
+        within ``duration_s`` plus that grace, or it fails with
+        :class:`RtlTcpCaptureTimeoutError`.
+
         Any failure or interruption after draining starts closes the socket:
         a partial read can otherwise leave the next attempt between I and Q.
         Reconnect before retrying a failed capture. Invalid arguments are
@@ -394,10 +437,14 @@ class RtlTcpClient:
         if n_samples < 1:
             raise ValueError("capture must contain at least one sample")
 
+        max_read_s = None
+        if self.capture_grace is not None:
+            max_read_s = duration_s + self.capture_grace(duration_s)
+
         try:
             discarded = self._discard_until_quiet(settle_s, max_drain_s, quiet_s)
             return self._read_capture(
-                n_samples, sample_rate, discarded // 2, backlog_threshold_s, transfer_s
+                n_samples, sample_rate, discarded // 2, backlog_threshold_s, transfer_s, max_read_s
             )
         except BaseException:
             self.close()
@@ -410,8 +457,12 @@ class RtlTcpClient:
         discarded_samples: int,
         backlog_threshold_s: float,
         transfer_s: float,
+        max_read_s: float | None = None,
     ) -> FreshCapture:
-        """Read ``n_samples`` and date the first one by when the samples arrived."""
+        """Read ``n_samples`` and date the first one by when the samples arrived.
+
+        With ``max_read_s`` the whole read must end that long after it starts.
+        """
         sock = self._sock
         if sock is None:
             raise RuntimeError("not connected")
@@ -422,9 +473,10 @@ class RtlTcpClient:
         view = memoryview(data)
         received = 0
         read_start_ns = start_ns = end_ns = time.monotonic_ns()
+        deadline_ns = None if max_read_s is None else read_start_ns + round(max_read_s * 1e9)
         recent: deque[tuple[int, int]] = deque()  # (arrival, bound) of the last window
         while received < len(data):
-            count = sock.recv_into(view[received:])
+            count = self._recv_before(sock, view[received:], deadline_ns, received, len(data))
             if not count:
                 raise OSError("rtl_tcp: socket closed")
             received += count
@@ -435,6 +487,8 @@ class RtlTcpClient:
             recent.append((end_ns, bound_ns))
             while recent[0][0] < end_ns - window_ns:
                 recent.popleft()
+        if deadline_ns is not None:
+            sock.settimeout(self.read_timeout)  # _recv_before shortened it
         queued_ns = read_start_ns - start_ns
         # Up to one transfer of queue is normal; anything more must be seen to drain.
         caught_up = queued_ns <= transfer_ns + _JITTER_NS or (
@@ -451,6 +505,30 @@ class RtlTcpClient:
             queued_s=queued_ns / 1e9,
             backlogged=queued_ns / 1e9 > backlog_threshold_s,
             caught_up=caught_up,
+        )
+
+    def _recv_before(
+        self,
+        sock: socket.socket,
+        view: memoryview,
+        deadline_ns: int | None,
+        received: int,
+        total: int,
+    ) -> int:
+        """One ``recv_into``; with a deadline, it fails once the deadline has passed."""
+        if deadline_ns is None:
+            return sock.recv_into(view)
+        remaining_ns = deadline_ns - time.monotonic_ns()
+        if remaining_ns > 0:
+            sock.settimeout(min(self.read_timeout, remaining_ns / 1e9))
+            try:
+                return sock.recv_into(view)
+            except TimeoutError:
+                if time.monotonic_ns() < deadline_ns:
+                    raise
+        raise RtlTcpCaptureTimeoutError(
+            f"rtl_tcp: only {received // 2} of {total // 2} samples arrived before the "
+            "capture deadline; the receiver is too slow"
         )
 
     def _discard_until_quiet(self, settle_s: float, max_drain_s: float, quiet_s: float) -> int:
