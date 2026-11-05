@@ -189,3 +189,23 @@ class TestInterpretation:
     def test_a_zone_west_of_utc_rolls_the_date_forward(self):
         result = interpret_in_zone(_ct(2026, 11, 3, 22, 0), "America/New_York")
         assert result.utc == datetime(2026, 11, 4, 3, 0, tzinfo=UTC)
+
+
+def test_frequency_rules_round_trip_to_the_channel_they_select():
+    from rdsclock.ct_policy import parse_ct_timezone
+
+    rule = parse_ct_timezone("freq:98.85001=Europe/Warsaw")
+    again = parse_ct_timezone(str(rule))
+    assert str(rule) == "freq:98.9=Europe/Warsaw"
+    assert again.selector == rule.selector
+    assert again.matches(None, 98.9e6) and not again.matches(None, 98.8e6)
+
+
+def test_absurd_frequencies_are_rejected_when_parsing():
+    import pytest
+
+    from rdsclock.ct_policy import parse_ct_timezone
+
+    for spec in ("freq:1e308=UTC", "freq:10000=UTC"):
+        with pytest.raises(ValueError, match="below 10000"):
+            parse_ct_timezone(spec)

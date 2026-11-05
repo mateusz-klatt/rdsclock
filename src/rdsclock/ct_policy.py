@@ -89,7 +89,9 @@ class CTRule:
         if self.kind == "pi":
             return f"pi:0x{self.value:04X}={self.zone}"
         if self.kind == "freq":
-            return f"freq:{self.value:g}={self.zone}"
+            # The channel the rule selects, not the typed number: a dashboard
+            # forwards this text to its child, which must pick the same station.
+            return f"freq:{self.selector[1] / 10:.1f}={self.zone}"
         return self.zone
 
 
@@ -122,8 +124,8 @@ def parse_ct_timezone(spec: str) -> CTRule:
         mhz = float(raw)
     except ValueError as exc:
         raise ValueError(f"{spec!r}: frequency must be a number in MHz such as 98.8") from exc
-    if not (math.isfinite(mhz) and mhz > 0):
-        raise ValueError(f"{spec!r}: frequency must be a positive number in MHz")
+    if not (math.isfinite(mhz) and 0 < mhz < 10_000):
+        raise ValueError(f"{spec!r}: frequency must be a positive number of MHz below 10000")
     return CTRule("freq", mhz, _validate_zone(zone))
 
 

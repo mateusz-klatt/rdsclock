@@ -227,7 +227,9 @@ station of a capture produces a `hop_result`. Each `hop_result` carries the
 keeps the broadcast `utc` and `local_offset_minutes` and adds the reading of
 `ct_policy.CTPolicy` (CLI `--ct-timezone`): `ct_timezone`, `ct_status`
 (`standard`, `converted`, `ambiguous` or `nonexistent`) and `effective_utc`,
-the UTC passed to the consensus, `null` when the CT is not used.
+the UTC the consensus would receive, `null` when the local time maps to no
+single instant (`ambiguous`, `nonexistent`). A capture that did not catch up
+(`caught_up` false) keeps its `effective_utc` but is not recorded either.
 `recon_started` lists the rules as `ct_timezone_rules`. `cycle_completed`
 carries the data behind the status block: the consensus result, the watchlist
 and one row per track. The loop evaluates the consensus once per cycle and
