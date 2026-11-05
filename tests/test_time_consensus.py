@@ -84,6 +84,20 @@ class TestConsensus:
         assert outlier_track.consecutive_outliers >= 1
         assert outlier_track.trust_score < 0.5
 
+    def test_two_equal_camps_an_hour_apart_give_no_time(self):
+        c = TimeConsensus()
+        utc = datetime(2026, 11, 5, 8, 49, tzinfo=UTC)
+        c.record(_obs(92.0, 0x3201, utc, mono=100.0))
+        c.record(_obs(98.3, 0x4321, utc, mono=100.0))
+        c.record(_obs(98.8, 0x3233, utc + timedelta(hours=1), mono=100.0))
+        c.record(_obs(102.4, 0x3211, utc + timedelta(hours=1), mono=100.0))
+        result = c.consensus(monotonic_now=100.5)
+        # The median, 09:19, is a time no station sent.
+        assert result.utc is None
+        assert (result.n_sources, result.notes) == (0, "outlier-only")
+        assert result.trust_level == TrustLevel.STALE
+        assert len(result.outlier_freqs_mhz) == 4
+
     def test_stale_when_old(self):
         c = TimeConsensus()
         utc = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)

@@ -477,7 +477,9 @@ class TimeConsensus:
         trust = self._trust_level(len(contributing), median_age, uncertainty, n_confirmed)
 
         return ConsensusResult(
-            utc=median_utc,
+            # A median that no source supports, such as the midpoint of two
+            # equal camps an hour apart, is not a time anyone broadcast.
+            utc=median_utc if contributing else None,
             uncertainty_s=uncertainty,
             trust_level=trust,
             n_sources=len(contributing),
