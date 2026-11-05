@@ -11,6 +11,7 @@ import pytest
 
 import rdsclock.dashboard as dashboard
 import rdsclock.recon as recon
+from rdsclock.ct_policy import CTInterpretation
 from rdsclock.rds_clock import ClockTime
 from tests.fake_receiver import (
     CT,
@@ -441,3 +442,24 @@ class TestReceiverProcess:
         with pytest.raises(OSError):
             receiver.start()
         assert not receiver.running
+
+
+def test_hop_results_with_a_ct_reading_still_parse():
+    """``clock_time`` gains effective_utc, ct_timezone and ct_status; older keys still drive the view."""
+    local = ClockTime(CT + timedelta(hours=1), 0)
+    for reading in (
+        CTInterpretation(CT, "Europe/Warsaw", "converted"),
+        CTInterpretation(None, "Europe/Warsaw", "ambiguous"),
+    ):
+        record = line(
+            recon.HopResult(
+                102.4e6, 0xA101, "STACJA A", -18.2, 812, 795, 17, local, 0.0, True, reading
+            )
+        )
+        assert json.loads(record)["clock_time"]["ct_timezone"] == "Europe/Warsaw"
+        state, _, messages = _state([record])
+        hop = dashboard.Hop.from_record(json.loads(record))
+        assert (hop.ct_utc, hop.lto_minutes) == (local.utc, 0)
+        assert messages == [
+            f"102.40 MHz STACJA A: CT {local.utc:%H:%M}Z (LTO +00:00), 812 groups, 17 corrected."
+        ]

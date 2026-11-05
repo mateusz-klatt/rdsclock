@@ -14,6 +14,7 @@ Modules:
     channelizer      Wide-band capture → N narrow per-station channels.
     rtl_tcp          Minimal rtl_tcp client (context manager).
     time_consensus   Multi-source time consensus, trust scoring, holdover.
+    ct_policy        Per-station reading of CT sent as local time (``--ct-timezone``).
     recon            Continuous passive time receiver (live + offline modes).
     dashboard        Dashboard model shared by the terminal, web and desktop views.
     tui              Terminal dashboard over ``recon --jsonl`` (optional extra).
