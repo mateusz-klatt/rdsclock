@@ -65,7 +65,9 @@ edits them automatically.
 
 Finalization marks the release **latest** only if its version is the highest
 among published, non-prerelease `vX.Y.Z` releases. Republishing an older tag
-after a newer release uses `--latest=false`.
+after a newer release uses `--latest=false`. Finalization jobs of different tags run one at a time, so
+this choice cannot interleave with another release's. GitHub keeps only one
+waiting run per group; rerun a finalization it cancels.
 
 If the original artifact has expired, recover the
 original distributions and verify their provenance instead of rebuilding and

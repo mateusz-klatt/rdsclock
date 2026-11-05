@@ -347,3 +347,12 @@ def test_latest_ignores_drafts_and_prereleases(monkeypatch):
     ]
     monkeypatch.setattr(release, "gh", lambda *args: json.dumps(listing))
     assert release.is_latest("owner/repo", "v2.0.0")
+
+
+def test_finalization_is_serialized_across_tags():
+    # is_latest() and the publishing edit must not interleave between releases.
+    workflow = (Path(__file__).parents[1] / ".github/workflows/publish.yml").read_text()
+    job = workflow.split("\n  github-release:\n", 1)[1]
+    assert (
+        "group: publish-finalize" in job and "${{" not in job.split("group:", 1)[1].split("\n")[0]
+    )
